@@ -1,0 +1,459 @@
+import { describe, expect, it, vi } from 'vitest'
+import {
+  BATCH_LIMIT,
+  FIND_SHOP_MAX_PAGES,
+  EtsyApiError,
+  buildUrl,
+  createEtsyClient,
+  parseQuota,
+  parseRetryAfter
+} from '../../src/main/etsyApi'
+import findShopsFx from '../fixtures/findShops.json'
+import error403 from '../fixtures/error-403.json'
+import { fakeFetch, queuedFetch, type FakeReply } from '../helpers/fakeFetch'
+import { FakeEtsy, mkEtsyListing } from '../helpers/fakeEtsy'
+
+function client(fetch: typeof globalThis.fetch, over = {}) {
+  const sleep = vi.fn(async (_ms: number) => {})
+  const c = createEtsyClient({
+    getApiKey: () => 'mykeystring:mysecret',
+    fetch,
+    sleep,
+    random: () => 0,
+    minIntervalMs: 0,
+    ...over
+  })
+  return { c, sleep }
+}
+
+const range = (a: number, b: number): number[] =>
+  Array.from({ length: b - a + 1 }, (_, i) => a + i)
+
+async function err(p: Promise<unknown>): Promise<EtsyApiError> {
+  try {
+    await p
+  } catch (e) {
+    return e as EtsyApiError
+  }
+  throw new Error('expected a rejection')
+}
+
+describe('request basics', () => {
+  it('sends x-api-key as keystring:shared_secret to openapi.etsy.com', async () => {
+    const f = queuedFetch([{ body: { application_id: 7 } }])
+    const { c } = client(f)
+    expect(await c.ping()).toEqual({ application_id: 7 })
+    const call = f.calls[0]
+    expect(call.url.toString()).toBe('https://openapi.etsy.com/v3/application/openapi-ping')
+    expect(call.headers['x-api-key']).toBe('mykeystring:mysecret')
+  })
+
+  it('ping can use an explicit unsaved key', async () => {
+    const f = queuedFetch([{ body: { application_id: 7 } }])
+    const { c } = client(f)
+    await c.ping('other:key')
+    expect(f.calls[0].headers['x-api-key']).toBe('other:key')
+  })
+
+  it('fails with no_key without any request when the key is missing', async () => {
+    const f = queuedFetch([{ body: {} }])
+    const { c } = client(f, { getApiKey: () => null })
+    const e = await err(c.ping())
+    expect(e.kind).toBe('no_key')
+    expect(e.message).toMatch(/Налаштування/)
+    expect(f.calls).toHaveLength(0)
+  })
+
+  it('joins array params with commas, no brackets', () => {
+    expect(buildUrl('https://openapi.etsy.com', '/v3/application/listings/batch', {
+      listing_ids: [1, 2, 3],
+      includes: ['Images'],
+      skip: undefined
+    })).toBe('https://openapi.etsy.com/v3/application/listings/batch?listing_ids=1%2C2%2C3&includes=Images')
+  })
+
+  it('keeps a minimum gap between requests', async () => {
+    let t = 1000
+    const f = queuedFetch([{ body: { application_id: 1 } }])
+    const { c, sleep } = client(f, { minIntervalMs: 200, now: () => t })
+    sleep.mockImplementation(async (ms: number) => {
+      t += ms
+    })
+    await c.ping()
+    await c.ping()
+    expect(sleep).toHaveBeenCalledWith(200)
+  })
+
+  it('runs requests strictly one at a time', async () => {
+    let inFlight = 0
+    let max = 0
+    const f = fakeFetch(async () => {
+      inFlight++
+      max = Math.max(max, inFlight)
+      await new Promise((r) => setTimeout(r, 5))
+      inFlight--
+      return { body: { application_id: 1 } }
+    })
+    const { c } = client(f)
+    await Promise.all([c.ping(), c.ping(), c.ping()])
+    expect(max).toBe(1)
+    expect(f.calls).toHaveLength(3)
+  })
+})
+
+describe('errors', () => {
+  it.each([401, 403])('%i → auth error with Etsy detail and request id', async (status) => {
+    const f = queuedFetch([
+      { status, body: error403, headers: { 'x-etsy-request-uuid': 'req-123' } }
+    ])
+    const e = await err(client(f).c.ping())
+    expect(e).toBeInstanceOf(EtsyApiError)
+    expect(e.kind).toBe('auth')
+    expect(e.status).toBe(status)
+    expect(e.requestId).toBe('req-123')
+    expect(e.detail).toBe(error403.error)
+    expect(e.message).toMatch(/API-ключ/)
+    expect(f.calls).toHaveLength(1)
+  })
+
+  it('404 → not_found', async () => {
+    const f = queuedFetch([{ status: 404, body: { error: 'Shop not found' } }])
+    const e = await err(client(f).c.getShop(1))
+    expect(e.kind).toBe('not_found')
+    expect(e.message).toMatch(/не знайшов/)
+  })
+
+  it('400 → bad_request (not retried)', async () => {
+    const f = queuedFetch([{ status: 400, body: { error: 'bad' } }])
+    const e = await err(client(f).c.getShop(1))
+    expect(e.kind).toBe('bad_request')
+    expect(f.calls).toHaveLength(1)
+  })
+
+  it('non-JSON error body still yields a typed error', async () => {
+    const f = queuedFetch([{ status: 403, body: '<html>nope</html>' }])
+    const e = await err(client(f).c.ping())
+    expect(e.kind).toBe('auth')
+    expect(e.detail).toBeUndefined()
+  })
+
+  it('invalid JSON on 200 → bad_response', async () => {
+    const f = queuedFetch([{ status: 200, body: 'not json' }])
+    expect((await err(client(f).c.ping())).kind).toBe('bad_response')
+  })
+
+  it('a paged endpoint without results[] → bad_response', async () => {
+    const f = queuedFetch([{ body: { count: 1 } }])
+    expect((await err(client(f).c.findShopByName('x'))).kind).toBe('bad_response')
+  })
+})
+
+describe('retries', () => {
+  it('429 waits Retry-After seconds then succeeds', async () => {
+    const f = queuedFetch([
+      { status: 429, body: { error: 'rate' }, headers: { 'retry-after': '2' } },
+      { body: { application_id: 1 } }
+    ])
+    const { c, sleep } = client(f)
+    expect(await c.ping()).toEqual({ application_id: 1 })
+    expect(sleep).toHaveBeenCalledWith(2000)
+    expect(f.calls).toHaveLength(2)
+  })
+
+  it('429 without Retry-After uses exponential backoff', async () => {
+    const f = queuedFetch([
+      { status: 429, body: {} },
+      { status: 429, body: {} },
+      { body: { application_id: 1 } }
+    ])
+    const { c, sleep } = client(f, { backoffBaseMs: 100 })
+    await c.ping()
+    expect(sleep.mock.calls.map((a) => a[0])).toEqual([100, 200])
+  })
+
+  it('429 exhaustion → rate_limit after maxRetries + 1 attempts', async () => {
+    const f = queuedFetch([{ status: 429, body: {}, headers: { 'retry-after': '1' } }])
+    const e = await err(client(f, { maxRetries: 2 }).c.ping())
+    expect(e.kind).toBe('rate_limit')
+    expect(f.calls).toHaveLength(3)
+  })
+
+  it('a Retry-After beyond the cap (daily quota) fails fast', async () => {
+    const f = queuedFetch([{ status: 429, body: {}, headers: { 'retry-after': '7200' } }])
+    const { c, sleep } = client(f)
+    expect((await err(c.ping())).kind).toBe('rate_limit')
+    expect(sleep).not.toHaveBeenCalled()
+    expect(f.calls).toHaveLength(1)
+  })
+
+  it('5xx is retried, then succeeds', async () => {
+    const f = queuedFetch([{ status: 503, body: {} }, { body: { application_id: 1 } }])
+    expect(await client(f).c.ping()).toEqual({ application_id: 1 })
+  })
+
+  it('5xx exhaustion → server error', async () => {
+    const f = queuedFetch([{ status: 500, body: { error: 'boom' } }])
+    const e = await err(client(f, { maxRetries: 1 }).c.ping())
+    expect(e.kind).toBe('server')
+    expect(e.status).toBe(500)
+    expect(f.calls).toHaveLength(2)
+  })
+
+  it('network errors are retried, then reported', async () => {
+    const replies: FakeReply[] = [{ throws: new TypeError('fetch failed') }]
+    const f = queuedFetch(replies)
+    const e = await err(client(f, { maxRetries: 1 }).c.ping())
+    expect(e.kind).toBe('network')
+    expect(e.message).toMatch(/fetch failed/)
+    expect(f.calls).toHaveLength(2)
+  })
+})
+
+describe('quota headers', () => {
+  it('parses the rate-limit headers and reports them', async () => {
+    const onQuota = vi.fn()
+    const f = queuedFetch([
+      {
+        body: { application_id: 1 },
+        headers: {
+          'x-limit-per-second': '10',
+          'x-remaining-this-second': '9',
+          'x-limit-per-day': '10000',
+          'x-remaining-today': '9876'
+        }
+      }
+    ])
+    await client(f, { onQuota, now: () => 42 }).c.ping()
+    expect(onQuota).toHaveBeenCalledWith({
+      limitPerSecond: 10,
+      remainingThisSecond: 9,
+      limitPerDay: 10000,
+      remainingToday: 9876,
+      at: 42
+    })
+  })
+
+  it('also reads quota from error responses', async () => {
+    const onQuota = vi.fn()
+    const f = queuedFetch([{ status: 404, body: {}, headers: { 'x-remaining-today': '5' } }])
+    await err(client(f, { onQuota }).c.getShop(1))
+    expect(onQuota).toHaveBeenCalledWith(expect.objectContaining({ remainingToday: 5 }))
+  })
+
+  it('returns null without any quota header', () => {
+    expect(parseQuota(new Headers({ 'content-type': 'x' }), 0)).toBeNull()
+    expect(parseQuota(new Headers({ 'x-remaining-today': 'abc' }), 0)).toBeNull()
+  })
+
+  it('parseRetryAfter handles seconds, HTTP dates and junk', () => {
+    expect(parseRetryAfter('3', 0)).toBe(3000)
+    expect(parseRetryAfter(null, 0)).toBeNull()
+    expect(parseRetryAfter('soon', 0)).toBeNull()
+    const now = Date.parse('2026-10-22T10:00:00Z')
+    expect(parseRetryAfter('Thu, 22 Oct 2026 10:00:05 GMT', now)).toBe(5000)
+  })
+})
+
+describe('findShopByName', () => {
+  it('asks with limit=100 and keeps only the exact case-insensitive match', async () => {
+    const f = queuedFetch([{ body: findShopsFx }])
+    const shop = await client(f).c.findShopByName('ceramicstudioua')
+    expect(shop?.shop_id).toBe(20987654)
+    expect(shop?.shop_name).toBe('CeramicStudioUA')
+    expect(f.calls[0].url.searchParams.get('shop_name')).toBe('ceramicstudioua')
+    expect(f.calls[0].url.searchParams.get('limit')).toBe('100')
+  })
+
+  it('returns null when only fuzzy matches come back', async () => {
+    const f = queuedFetch([{ body: findShopsFx }])
+    expect(await client(f).c.findShopByName('CeramicStudio')).toBeNull()
+  })
+
+  it('returns null on count: 0', async () => {
+    const f = queuedFetch([{ body: { count: 0, results: [] } }])
+    expect(await client(f).c.findShopByName('Nope')).toBeNull()
+  })
+
+  it('keeps paging when the exact match is not on the first page', async () => {
+    const fuzzy = (n: number, from: number) =>
+      Array.from({ length: n }, (_, i) => ({ ...findShopsFx.results[1], shop_id: from + i, shop_name: `Art${from + i}` }))
+    const exact = { ...findShopsFx.results[0], shop_id: 777, shop_name: 'Art' }
+    const f = fakeFetch((url) =>
+      url.searchParams.get('offset') === '100'
+        ? { body: { count: 150, results: [...fuzzy(49, 100), exact] } }
+        : { body: { count: 150, results: fuzzy(100, 0) } }
+    )
+    const shop = await client(f).c.findShopByName('art')
+    expect(shop?.shop_id).toBe(777)
+    expect(f.calls.map((c) => c.url.searchParams.get('offset'))).toEqual([null, '100'])
+  })
+
+  it('stops paging at the page budget or when the results end', async () => {
+    const page = Array.from({ length: 100 }, (_, i) => ({ ...findShopsFx.results[1], shop_name: `X${i}` }))
+    const f = fakeFetch(() => ({ body: { count: 100_000, results: page } }))
+    expect(await client(f).c.findShopByName('Art')).toBeNull()
+    expect(f.calls).toHaveLength(FIND_SHOP_MAX_PAGES)
+
+    const g = queuedFetch([{ body: findShopsFx }])
+    expect(await client(g).c.findShopByName('Nope')).toBeNull()
+    expect(g.calls).toHaveLength(1)
+  })
+})
+
+describe('getAllActiveListings', () => {
+  it('pages with limit=100 until offset >= count', async () => {
+    const etsy = new FakeEtsy(250)
+    const onPage = vi.fn()
+    const res = await etsy.client().getAllActiveListings(etsy.shop.shop_id, onPage)
+    expect(res.listings).toHaveLength(250)
+    expect(res.count).toBe(250)
+    expect(res.truncated).toBe(false)
+    const pages = etsy.requests.map((u) => [u.searchParams.get('limit'), u.searchParams.get('offset')])
+    expect(pages).toEqual([
+      ['100', '0'],
+      ['100', '100'],
+      ['100', '200']
+    ])
+    expect(onPage.mock.calls).toEqual([
+      [1, 3],
+      [2, 3],
+      [3, 3]
+    ])
+  })
+
+  it('stops on an empty page even if count says more', async () => {
+    const f = fakeFetch((url) =>
+      url.searchParams.get('offset') === '0'
+        ? { body: { count: 500, results: [mkEtsyListing(1)] } }
+        : { body: { count: 500, results: [] } }
+    )
+    const res = await client(f).c.getAllActiveListings(1)
+    expect(res.listings).toHaveLength(1)
+    expect(f.calls).toHaveLength(2)
+  })
+
+  it('dedupes listings that shift between pages', async () => {
+    const f = fakeFetch((url) => {
+      // A new listing was added at the front while we read: page 2 repeats #100.
+      const off = Number(url.searchParams.get('offset'))
+      const ids = off === 0 ? range(1, 100) : range(100, 150)
+      return { body: { count: 151, results: ids.map((i) => mkEtsyListing(i)) } }
+    })
+    const res = await client(f).c.getAllActiveListings(1)
+    expect(res.listings).toHaveLength(150)
+    expect(new Set(res.listings.map((l) => l.listing_id)).size).toBe(150)
+  })
+
+  it('never asks for offset > 12000 and flags truncation', async () => {
+    const f = fakeFetch(() => ({
+      body: {
+        count: 20000,
+        results: Array.from({ length: 100 }, (_, i) => mkEtsyListing(Math.random() * 1e9 + i))
+      }
+    }))
+    const res = await client(f).c.getAllActiveListings(1)
+    const offsets = f.calls.map((c) => Number(c.url.searchParams.get('offset')))
+    expect(Math.max(...offsets)).toBe(12000)
+    expect(offsets).toHaveLength(121)
+    expect(res.truncated).toBe(true)
+  })
+})
+
+describe('getListingsByIds', () => {
+  it('chunks ids by 100 and asks for Images', async () => {
+    const etsy = new FakeEtsy(230)
+    const onChunk = vi.fn()
+    const ids = etsy.listings.map((l) => l.listing_id)
+    const map = await etsy.client().getListingsByIds([...ids, ids[0]], onChunk)
+    expect(map.size).toBe(230)
+    const batches = etsy.requests.filter((u) => u.pathname.endsWith('/listings/batch'))
+    expect(batches).toHaveLength(3)
+    for (const b of batches) {
+      expect(b.searchParams.get('listing_ids')!.split(',').length).toBeLessThanOrEqual(BATCH_LIMIT)
+      expect(b.searchParams.get('includes')).toBe('Images')
+    }
+    expect(map.get(1)?.images).toHaveLength(2)
+    expect(onChunk.mock.calls).toEqual([
+      [100, 230],
+      [200, 230],
+      [230, 230]
+    ])
+  })
+
+  it('makes no request for an empty id list', async () => {
+    const etsy = new FakeEtsy(3)
+    expect((await etsy.client().getListingsByIds([])).size).toBe(0)
+    expect(etsy.requests).toHaveLength(0)
+  })
+
+  it('when the batch 404s on an unknown id, bisects and drops only the dead id', async () => {
+    const etsy = new FakeEtsy(100, { batchUnknown: '404' })
+    const ids = etsy.listings.map((l) => l.listing_id)
+    etsy.listings.splice(41, 1) // #42 deleted on Etsy
+    const map = await etsy.client().getListingsByIds(ids)
+    expect(map.size).toBe(99)
+    expect(map.has(42)).toBe(false)
+    expect(map.get(41)?.images).toHaveLength(2)
+    // A single dead id costs a handful of requests, not one per listing.
+    expect(etsy.requests.length).toBeLessThan(20)
+    expect(etsy.count('/v3/application/listings/42')).toBe(1)
+  })
+
+  it('a batch 404 for every id yields an empty map, not an error', async () => {
+    const etsy = new FakeEtsy(0, { batchUnknown: '404' })
+    expect((await etsy.client().getListingsByIds([1, 2, 3])).size).toBe(0)
+  })
+
+  it('still fails on errors a single-listing GET also returns', async () => {
+    const etsy = new FakeEtsy(3, { intercept: () => ({ status: 400, body: { error: 'bad ids' } }) })
+    const e = await err(etsy.client().getListingsByIds([1, 2, 3]))
+    expect(e.kind).toBe('bad_request')
+    const etsy500 = new FakeEtsy(3, { intercept: () => ({ status: 500, body: {} }) })
+    expect((await err(etsy500.client({ maxRetries: 0 }).getListingsByIds([1]))).kind).toBe('server')
+  })
+})
+
+describe('getListing', () => {
+  it('returns the listing with images, or null on 404', async () => {
+    const etsy = new FakeEtsy(2)
+    const c = etsy.client()
+    expect((await c.getListing(2))?.images).toHaveLength(2)
+    expect(etsy.requests[0].searchParams.get('includes')).toBe('Images')
+    expect(await c.getListing(999)).toBeNull()
+  })
+})
+
+describe('request timeout', () => {
+  /** A fetch that never answers until its signal aborts (a stalled connection). */
+  const hanging = () =>
+    vi.fn(
+      (_url: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () =>
+            reject(new DOMException('This operation was aborted', 'AbortError'))
+          )
+        })
+    )
+
+  it('aborts a stalled request, retries once, then fails with a Ukrainian timeout error', async () => {
+    const f = hanging()
+    const { c } = client(f as unknown as typeof fetch, { requestTimeoutMs: 20 })
+    const e = await err(c.ping())
+    expect(e).toBeInstanceOf(EtsyApiError)
+    expect(e.kind).toBe('network')
+    expect(e.message).toMatch(/не відповідає.*тайм-аут/)
+    expect(f).toHaveBeenCalledTimes(2)
+    expect(f.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal)
+  })
+
+  it('a timed-out request succeeds on the retry, and the queue moves on', async () => {
+    let n = 0
+    const ok = fakeFetch(() => ({ body: { application_id: 9 } }))
+    const f = vi.fn((url: RequestInfo | URL, init?: RequestInit) =>
+      n++ === 0 ? hanging()(url, init) : ok(url, init)
+    )
+    const { c } = client(f as unknown as typeof fetch, { requestTimeoutMs: 20 })
+    expect(await c.ping()).toEqual({ application_id: 9 })
+    expect(await c.ping()).toEqual({ application_id: 9 })
+  })
+})

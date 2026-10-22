@@ -1,0 +1,147 @@
+import { useMemo } from 'react'
+import { formatAgo, formatDateTime, isStale } from '@shared/format'
+import { useStore, type SortMode } from '../store'
+import { filterListings } from '../listingFilter'
+import { ExternalLink } from './ExternalLink'
+import { ListingCard } from './ListingCard'
+import { ScanHistory } from './ScanHistory'
+import { ScanResults } from './ScanResults'
+import { UNREADABLE_KEY_MESSAGE } from './SettingsModal'
+import { ShopIcon } from './ShopIcon'
+
+export function ShopView(): JSX.Element | null {
+  const {
+    shops,
+    activeShopId,
+    listings,
+    lastChanges,
+    scans,
+    scanning,
+    progress,
+    search,
+    sort,
+    keyStatus,
+    setSearch,
+    setSort,
+    scanShop,
+    removeShop,
+    openListing
+  } = useStore()
+  const shop = shops.find((s) => s.id === activeShopId)
+
+  const newIds = useMemo(
+    () => new Set(lastChanges.filter((c) => c.kind === 'added').map((c) => c.listingId)),
+    [lastChanges]
+  )
+  const visible = useMemo(() => filterListings(listings, search, sort), [listings, search, sort])
+
+  if (!shop) return null
+  const busy = !!scanning[shop.id]
+  const p = progress[shop.id]
+  const lastOk = shop.lastOkScan
+  const failed = shop.lastScan?.status === 'error' ? shop.lastScan : null
+
+  return (
+    <div className="shop-view">
+      <header className="shop-header">
+        <ShopIcon url={shop.iconUrl} name={shop.shopName} size={44} />
+        <div className="shop-header-text">
+          <h1>
+            {shop.shopName}{' '}
+            <ExternalLink href={shop.url} className="ext-link small">
+              на Etsy ↗
+            </ExternalLink>
+          </h1>
+          {shop.title && <div className="shop-title">{shop.title}</div>}
+          <div className="meta">
+            {lastOk
+              ? `Скановано ${formatDateTime(lastOk.finishedAt)} (${formatAgo(lastOk.finishedAt)}) · активних товарів: ${shop.activeCount}`
+              : 'Ще не скановано'}
+          </div>
+        </div>
+        <div className="shop-actions">
+          <button
+            className="btn primary"
+            disabled={busy || !keyStatus?.hasKey}
+            onClick={() => void scanShop(shop.id)}
+          >
+            {busy ? (p?.label ?? 'Сканування…') : lastOk ? 'Сканувати повторно' : 'Сканувати'}
+          </button>
+          <button className="btn danger" disabled={busy} onClick={() => void removeShop(shop.id)}>
+            Видалити
+          </button>
+        </div>
+      </header>
+
+      <div className="shop-scroll">
+        {!keyStatus?.hasKey && (
+          <div className="banner warn">
+            {keyStatus?.unreadable
+              ? `${UNREADABLE_KEY_MESSAGE} Відкрийте Налаштування.`
+              : 'API-ключ Etsy не задано — сканування недоступне. Відкрийте Налаштування.'}
+          </div>
+        )}
+        {failed && !busy && (
+          <div className="banner err" role="alert">
+            Останнє сканування ({formatDateTime(failed.startedAt)}) не вдалося: {failed.error}
+            {lastOk && ' Показано результати попереднього успішного сканування.'}
+          </div>
+        )}
+        {lastOk && !busy && isStale(lastOk.finishedAt) && (
+          <div className="banner">
+            Дані старші за 6 годин — проскануйте повторно, щоб побачити актуальні товари й ціни.
+          </div>
+        )}
+        {!lastOk && !busy && (
+          <div className="banner">
+            Натисніть «Сканувати», щоб зберегти всі поточні товари магазину (на Etsy їх{' '}
+            {shop.etsyActiveCount}).
+          </div>
+        )}
+
+        <ScanResults shop={shop} changes={lastChanges} onOpen={openListing} />
+
+        {listings.length > 0 && (
+          <section className="all-listings">
+            <div className="toolbar">
+              <h2>Усі активні товари ({listings.length})</h2>
+              <input
+                className="search"
+                type="search"
+                placeholder="Пошук за назвою або тегом"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+              <select
+                className="sort"
+                value={sort}
+                onChange={(e) => setSort(e.target.value as SortMode)}
+                aria-label="Сортування"
+              >
+                <option value="newest">Новіші</option>
+                <option value="price-asc">Ціна ↑</option>
+                <option value="price-desc">Ціна ↓</option>
+              </select>
+            </div>
+            {visible.length === 0 ? (
+              <div className="hint">Нічого не знайдено.</div>
+            ) : (
+              <div className="grid">
+                {visible.map((l) => (
+                  <ListingCard
+                    key={l.listingId}
+                    listing={l}
+                    isNew={newIds.has(l.listingId)}
+                    onOpen={openListing}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+
+        <ScanHistory scans={scans} />
+      </div>
+    </div>
+  )
+}

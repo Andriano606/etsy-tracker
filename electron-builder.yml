@@ -1,0 +1,19 @@
+appId: com.andrii.etsytracker
+productName: Etsy Tracker
+# No spaces in the artifact name: the AppImage mounts as /tmp/.mount_<first 6
+# chars><random>, so this gives a predictable `.mount_etsy-t…` to pgrep for.
+artifactName: etsy-tracker-${version}.${ext}
+directories:
+  buildResources: build
+files:
+  - out/**/*
+  - package.json
+linux:
+  target:
+    - AppImage
+    - deb
+  category: Utility
+  icon: build/icon.png
+  executableName: etsy-tracker
+# No native modules (the DB is the built-in node:sqlite), nothing to rebuild.
+npmRebuild: false

@@ -1,0 +1,167 @@
+import { vi } from 'vitest'
+import type {
+  AddShopResult,
+  KeyStatus,
+  KeyTestResult,
+  Listing,
+  Quota,
+  ScanChange,
+  ScanOutcome,
+  ScanSummary,
+  ShopSummary
+} from '../../src/shared/types'
+import { useStore } from '../../src/renderer/src/store'
+
+export const noKey: KeyStatus = { hasKey: false, masked: null, encrypted: false }
+export const withKey: KeyStatus = { hasKey: true, masked: 'abcd…wxyz', encrypted: true }
+
+export const mkScan = (over: Partial<ScanSummary> = {}): ScanSummary => ({
+  id: 1,
+  shopId: 1,
+  startedAt: Date.now() - 60_000,
+  finishedAt: Date.now() - 50_000,
+  status: 'ok',
+  error: null,
+  isBaseline: false,
+  truncated: false,
+  total: 3,
+  added: 0,
+  removed: 0,
+  changed: 0,
+  returned: 0,
+  ...over
+})
+
+export const mkShop = (over: Partial<ShopSummary> = {}): ShopSummary => ({
+  id: 1,
+  shopName: 'CeramicStudioUA',
+  title: 'Handmade ceramics',
+  url: 'https://www.etsy.com/shop/CeramicStudioUA',
+  iconUrl: null,
+  currency: 'UAH',
+  etsyActiveCount: 3,
+  addedAt: 0,
+  activeCount: 3,
+  lastOkScan: null,
+  lastScan: null,
+  newCount: 0,
+  ...over
+})
+
+export const mkListing = (id: number, over: Partial<Listing> = {}): Listing => ({
+  listingId: id,
+  shopId: 1,
+  title: `Listing ${id}`,
+  description: `Description ${id}`,
+  priceAmount: 1000 * id,
+  priceDivisor: 100,
+  currency: 'UAH',
+  url: `https://www.etsy.com/listing/${id}/x`,
+  tags: [],
+  quantity: 1,
+  etsyCreatedAt: 1_700_000_000 + id,
+  etsyUpdatedAt: 1_700_000_000 + id,
+  images: [
+    {
+      id: id * 10,
+      rank: 1,
+      url75: `https://i.etsystatic.com/1/il_75x75.${id}.jpg`,
+      url170: `https://i.etsystatic.com/1/il_170x135.${id}.jpg`,
+      url570: `https://i.etsystatic.com/1/il_570xN.${id}.jpg`,
+      urlFull: `https://i.etsystatic.com/1/il_fullxfull.${id}.jpg`,
+      width: 100,
+      height: 100,
+      alt: null
+    }
+  ],
+  firstSeenAt: 0,
+  lastSeenAt: 0,
+  removedAt: null,
+  ...over
+})
+
+export const mkChange = (
+  id: number,
+  kind: ScanChange['kind'],
+  listing: Listing,
+  over: Partial<ScanChange> = {}
+): ScanChange => ({
+  id,
+  scanId: 1,
+  listingId: listing.listingId,
+  kind,
+  oldValue: null,
+  newValue: null,
+  listing,
+  ...over
+})
+
+/** A fully-stubbed window.api with sensible default resolutions. */
+export function makeApi() {
+  return {
+    getKeyStatus: vi.fn(async (): Promise<KeyStatus> => withKey),
+    setApiKey: vi.fn(
+      async (): Promise<{ ok: true; status: KeyStatus } | { ok: false; error: string }> => ({
+        ok: true,
+        status: withKey
+      })
+    ),
+    clearApiKey: vi.fn(async (): Promise<KeyStatus> => noKey),
+    testApiKey: vi.fn(async (): Promise<KeyTestResult> => ({ ok: true, message: 'Ключ працює.' })),
+    listShops: vi.fn(async (): Promise<ShopSummary[]> => []),
+    addShop: vi.fn(async (): Promise<AddShopResult> => ({ ok: true, shop: mkShop({ id: 99 }) })),
+    removeShop: vi.fn(async () => ({ ok: true })),
+    onShopsChanged: vi.fn(() => () => {}),
+    listListings: vi.fn(async (): Promise<Listing[]> => []),
+    getListing: vi.fn(async (): Promise<Listing | null> => null),
+    listScans: vi.fn(async (): Promise<ScanSummary[]> => []),
+    getScanChanges: vi.fn(async (): Promise<ScanChange[]> => []),
+    scanShop: vi.fn(async (shopId: number): Promise<ScanOutcome> => ({ ok: true, shopId, scan: mkScan() })),
+    scanAll: vi.fn(async (): Promise<ScanOutcome[]> => []),
+    onScanProgress: vi.fn(() => () => {}),
+    onScanState: vi.fn(() => () => {}),
+    getQuota: vi.fn(async (): Promise<Quota | null> => null),
+    onQuota: vi.fn(() => () => {}),
+    openExternal: vi.fn(async () => true)
+  }
+}
+
+export type Api = ReturnType<typeof makeApi>
+
+/** Reset the zustand store's data fields (keeps the action functions). */
+export function resetStore(): void {
+  useStore.setState({
+    loaded: false,
+    keyStatus: null,
+    shops: [],
+    activeShopId: null,
+    listings: [],
+    lastChanges: [],
+    scans: [],
+    scanning: {},
+    progress: {},
+    quota: null,
+    error: null,
+    search: '',
+    sort: 'newest',
+    showSettings: false,
+    showAddShop: false,
+    detailListing: null,
+    historyScan: null,
+    historyChanges: [],
+    confirmRequest: null
+  })
+}
+
+/** Install a fresh stubbed window.api and reset the store. Returns the api. */
+export function setupRenderer(): Api {
+  const api = makeApi()
+  ;(window as unknown as { api: Api }).api = api
+  try {
+    localStorage.clear()
+  } catch {
+    // ignore
+  }
+  resetStore()
+  return api
+}

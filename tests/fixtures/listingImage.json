@@ -1,0 +1,22 @@
+{
+  "listing_id": 1801234567,
+  "listing_image_id": 6012345678,
+  "hex_code": "C9A66B",
+  "red": 201,
+  "green": 166,
+  "blue": 107,
+  "hue": 37,
+  "saturation": 47,
+  "brightness": 78,
+  "is_black_and_white": false,
+  "creation_tsz": 1760000000,
+  "created_timestamp": 1760000000,
+  "rank": 1,
+  "url_75x75": "https://i.etsystatic.com/12345678/c/2000/2000/0/0/il/abcdef/6012345678/il_75x75.6012345678_abcd.jpg",
+  "url_170x135": "https://i.etsystatic.com/12345678/c/2000/1588/0/206/il/abcdef/6012345678/il_170x135.6012345678_abcd.jpg",
+  "url_570xN": "https://i.etsystatic.com/12345678/r/il/abcdef/6012345678/il_570xN.6012345678_abcd.jpg",
+  "url_fullxfull": "https://i.etsystatic.com/12345678/r/il/abcdef/6012345678/il_fullxfull.6012345678_abcd.jpg",
+  "full_height": 2000,
+  "full_width": 2000,
+  "alt_text": "Sunflower mug on a wooden table"
+}

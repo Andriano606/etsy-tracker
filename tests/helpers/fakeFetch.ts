@@ -13,6 +13,10 @@ export type Handler = (url: URL, init?: RequestInit) => FakeReply | Promise<Fake
 export interface FakeCall {
   url: URL
   headers: Record<string, string>
+  method: string
+  body: string | null
+  /** The body as passed (e.g. a FormData for uploads). */
+  rawBody: unknown
 }
 
 /** A `fetch` stand-in that routes every request through `handler` and records it. */
@@ -20,7 +24,13 @@ export function fakeFetch(handler: Handler) {
   const calls: FakeCall[] = []
   const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = new URL(String(input))
-    calls.push({ url, headers: { ...((init?.headers as Record<string, string>) ?? {}) } })
+    calls.push({
+      url,
+      headers: { ...((init?.headers as Record<string, string>) ?? {}) },
+      method: init?.method ?? 'GET',
+      body: init?.body == null ? null : String(init.body),
+      rawBody: init?.body
+    })
     const r = await handler(url, init)
     if (r.throws) throw r.throws
     const body = r.body === undefined ? '' : typeof r.body === 'string' ? r.body : JSON.stringify(r.body)

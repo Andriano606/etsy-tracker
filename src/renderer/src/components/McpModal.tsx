@@ -70,7 +70,7 @@ function StatusLine({ st }: { st: McpStatus }): JSX.Element {
  * Desktop. The commands use the saved port and token.
  */
 export function McpModal(): JSX.Element | null {
-  const { showMcp, setShowMcp, mcpStatus: st, setMcpStatus, requestConfirm } = useStore()
+  const { showMcp, setShowMcp, mcpStatus: st, setMcpStatus, requestConfirm, etsyAuth } = useStore()
   const [enabled, setEnabled] = useState(false)
   const [port, setPort] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -125,6 +125,22 @@ export function McpModal(): JSX.Element | null {
     } finally {
       setSaving(false)
     }
+  }
+
+  // Applied at once (not part of the port form): MCP clients may change the own store.
+  const toggleWrites = async (on: boolean): Promise<void> => {
+    if (
+      on &&
+      !(await requestConfirm(
+        'Дозволити Claude змінювати ваш магазин на Etsy? Він зможе створювати лістинги (чернетки, а якщо ви попросите — публікувати їх за $0.20), редагувати лістинги й тексти магазину. Claude Code однаково питатиме дозволу на кожну дію.'
+      ))
+    ) {
+      return
+    }
+    setError(null)
+    const res = await window.api.setMcp({ allowWrites: on })
+    if (!res.ok) setError(res.error)
+    else setMcpStatus(res.status)
   }
 
   const regenerate = async (): Promise<void> => {
@@ -246,10 +262,38 @@ export function McpModal(): JSX.Element | null {
           <p className="hint">Увімкніть сервер — тут з’являться готові команди для підключення.</p>
         )}
 
+        <section className="settings-section" data-testid="mcp-writes">
+          <h3>Мій магазин через Claude</h3>
+          <div className="field">
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={!!st?.allowWrites}
+                disabled={!st}
+                onChange={(e) => void toggleWrites(e.target.checked)}
+              />{' '}
+              Дозволити Claude змінювати мій магазин
+            </label>
+            <div className="hint">
+              Створювати лістинги з фото й файлами, редагувати їх, вмикати / вимикати, змінювати тексти магазину.
+              Читати свої лістинги (і чернетки) Claude може й без цього.{' '}
+              {!etsyAuth?.loggedIn && <span className="warn-text">Спершу увійдіть у свій магазин: «✏️ Мій магазин».</span>}
+            </div>
+          </div>
+        </section>
+
         <section className="settings-section">
           <h3>Що може читати Claude</h3>
           <ul className="mcp-tools">
-            {MCP_TOOL_SUMMARY.map((t) => (
+            {MCP_TOOL_SUMMARY.filter((t) => !t.write).map((t) => (
+              <li key={t.name}>
+                <code>{t.name}</code> — {t.text}
+              </li>
+            ))}
+          </ul>
+          <h3>Що може змінювати (якщо дозволено)</h3>
+          <ul className="mcp-tools" data-testid="mcp-write-tools">
+            {MCP_TOOL_SUMMARY.filter((t) => t.write).map((t) => (
               <li key={t.name}>
                 <code>{t.name}</code> — {t.text}
               </li>

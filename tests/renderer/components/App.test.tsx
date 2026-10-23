@@ -90,3 +90,13 @@ describe('App empty states', () => {
     for (const off of offs) expect(off).toHaveBeenCalled()
   })
 })
+
+describe('App: Etsy sign-in pushes', () => {
+  it('etsyAuth:changed from main updates the store (e.g. a refresh that signed out)', async () => {
+    render(<App />)
+    await screen.findByTestId('no-shops')
+    const push = api.onEtsyAuth.mock.calls[0][0] as (s: unknown) => void
+    act(() => push({ loggedIn: false, redirectUri: 'https://localhost:3003/callback', pending: false, encrypted: false }))
+    expect(useStore.getState().etsyAuth).toMatchObject({ loggedIn: false })
+  })
+})

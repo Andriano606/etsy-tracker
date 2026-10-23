@@ -3,6 +3,8 @@
 // shows. The name and everything a client sees say "store/product", never the
 // marketplace the data comes from.
 
+import { FEATURE_TOOL_SUMMARY } from './features'
+
 /** The server's name in a client's config and in `serverInfo`. */
 export const MCP_SERVER_NAME = 'shop-catalog'
 
@@ -78,7 +80,7 @@ export function claudeDesktopConfig(port: number, token: string): string {
  * themselves are documented in English for the client's model, mcpTools.ts).
  * tests/main/mcpTools.test.ts keeps the names in step with the real tools.
  */
-export const MCP_TOOL_SUMMARY: ReadonlyArray<{ name: string; text: string }> = [
+export const MCP_TOOL_SUMMARY: ReadonlyArray<{ name: string; text: string; write?: boolean }> = [
   { name: 'list_stores', text: 'список магазинів з головними цифрами й останнім скануванням' },
   { name: 'get_store', text: 'профіль магазину: оголошення, політики, відпустка, цифри та їх зміна' },
   { name: 'search_products', text: 'пошук товарів (назва, теги, опис), сортування, фільтри «нові», «зі знижкою», «зниклі»' },
@@ -89,5 +91,17 @@ export const MCP_TOOL_SUMMARY: ReadonlyArray<{ name: string; text: string }> = [
   { name: 'list_reviews', text: 'відгуки покупців з фільтрами за оцінкою, датою, текстом' },
   { name: 'get_store_stats', text: 'статистика магазину за період (те саме, що «📊 Статистика»)' },
   { name: 'get_product_image', text: 'фото товару як картинка' },
-  { name: 'get_review_photo', text: 'фото з відгуку як картинка' }
+  { name: 'get_review_photo', text: 'фото з відгуку як картинка' },
+  { name: 'list_my_products', text: 'мій магазин: лістинги в будь-якому стані (чернетки, неактивні…)' },
+  { name: 'find_categories', text: 'пошук категорії для нового лістингу' },
+  { name: 'get_product_options', text: 'допустимі значення, ліміти, профілі доставки й обробки' },
+  { name: 'create_product', text: 'створити лістинг з фото й файлами (чернетка або публікація)', write: true },
+  { name: 'update_my_product', text: 'змінити назву, опис, теги, матеріали; увімкнути / вимкнути', write: true },
+  { name: 'add_product_media', text: 'додати фото чи файли до лістингу', write: true },
+  { name: 'update_my_store', text: 'змінити тексти магазину', write: true },
+  { name: 'prepare_product', text: 'підготувати чернетку в програмі — ви переглядаєте й надсилаєте самі (працює без дозволу на зміни)' },
+  { name: 'list_prepared_products', text: 'чернетки в програмі, що чекають перевірки' },
+  { name: 'delete_prepared_product', text: 'видалити чернетку в програмі' },
+  { name: 'send_prepared_product', text: 'надіслати чернетку з програми в магазин', write: true },
+  ...FEATURE_TOOL_SUMMARY
 ]

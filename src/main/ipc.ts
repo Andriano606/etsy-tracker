@@ -1,10 +1,25 @@
 // Wires the pure per-concern modules (db, settings, etsyApi, scanner, shops) to
 // IPC channels. All Etsy traffic happens here in main — never in the renderer.
 
-import { clipboard, ipcMain, shell } from 'electron'
+import { BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
+import { readFile, stat } from 'fs/promises'
+import { basename } from 'path'
 import type { WebContents } from 'electron'
 import type {
   BuyerCountryResult,
+  CreateListingResult,
+  ListingDraft,
+  SaveDraftInput,
+  EtsyAuthStatus,
+  PickedFile,
+  ShippingOption,
+  TaxonomyOption,
+  MyListing,
+  MyListingPatch,
+  MyListingsPage,
+  MyShopPatch,
+  MyShopProfile,
+  MyShopResult,
   ImageCounts,
   ImageSyncState,
   KeyStatus,
@@ -43,6 +58,21 @@ import {
   resetStoredImages
 } from './db'
 import { EtsyApiError, type EtsyClient } from './etsyApi'
+import { type EtsyAuth, EtsyAuthError } from './etsyAuth'
+import { type DraftMediaSlot, DraftError, deleteDraft, listDrafts, saveDraft, sendDraft } from './drafts'
+import {
+  type FileRegistry,
+  createFileRegistry,
+  createTaxonomyCache,
+  listMyListings,
+  loadMyShop,
+  loadProcessingOptions,
+  loadShippingOptions,
+  myShopErrorMessage,
+  saveMyListing,
+  saveMyShop
+} from './myShop'
+import { IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, isMyListingState } from '../shared/myShop'
 import { type ImageStore, describeStoreError } from './imageStore'
 import type { ImageSyncer } from './imageSync'
 import type { McpService } from './mcpServer'
@@ -60,7 +90,10 @@ import {
   validateBucketName
 } from './settings'
 import { parseStatsRange, shopStatsPayload } from './shopStats'
-import { addShop } from './shops'
+import { addShop, ensureShopTracked } from './shops'
+import { FEATURES } from './features'
+import type { FeatureCtx } from './features/types'
+import { FeatureError } from './features/common'
 
 export interface IpcContext {
   db: Db
@@ -85,6 +118,30 @@ export interface IpcContext {
   mcpSettings: McpSettingsStore
   /** …and the server itself (started/stopped to match them). */
   mcp: McpService
+  /** Signed in to Etsy (OAuth) — "Мій магазин" edits the user's own shop with it. */
+  etsyAuth: EtsyAuth
+  /** Files picked for a new listing (tests inject one; else made by registerIpc). */
+  files?: FileRegistry
+  /** Reads a picked file (tests inject one; else fs). */
+  readFile?: (path: string) => Promise<Uint8Array<ArrayBuffer>>
+  /** The OAuth access token for features that need the raw value (tokenScopes); tests inject one. */
+  accessToken?: () => Promise<string | null>
+  /** The native "open file" dialog (tests inject one; else Electron's). */
+  showOpenDialog?: (opts: Electron.OpenDialogOptions) => Promise<{ canceled: boolean; filePaths: string[] }>
+}
+
+/**
+ * The signed-in user's shop is tracked like any other (the sidebar marks it
+ * "мій"): add it when it isn't. Never throws; true = it was just added.
+ */
+export async function ensureOwnShopTracked(ctx: Pick<IpcContext, 'db' | 'client' | 'etsyAuth'>): Promise<boolean> {
+  const st = ctx.etsyAuth.status()
+  if (!st.loggedIn || !st.shopId) return false
+  try {
+    return await ensureShopTracked(ctx.db, ctx.client, st.shopId)
+  } catch {
+    return false
+  }
 }
 
 /** Longest text `clipboard:write` copies (the MCP configs are < 1 KB). */
@@ -95,13 +152,18 @@ export interface ImageStatus {
   sync: ImageSyncState
 }
 
-export function sendToRenderer(ctx: IpcContext, channel: string, payload: unknown): void {
+export function sendToRenderer(ctx: Pick<IpcContext, 'getWindow'>, channel: string, payload: unknown): void {
   const wc = ctx.getWindow()
   if (wc && !wc.isDestroyed()) wc.send(channel, payload)
 }
 
 export function notifyShopsChanged(ctx: IpcContext): void {
   sendToRenderer(ctx, 'shops:changed', listShopSummaries(ctx.db))
+}
+
+/** The drafts changed (here, or a draft Claude prepared over MCP): the renderer's list. */
+export function notifyDraftsChanged(ctx: Pick<IpcContext, 'db' | 'getWindow'>): void {
+  sendToRenderer(ctx, 'drafts:changed', listDrafts(ctx.db))
 }
 
 /** Ping Etsy with the given (unsaved) key, or the stored one. */
@@ -340,6 +402,189 @@ export function registerIpc(ctx: IpcContext): void {
     startImageSync(ctx, shopId ?? null, true)
     return ctx.images.state()
   })
+
+  // "Мій магазин": sign in to Etsy (OAuth + PKCE; the user pastes the redirect
+  // URL back), then read/edit the own shop. Every answer is {ok, value|error}.
+  ipcMain.handle('etsyAuth:status', (): EtsyAuthStatus => ctx.etsyAuth.status())
+  ipcMain.handle(
+    'etsyAuth:begin',
+    async (_e, redirectUri?: unknown): Promise<MyShopResult<string>> => {
+      try {
+        const url = ctx.etsyAuth.begin(typeof redirectUri === 'string' && redirectUri.trim() ? redirectUri : undefined)
+        if (isAllowedExternalUrl(url)) await shell.openExternal(url)
+        return { ok: true, value: url }
+      } catch (e) {
+        return { ok: false, error: e instanceof EtsyAuthError ? e.message : myShopErrorMessage(e) }
+      }
+    }
+  )
+  ipcMain.handle(
+    'etsyAuth:complete',
+    async (_e, pasted: unknown): Promise<MyShopResult<EtsyAuthStatus>> => {
+      try {
+        const st = await ctx.etsyAuth.complete(String(pasted ?? ''))
+        if (await ensureOwnShopTracked(ctx)) notifyShopsChanged(ctx)
+        return { ok: true, value: st }
+      } catch (e) {
+        return { ok: false, error: myShopErrorMessage(e) }
+      }
+    }
+  )
+  ipcMain.handle('etsyAuth:logout', (): EtsyAuthStatus => ctx.etsyAuth.logout())
+  const own = { client, auth: ctx.etsyAuth }
+  const result = async <T>(f: () => Promise<T>): Promise<MyShopResult<T>> => {
+    try {
+      return { ok: true, value: await f() }
+    } catch (e) {
+      return { ok: false, error: myShopErrorMessage(e) }
+    }
+  }
+  ipcMain.handle('myShop:profile', (): Promise<MyShopResult<MyShopProfile>> => result(() => loadMyShop(own)))
+  ipcMain.handle(
+    'myShop:saveProfile',
+    (_e, patch: MyShopPatch): Promise<MyShopResult<MyShopProfile>> => result(() => saveMyShop(own, patch ?? {}))
+  )
+  ipcMain.handle(
+    'myShop:listings',
+    (_e, state: unknown, offset?: unknown): Promise<MyShopResult<MyListingsPage>> =>
+      result(() => {
+        if (!isMyListingState(state)) throw new Error('Невідомий стан лістингів.')
+        const off = Number(offset ?? 0)
+        return listMyListings(own, state, Number.isSafeInteger(off) && off > 0 ? off : 0)
+      })
+  )
+  // "Новий лістинг": native file picking (the renderer gets tokens, never paths),
+  // the category tree, shipping/processing profiles, and the creation itself.
+  const files = ctx.files ?? (ctx.files = createFileRegistry())
+  const taxonomy = createTaxonomyCache(client)
+  const openDialog =
+    ctx.showOpenDialog ??
+    ((opts: Electron.OpenDialogOptions) => {
+      const win = BrowserWindow.getFocusedWindow()
+      return win ? dialog.showOpenDialog(win, opts) : dialog.showOpenDialog(opts)
+    })
+  ipcMain.handle('myShop:pickFiles', async (_e, kind: unknown): Promise<PickedFile[]> => {
+    const images = kind === 'images'
+    const videos = kind === 'videos'
+    const res = await openDialog({
+      title: images ? 'Фото для лістингу' : videos ? 'Відео для лістингу' : 'Файли для покупця',
+      properties: videos ? ['openFile'] : ['openFile', 'multiSelections'],
+      filters: images
+        ? [{ name: 'Фото', extensions: IMAGE_EXTENSIONS }]
+        : videos
+          ? [{ name: 'Відео', extensions: VIDEO_EXTENSIONS }]
+          : []
+    })
+    if (res.canceled) return []
+    const out: PickedFile[] = []
+    for (const path of res.filePaths) {
+      try {
+        const st = await stat(path)
+        if (st.isFile()) out.push(files.add(path, basename(path), st.size))
+      } catch {
+        // vanished between the dialog and now — skip it
+      }
+    }
+    return out
+  })
+  ipcMain.handle('myShop:taxonomy', (): Promise<MyShopResult<TaxonomyOption[]>> => result(() => taxonomy()))
+  ipcMain.handle('myShop:shippingProfiles', (): Promise<MyShopResult<ShippingOption[]>> =>
+    result(() => loadShippingOptions(own))
+  )
+  ipcMain.handle('myShop:processingProfiles', (): Promise<MyShopResult<ShippingOption[]>> =>
+    result(() => loadProcessingOptions(own))
+  )
+  // Drafts in the app ("📝 Чернетки"): saved with their media, reviewed, then sent.
+  ipcMain.handle('drafts:list', (): ListingDraft[] => listDrafts(db))
+  ipcMain.handle('drafts:save', async (_e, input: SaveDraftInput): Promise<MyShopResult<ListingDraft>> => {
+    try {
+      if (!input || typeof input !== 'object' || !input.fields) throw new DraftError('Некоректні дані чернетки.')
+      const read = ctx.readFile ?? ((p: string) => readFile(p) as Promise<Uint8Array<ArrayBuffer>>)
+      const slots = async (refs: unknown): Promise<DraftMediaSlot[]> => {
+        const out: DraftMediaSlot[] = []
+        for (const r of Array.isArray(refs) ? refs : []) {
+          if (r && typeof r === 'object' && 'mediaId' in r) out.push({ mediaId: Number((r as { mediaId: unknown }).mediaId) })
+          else {
+            const f = files.get(String((r as { token?: unknown })?.token ?? ''))
+            if (!f) throw new DraftError('Вибраний файл більше недоступний — виберіть його ще раз.')
+            out.push({ name: f.name, data: await read(f.path) })
+          }
+        }
+        return out
+      }
+      const id = input.id != null ? positiveId(input.id) : undefined
+      if (input.id != null && id == null) throw new DraftError('Некоректний id чернетки.')
+      const draft = saveDraft(
+        db,
+        { id: id ?? undefined, source: 'app', fields: input.fields, photos: await slots(input.photos), files: await slots(input.files) },
+        Date.now()
+      )
+      notifyDraftsChanged(ctx)
+      return { ok: true, value: draft }
+    } catch (e) {
+      return { ok: false, error: e instanceof DraftError ? e.message : myShopErrorMessage(e) }
+    }
+  })
+  ipcMain.handle('drafts:delete', (_e, id: unknown): boolean => {
+    const n = positiveId(id)
+    const ok = n != null && deleteDraft(db, n)
+    if (ok) notifyDraftsChanged(ctx)
+    return ok
+  })
+  ipcMain.handle('drafts:send', async (_e, id: unknown, publish: unknown): Promise<CreateListingResult> => {
+    const n = positiveId(id)
+    if (n == null) return { ok: false, error: 'Некоректний id чернетки.' }
+    try {
+      return await sendDraft(
+        { ...own, db, onProgress: (p) => sendToRenderer(ctx, 'myShop:createProgress', p) },
+        n,
+        publish === true
+      )
+    } catch (e) {
+      return { ok: false, error: myShopErrorMessage(e) }
+    } finally {
+      notifyDraftsChanged(ctx)
+    }
+  })
+  // Every feature's actions through one channel: feature:call(featureId, action, args)
+  // → {ok, value} | {ok: false, error} (features/*.ts; progress via feature:event).
+  const featureCtx: FeatureCtx = {
+    db,
+    client,
+    authStatus: () => ctx.etsyAuth.status(),
+    files,
+    readFile: ctx.readFile ?? ((p: string) => readFile(p) as Promise<Uint8Array<ArrayBuffer>>),
+    emit: () => undefined, // replaced per call with the calling feature's id
+    taxonomy,
+    accessToken: ctx.accessToken ?? (() => ctx.etsyAuth.getAccessToken()),
+    now: Date.now
+  }
+  ipcMain.handle(
+    'feature:call',
+    async (_e, featureId: unknown, action: unknown, args: unknown): Promise<MyShopResult<unknown>> => {
+      const feature = FEATURES.find((f) => f.id === featureId)
+      const run = feature && typeof action === 'string' && Object.hasOwn(feature.actions, action) ? feature.actions[action] : null
+      if (!feature || !run) return { ok: false, error: `Невідома дія: ${String(featureId)}.${String(action)}` }
+      try {
+        const a = args && typeof args === 'object' && !Array.isArray(args) ? (args as Record<string, unknown>) : {}
+        const emit: FeatureCtx['emit'] = (type, payload) =>
+          sendToRenderer(ctx, 'feature:event', { feature: feature.id, type, payload })
+        return { ok: true, value: await run(a, { ...featureCtx, emit }) }
+      } catch (e) {
+        return { ok: false, error: e instanceof FeatureError || e instanceof DraftError ? e.message : myShopErrorMessage(e) }
+      }
+    }
+  )
+
+  ipcMain.handle(
+    'myShop:saveListing',
+    (_e, listingId: unknown, patch: MyListingPatch): Promise<MyShopResult<MyListing>> =>
+      result(() => {
+        const id = positiveId(listingId)
+        if (id == null) throw new Error('Некоректний id лістингу.')
+        return saveMyListing(own, id, patch ?? {})
+      })
+  )
 
   // The MCP modal. Saving applies at once: the server starts, stops or moves
   // to the new port; a port in use comes back as `status.error`.

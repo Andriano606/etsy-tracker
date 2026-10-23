@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { addShop } from '../../src/main/shops'
-import { listShopSummaries } from '../../src/main/db'
+import { addShop, ensureShopTracked } from '../../src/main/shops'
+import { getShop, listShopSummaries } from '../../src/main/db'
 import { FakeEtsy, SHOP_ID } from '../helpers/fakeEtsy'
 import { memDb } from '../helpers/db'
 import findShopsFx from '../fixtures/findShops.json'
@@ -60,5 +60,16 @@ describe('addShop', () => {
     const etsy = new FakeEtsy(0, { intercept: () => ({ status: 403, body: { error: 'nope' } }) })
     const res = await addShop(memDb(), etsy.client(), 'CeramicStudioUA')
     expect(res).toMatchObject({ ok: false, error: expect.stringMatching(/API-ключ/) })
+  })
+})
+
+describe('ensureShopTracked (the signed-in user’s own shop)', () => {
+  it('adds it by id once; no-op when tracked', async () => {
+    const db = memDb()
+    const etsy = new FakeEtsy(0)
+    expect(await ensureShopTracked(db, etsy.client(), SHOP_ID, 5)).toBe(true)
+    expect(getShop(db, SHOP_ID)).toMatchObject({ shopName: 'CeramicStudioUA', addedAt: 5 })
+    expect(await ensureShopTracked(db, etsy.client(), SHOP_ID)).toBe(false)
+    expect(etsy.requests.filter((u) => u.pathname === `/v3/application/shops/${SHOP_ID}`)).toHaveLength(1)
   })
 })

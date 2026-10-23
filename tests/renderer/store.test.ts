@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { waitFor } from '@testing-library/react'
 import { useStore } from '../../src/renderer/src/store'
 import type { ScanOutcome } from '../../src/shared/types'
-import { idleReviews, idleSync, mcpOff, mcpOn, minioDefault, mkChange, mkListing, mkPromotion, mkReview, mkScan, mkShop, setupRenderer, type Api } from './helpers'
+import { etsyIn, etsyOut, idleReviews, idleSync, mcpOff, mcpOn, minioDefault, mkChange, mkListing, mkPromotion, mkReview, mkScan, mkShop, setupRenderer, type Api } from './helpers'
 
 let api: Api
 beforeEach(() => {
@@ -91,6 +91,18 @@ describe('store: images and MinIO', () => {
     api.getMcpStatus.mockRejectedValue(new Error('boom'))
     await useStore.getState().load()
     expect(useStore.getState()).toMatchObject({ mcpStatus: null, loaded: true })
+  })
+
+  it('load() also reads the Etsy sign-in (for "Мій магазин"); a failing read leaves it unknown', async () => {
+    api.getEtsyAuth.mockResolvedValue(etsyIn())
+    await useStore.getState().load()
+    expect(useStore.getState().etsyAuth).toEqual(etsyIn())
+    api.getEtsyAuth.mockRejectedValue(new Error('boom'))
+    await useStore.getState().load()
+    expect(useStore.getState()).toMatchObject({ etsyAuth: null, loaded: true })
+    useStore.getState().setShowMyShop(true)
+    useStore.getState().setEtsyAuth(etsyOut)
+    expect(useStore.getState()).toMatchObject({ showMyShop: true, etsyAuth: etsyOut })
   })
 
   it('setShowMcp / setMcpStatus', () => {

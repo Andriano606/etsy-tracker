@@ -5,7 +5,7 @@
 //
 // Guards, in order: path `/mcp` (404), Host = 127.0.0.1/localhost:{port} and no
 // foreign Origin (403 — DNS rebinding / a web page in the user's browser),
-// bearer token (401), POST only (405), JSON content type (415), body ≤ 1 MB (413).
+// bearer token (401), POST only (405), JSON content type (415), body ≤ 32 MB (413).
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
 import { timingSafeEqual } from 'crypto'
@@ -14,7 +14,8 @@ import type { McpStatus } from '../shared/types'
 import { RPC, rpcError } from './mcpProtocol'
 import type { McpConfig } from './settings'
 
-export const MCP_MAX_BODY = 1024 * 1024
+/** Large enough for a base64 photo or file sent to create_product / add_product_media. */
+export const MCP_MAX_BODY = 32 * 1024 * 1024
 
 export interface McpHttpOptions {
   /** The token clients must send; null refuses everyone. Read per request (regenerating needs no restart). */
@@ -202,6 +203,7 @@ export function createMcpService(deps: McpServiceDeps): McpService {
     const cfg = deps.getConfig()
     return {
       enabled: cfg.enabled,
+      allowWrites: cfg.allowWrites,
       port: cfg.port,
       url: mcpUrl(cfg.port),
       token: cfg.token,

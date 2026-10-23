@@ -1,0 +1,46 @@
+/* Feature "shopConfig" (Мій магазин → Розділи / Доставка / Обробка / Повернення / Свята / Партнери). */
+
+.sc-form {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.sc-form h4,
+[data-testid='sc-destinations'] h4,
+[data-testid='sc-upgrades'] h4,
+[data-testid='sc-policy-listings'] h4 {
+  font-size: 13px;
+  margin: 14px 0 8px;
+  color: var(--text);
+}
+.sc-form h4:first-child {
+  margin-top: 0;
+}
+.sc-form .radio-row {
+  margin-bottom: 10px;
+}
+.sc-form label.check {
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+td.sc-actions {
+  white-space: nowrap;
+  text-align: right;
+}
+td.sc-actions .btn.small:first-child {
+  margin-left: 0;
+}
+.data-table td input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  color: var(--text);
+  font-size: 12.5px;
+  width: 100%;
+}
+.sc-add {
+  margin-top: 12px;
+}

@@ -40,10 +40,14 @@ interface SettingsFile {
   /** ISO 3166-1 alpha-2 buyer country for Etsy's buyer-facing prices (not a secret). */
   buyerCountry?: string
   mcp?: StoredMcp
+  /** Signed in to Etsy (OAuth): the tokens as sealed JSON; the redirect URI in plain text. */
+  etsyAuth?: { tokens?: StoredKey; redirectUri?: string }
 }
 
 interface StoredMcp {
   enabled?: boolean
+  /** Let MCP clients change the signed-in user's own store (create/edit listings, store texts). */
+  allowWrites?: boolean
   port?: number
   /** The bearer token MCP clients send, sealed like the API key. */
   token?: StoredKey
@@ -322,6 +326,8 @@ export function createBuyerCountryStore(filePath: string): BuyerCountryStore {
 /** What main needs to run the MCP server. The token is shown in the MCP modal (clients need it). */
 export interface McpConfig {
   enabled: boolean
+  /** Write tools may change the user's own store (off by default). */
+  allowWrites: boolean
   port: number
   /** null = never generated, or the stored one can't be decrypted. */
   token: string | null
@@ -356,6 +362,7 @@ export function createMcpSettingsStore(filePath: string, safe: SafeStorageLike):
     const token = unseal(safe, m.token)
     return {
       enabled: m.enabled ?? false,
+      allowWrites: m.allowWrites ?? false,
       port,
       token,
       tokenEncrypted: !!token && !!m.token?.encrypted && realEncryption(safe)
@@ -376,6 +383,7 @@ export function createMcpSettingsStore(filePath: string, safe: SafeStorageLike):
       const m: StoredMcp = { ...(data.mcp ?? {}) }
       if (input.port !== undefined) m.port = validateMcpPort(input.port)
       if (input.enabled !== undefined) m.enabled = !!input.enabled
+      if (input.allowWrites !== undefined) m.allowWrites = !!input.allowWrites
       data.mcp = m
       writeSettings(filePath, data)
       return get()
@@ -385,6 +393,95 @@ export function createMcpSettingsStore(filePath: string, safe: SafeStorageLike):
     },
     regenerateToken() {
       return saveToken(newMcpToken())
+    }
+  }
+}
+
+// ------------------------------------------------------------ Etsy sign-in
+
+/** What etsyAuth.ts keeps after signing in (sealed as one JSON string). Main only. */
+export interface StoredEtsyAuth {
+  /** The keystring the tokens were issued to (OAuth client_id). */
+  clientId: string
+  accessToken: string
+  refreshToken: string
+  /** Epoch ms. */
+  expiresAt: number
+  /** When the current refresh token was issued (it lives 90 days). */
+  refreshObtainedAt: number
+  signedInAt: number
+  scopes: string[]
+  userId: number
+  shopId: number | null
+  shopName: string | null
+}
+
+export interface EtsyAuthStore {
+  /** The stored sign-in, or null (none, corrupt, or not decryptable). */
+  get(): StoredEtsyAuth | null
+  set(a: StoredEtsyAuth): void
+  clear(): void
+  /** Tokens are stored but can't be decrypted. */
+  unreadable(): boolean
+  /** The stored tokens are protected by a real OS keyring. */
+  encrypted(): boolean
+  getRedirectUri(): string | null
+  setRedirectUri(uri: string): void
+}
+
+function isStoredAuth(v: unknown): v is StoredEtsyAuth {
+  const a = v as StoredEtsyAuth
+  return (
+    !!a &&
+    typeof a.clientId === 'string' &&
+    typeof a.accessToken === 'string' &&
+    typeof a.refreshToken === 'string' &&
+    typeof a.expiresAt === 'number' &&
+    typeof a.userId === 'number' &&
+    Array.isArray(a.scopes)
+  )
+}
+
+export function createEtsyAuthStore(filePath: string, safe: SafeStorageLike): EtsyAuthStore {
+  const read = (): SettingsFile => readSettings(filePath)
+  function get(): StoredEtsyAuth | null {
+    const plain = unseal(safe, read().etsyAuth?.tokens)
+    if (!plain) return null
+    try {
+      const v = JSON.parse(plain) as unknown
+      return isStoredAuth(v) ? v : null
+    } catch {
+      return null
+    }
+  }
+  return {
+    get,
+    set(a) {
+      const data = read()
+      data.etsyAuth = { ...(data.etsyAuth ?? {}), tokens: seal(safe, JSON.stringify(a)) }
+      writeSettings(filePath, data)
+    },
+    clear() {
+      const data = read()
+      if (data.etsyAuth) delete data.etsyAuth.tokens
+      writeSettings(filePath, data)
+    },
+    unreadable() {
+      const t = read().etsyAuth?.tokens
+      return !!t?.data && get() == null
+    },
+    encrypted() {
+      const t = read().etsyAuth?.tokens
+      return !!t?.data && t.encrypted && realEncryption(safe)
+    },
+    getRedirectUri() {
+      const u = read().etsyAuth?.redirectUri
+      return typeof u === 'string' && u ? u : null
+    },
+    setRedirectUri(uri) {
+      const data = read()
+      data.etsyAuth = { ...(data.etsyAuth ?? {}), redirectUri: uri }
+      writeSettings(filePath, data)
     }
   }
 }

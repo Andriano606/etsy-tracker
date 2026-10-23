@@ -133,6 +133,18 @@ describe('tools', () => {
   })
 })
 
+describe('write tools', () => {
+  it('a tool marked readOnly: false is annotated as changing things (destructive when said so)', async () => {
+    const w: McpTool = { ...add, name: 'publish', readOnly: false, destructive: true }
+    const u: McpTool = { ...add, name: 'upload', readOnly: false }
+    const res = await handleMcpMessage(opts({ tools: [add, w, u] }), call('tools/list'))
+    const ann = (res!.result as { tools: Array<{ annotations: Record<string, boolean> }> }).tools.map((t) => t.annotations)
+    expect(ann[0]).toMatchObject({ readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false })
+    expect(ann[1]).toMatchObject({ readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true })
+    expect(ann[2]).toMatchObject({ readOnlyHint: false, destructiveHint: false })
+  })
+})
+
 describe('checkArgs', () => {
   it('null/undefined arguments are an empty object; null values are "not given"', () => {
     expect(checkArgs({ type: 'object', properties: {} }, undefined)).toEqual({})

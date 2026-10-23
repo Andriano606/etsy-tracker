@@ -1,7 +1,8 @@
 import { useMemo } from 'react'
 import type { ImageCounts, ImageSyncState, ReviewSyncState, ShopSummary } from '@shared/types'
 import { formatAgo, formatCount, formatDateTime, formatDelta, formatRating, isStale } from '@shared/format'
-import { useStore, type SortMode } from '../store'
+import { ownShopId, useStore, type SortMode } from '../store'
+import { SHOP_PANELS } from '../features/registry'
 import { filterListings } from '@shared/listingFilter'
 import { ExternalLink } from './ExternalLink'
 import { ListingCard } from './ListingCard'
@@ -188,7 +189,12 @@ export function ShopView(): JSX.Element | null {
     scanPromotions,
     discountOnly,
     setDiscountOnly,
-    buyerCountry
+    buyerCountry,
+    etsyAuth,
+    setShowMyShop,
+    openDrafts,
+    drafts,
+    openShopPanels
   } = useStore()
   const shop = shops.find((s) => s.id === activeShopId)
 
@@ -206,6 +212,8 @@ export function ShopView(): JSX.Element | null {
   const p = progress[shop.id]
   const lastOk = shop.lastOkScan
   const failed = shop.lastScan?.status === 'error' ? shop.lastScan : null
+  const mine = shop.id === ownShopId({ etsyAuth })
+  const pendingDrafts = drafts.filter((d) => d.status !== 'sent').length
 
   return (
     <div className="shop-view">
@@ -214,6 +222,11 @@ export function ShopView(): JSX.Element | null {
         <div className="shop-header-text">
           <h1>
             {shop.shopName}{' '}
+            {mine && (
+              <span className="mine-badge" title="Ваш магазин (ви увійшли в Etsy)">
+                мій
+              </span>
+            )}{' '}
             <ExternalLink href={shop.url} className="ext-link small">
               на Etsy ↗
             </ExternalLink>
@@ -234,6 +247,29 @@ export function ShopView(): JSX.Element | null {
           />
         </div>
         <div className="shop-actions">
+          {mine && (
+            <>
+              <button className="btn" onClick={() => openDrafts({ draftId: null })} title="Підготувати новий лістинг (чернетка в програмі)">
+                ＋ Новий лістинг
+              </button>
+              <button
+                className="btn"
+                onClick={() => openDrafts('list')}
+                title="Лістинги, підготовлені в програмі (вами чи Claude) — перевірте й надішліть на Etsy"
+              >
+                📝 Чернетки
+                {pendingDrafts > 0 && <span className="count-badge">{pendingDrafts}</span>}
+              </button>
+              <button className="btn" onClick={() => setShowMyShop(true)} title="Редагувати лістинги й тексти магазину на Etsy">
+                ✏️ Керувати
+              </button>
+            </>
+          )}
+          {SHOP_PANELS.length > 0 && (
+            <button className="btn" onClick={() => openShopPanels(shop.id)} title="Живі дані з Etsy: розділи, рекомендовані, політики…">
+              ℹ️ Більше
+            </button>
+          )}
           <button className="btn" onClick={() => openStats(shop.id)} title="Графіки між скануваннями">
             📊 Статистика
           </button>

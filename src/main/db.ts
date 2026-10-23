@@ -462,6 +462,33 @@ export const MIGRATIONS: string[] = [
   CREATE INDEX promotions_listing ON promotions(listing_id, first_seen_at);
   CREATE INDEX promotions_started ON promotions(started_scan_id);
   CREATE INDEX promotions_ended ON promotions(ended_scan_id);
+  `,
+  // v5: listing drafts kept in the app ("📝 Чернетки", or prepared by Claude over
+  // MCP) — reviewed and edited here before they are sent to Etsy. Photos and
+  // files are copied in as BLOBs so a draft survives moving the originals.
+  `
+  CREATE TABLE listing_drafts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL CHECK (source IN ('app', 'mcp')),
+    fields_json TEXT NOT NULL,             -- DraftFields
+    created_at INTEGER NOT NULL,           -- ms
+    updated_at INTEGER NOT NULL,           -- ms
+    sent_at INTEGER,                       -- ms; set once a send created the listing on Etsy
+    sent_listing_id INTEGER,               -- the Etsy listing a send created (also after a partial failure)
+    sent_published INTEGER,                -- 0/1
+    last_error TEXT                        -- the last send's error (NULL = none)
+  );
+  CREATE TABLE listing_draft_media (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,  -- etsyimg://draft/{id} shows a photo
+    draft_id INTEGER NOT NULL REFERENCES listing_drafts(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('photo', 'file')),
+    position INTEGER NOT NULL,             -- 1-based within its kind; photo 1 = the main photo
+    name TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    data BLOB NOT NULL
+  );
+  CREATE INDEX listing_draft_media_draft ON listing_draft_media(draft_id, kind, position);
   `
 ]
 

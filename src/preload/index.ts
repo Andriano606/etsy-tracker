@@ -2,6 +2,21 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type {
   AddShopResult,
   BuyerCountryResult,
+  CreateListingProgress,
+  CreateListingResult,
+  ListingDraft,
+  PickedFile,
+  SaveDraftInput,
+  ShippingOption,
+  TaxonomyOption,
+  EtsyAuthStatus,
+  MyListing,
+  MyListingPatch,
+  MyListingState,
+  MyListingsPage,
+  MyShopPatch,
+  MyShopProfile,
+  MyShopResult,
   ImageCounts,
   ImageSyncState,
   KeyStatus,
@@ -111,6 +126,47 @@ const api = {
     ipcRenderer.invoke('images:sync', shopId),
   onImageSync: (cb: (s: ImageSyncState) => void): (() => void) => subscribe('images:progress', cb),
   onQuota: (cb: (q: Quota) => void): (() => void) => subscribe('quota:changed', cb),
+
+  /** "Мій магазин": sign in to Etsy (OAuth) to edit the user's own shop. */
+  getEtsyAuth: (): Promise<EtsyAuthStatus> => ipcRenderer.invoke('etsyAuth:status'),
+  /** Opens Etsy's consent page in the browser; returns its URL. */
+  beginEtsyLogin: (redirectUri?: string): Promise<MyShopResult<string>> =>
+    ipcRenderer.invoke('etsyAuth:begin', redirectUri),
+  /** Finish with the redirect URL the user copied from the browser. */
+  completeEtsyLogin: (pasted: string): Promise<MyShopResult<EtsyAuthStatus>> =>
+    ipcRenderer.invoke('etsyAuth:complete', pasted),
+  logoutEtsy: (): Promise<EtsyAuthStatus> => ipcRenderer.invoke('etsyAuth:logout'),
+  onEtsyAuth: (cb: (s: EtsyAuthStatus) => void): (() => void) => subscribe('etsyAuth:changed', cb),
+  getMyShop: (): Promise<MyShopResult<MyShopProfile>> => ipcRenderer.invoke('myShop:profile'),
+  saveMyShop: (patch: MyShopPatch): Promise<MyShopResult<MyShopProfile>> =>
+    ipcRenderer.invoke('myShop:saveProfile', patch),
+  getMyListings: (state: MyListingState, offset = 0): Promise<MyShopResult<MyListingsPage>> =>
+    ipcRenderer.invoke('myShop:listings', state, offset),
+  saveMyListing: (listingId: number, patch: MyListingPatch): Promise<MyShopResult<MyListing>> =>
+    ipcRenderer.invoke('myShop:saveListing', listingId, patch),
+  /** Native file dialog; main keeps the paths, the renderer gets tokens. */
+  pickListingFiles: (kind: 'images' | 'files' | 'videos'): Promise<PickedFile[]> =>
+    ipcRenderer.invoke('myShop:pickFiles', kind),
+  getTaxonomy: (): Promise<MyShopResult<TaxonomyOption[]>> => ipcRenderer.invoke('myShop:taxonomy'),
+  getShippingProfiles: (): Promise<MyShopResult<ShippingOption[]>> => ipcRenderer.invoke('myShop:shippingProfiles'),
+  getProcessingProfiles: (): Promise<MyShopResult<ShippingOption[]>> =>
+    ipcRenderer.invoke('myShop:processingProfiles'),
+  /** Drafts kept in the app (yours and the ones Claude prepared), newest first. */
+  listDrafts: (): Promise<ListingDraft[]> => ipcRenderer.invoke('drafts:list'),
+  /** Create (no id) or update a draft with its media (stored ids + picked tokens, in order). */
+  saveDraft: (input: SaveDraftInput): Promise<MyShopResult<ListingDraft>> => ipcRenderer.invoke('drafts:save', input),
+  deleteDraft: (id: number): Promise<boolean> => ipcRenderer.invoke('drafts:delete', id),
+  /** Send to Etsy: as an Etsy draft, or published ($0.20). */
+  sendDraft: (id: number, publish: boolean): Promise<CreateListingResult> => ipcRenderer.invoke('drafts:send', id, publish),
+  onDraftsChanged: (cb: (d: ListingDraft[]) => void): (() => void) => subscribe('drafts:changed', cb),
+  /** Every feature's actions (main/features): {ok, value} | {ok: false, error}. */
+  featureCall: (feature: string, action: string, args?: Record<string, unknown>): Promise<MyShopResult<unknown>> =>
+    ipcRenderer.invoke('feature:call', feature, action, args ?? {}),
+  /** Progress/events a feature pushes ({feature, type, payload}). */
+  onFeatureEvent: (cb: (e: { feature: string; type: string; payload: unknown }) => void): (() => void) =>
+    subscribe('feature:event', cb),
+  onCreateListingProgress: (cb: (p: CreateListingProgress) => void): (() => void) =>
+    subscribe('myShop:createProgress', cb),
 
   /** The MCP modal: the local MCP server's settings and state (incl. the token clients need). */
   getMcpStatus: (): Promise<McpStatus> => ipcRenderer.invoke('mcp:status'),

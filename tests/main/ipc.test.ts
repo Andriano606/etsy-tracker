@@ -14,6 +14,7 @@ vi.mock('electron', () => ({
 }))
 
 import {
+  ensureOwnShopTracked,
   mergeMinioConfig,
   onReviewSyncDone,
   registerIpc,
@@ -33,16 +34,19 @@ import {
   MINIO_DEFAULTS
 } from '../../src/main/settings'
 import { createMcpService } from '../../src/main/mcpServer'
+import { createEtsyAuth } from '../../src/main/etsyAuth'
+import { createEtsyAuthStore } from '../../src/main/settings'
 import { CLIPBOARD_MAX } from '../../src/main/ipc'
 import { getListing, getShopSummary, imageCounts, listScans, reviewImageCounts } from '../../src/main/db'
 import { FakeImageStore, fakeCdn } from '../helpers/fakeImageStore'
 import { FakeEtsy, SHOP_ID, mkEtsyReview } from '../helpers/fakeEtsy'
 import { memDb, seedShop } from '../helpers/db'
 import { fakeSafeStorage } from '../helpers/safeStorage'
-import { mkdtempSync } from 'fs'
+import { mkdtempSync, writeFileSync } from 'fs'
 import { createServer } from 'http'
 import type { AddressInfo } from 'net'
-import type { McpStatus } from '../../src/shared/types'
+import type { ListingDraft, McpStatus } from '../../src/shared/types'
+import { EMPTY_DRAFT_FIELDS } from '../../src/shared/myShop'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -61,6 +65,11 @@ function ctx(etsy = new FakeEtsy(2)) {
     getConfig: () => mcpSettings.get(),
     ensureToken: () => mcpSettings.ensureToken(),
     handle: async () => null
+  })
+  const etsyAuth = createEtsyAuth({
+    store: createEtsyAuthStore(file, fakeSafeStorage()),
+    getClientId: () => keyStore.getKey()?.split(':')[0] ?? null,
+    whoAmI: async () => ({ userId: 1, shopId: SHOP_ID, shopName: 'CeramicStudioUA' })
   })
   const images = createImageSyncer({
     db,
@@ -94,7 +103,8 @@ function ctx(etsy = new FakeEtsy(2)) {
     reviews,
     buyerCountry,
     mcpSettings,
-    mcp
+    mcp,
+    etsyAuth
   }
   ref = c
   return { c, etsy, sent, store, cdn, makeStore, onMinioChanged }
@@ -556,6 +566,14 @@ describe('MCP server and clipboard', () => {
     }
   })
 
+  it('mcp:set allowWrites: saved and reported, without touching the server', async () => {
+    const { c } = ctx()
+    registerIpc(c)
+    const r = (await call('mcp:set', { allowWrites: true })) as { ok: true; status: McpStatus }
+    expect(r.status).toMatchObject({ allowWrites: true, enabled: false, running: false })
+    expect(c.mcpSettings.get().allowWrites).toBe(true)
+  })
+
   it('mcp:set refuses a bad port with the Ukrainian message and changes nothing', async () => {
     const { c } = ctx()
     registerIpc(c)
@@ -584,5 +602,182 @@ describe('MCP server and clipboard', () => {
       expect(await call('clipboard:write', bad)).toBe(false)
     }
     expect(writeText).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('Мій магазин: Etsy sign-in and own-shop channels', () => {
+  it('etsyAuth:begin needs the API key; with it, opens Etsy’s consent page in the browser', async () => {
+    const { c } = ctx()
+    registerIpc(c)
+    const none = (await call('etsyAuth:begin')) as { ok: boolean; error?: string }
+    expect(none).toEqual({ ok: false, error: expect.stringContaining('Спершу збережіть API-ключ') })
+    c.keyStore.setKey('keystring1', 'secret1')
+    const res = (await call('etsyAuth:begin', 'https://localhost:3003/callback')) as { ok: true; value: string }
+    expect(res.ok).toBe(true)
+    const url = new URL(res.value)
+    expect(url.origin + url.pathname).toBe('https://www.etsy.com/oauth/connect')
+    expect(url.searchParams.get('client_id')).toBe('keystring1')
+    expect(openExternal).toHaveBeenCalledWith(res.value)
+    expect(await call('etsyAuth:status')).toMatchObject({ loggedIn: false, pending: true })
+  })
+
+  it('etsyAuth:begin refuses a non-https redirect URI', async () => {
+    const { c } = ctx()
+    registerIpc(c)
+    c.keyStore.setKey('keystring1', 'secret1')
+    expect(await call('etsyAuth:begin', 'http://localhost:3003/callback')).toEqual({
+      ok: false,
+      error: 'Etsy приймає лише адреси повернення на https://.'
+    })
+    expect(openExternal).not.toHaveBeenCalled()
+  })
+
+  it('etsyAuth:complete reports a bad paste as an error, never throws', async () => {
+    const { c } = ctx()
+    registerIpc(c)
+    expect(await call('etsyAuth:complete', 'nonsense')).toEqual({ ok: false, error: expect.stringContaining('code=') })
+    expect(await call('etsyAuth:complete', undefined)).toEqual({ ok: false, error: expect.stringContaining('Вставте адресу') })
+  })
+
+  it('myShop:* while signed out say "sign in"; bad arguments are refused', async () => {
+    const { c } = ctx()
+    registerIpc(c)
+    const msg = expect.stringContaining('Увійдіть в Etsy')
+    expect(await call('myShop:profile')).toEqual({ ok: false, error: msg })
+    expect(await call('myShop:saveProfile', { title: 'x' })).toEqual({ ok: false, error: msg })
+    expect(await call('myShop:listings', 'active', 0)).toEqual({ ok: false, error: msg })
+    expect(await call('myShop:saveListing', 5, { title: 'x' })).toEqual({ ok: false, error: msg })
+    expect(await call('myShop:listings', 'removed')).toEqual({ ok: false, error: 'Невідомий стан лістингів.' })
+    expect(await call('myShop:saveListing', -1, { title: 'x' })).toEqual({ ok: false, error: 'Некоректний id лістингу.' })
+    expect(await call('etsyAuth:logout')).toMatchObject({ loggedIn: false })
+  })
+})
+
+describe('own shop in the list + new listings over IPC', () => {
+  function signedInAuth(c: IpcContext, shopId = SHOP_ID) {
+    c.keyStore.setKey('keystring1', 'secret1')
+    // A fake Etsy token endpoint; whoAmI says the user owns `shopId`.
+    const tokenFetch = (async () =>
+      new Response(
+        JSON.stringify({ access_token: '1.a', refresh_token: '1.r', expires_in: 3600, token_type: 'Bearer' }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      )) as unknown as typeof fetch
+    c.etsyAuth = createEtsyAuth({
+      store: createEtsyAuthStore(join(mkdtempSync(join(tmpdir(), 'etsy-own-')), 's.json'), fakeSafeStorage()),
+      getClientId: () => 'keystring1',
+      whoAmI: async () => ({ userId: 1, shopId, shopName: 'CeramicStudioUA' }),
+      fetch: tokenFetch
+    })
+  }
+
+  it('signing in adds the own shop to the tracked list (once) and tells the renderer', async () => {
+    const { c, sent } = ctx()
+    signedInAuth(c)
+    registerIpc(c)
+    const url = new URL(c.etsyAuth.begin())
+    const res = (await call('etsyAuth:complete', `code=C&state=${url.searchParams.get('state')}`)) as { ok: boolean }
+    expect(res.ok).toBe(true)
+    expect(getShopSummary(c.db, SHOP_ID)?.shopName).toBe('CeramicStudioUA')
+    expect(sent.some(([ch]) => ch === 'shops:changed')).toBe(true)
+    expect(await ensureOwnShopTracked(c)).toBe(false) // already there
+  })
+
+  it('ensureOwnShopTracked: nothing while signed out; an Etsy failure is swallowed', async () => {
+    const { c, etsy } = ctx()
+    expect(await ensureOwnShopTracked(c)).toBe(false)
+    signedInAuth(c)
+    const url = new URL(c.etsyAuth.begin())
+    await c.etsyAuth.complete(`code=C&state=${url.searchParams.get('state')}`)
+    etsy.intercept = () => ({ status: 500 })
+    expect(await ensureOwnShopTracked(c)).toBe(false)
+    expect(getShopSummary(c.db, SHOP_ID)).toBeNull()
+    etsy.intercept = undefined
+    expect(await ensureOwnShopTracked(c)).toBe(true)
+  })
+
+  it('myShop:pickFiles returns tokens (never paths) for real files; cancel gives none', async () => {
+    const { c } = ctx()
+    const dir = mkdtempSync(join(tmpdir(), 'etsy-pick-'))
+    const a = join(dir, 'photo.jpg')
+    writeFileSync(a, 'jpegbytes')
+    let answer = { canceled: false, filePaths: [a, join(dir, 'gone.jpg'), dir] }
+    const dialogs: unknown[] = []
+    c.showOpenDialog = async (o) => {
+      dialogs.push(o)
+      return answer
+    }
+    registerIpc(c)
+    const picked = (await call('myShop:pickFiles', 'images')) as Array<{ token: string; name: string; size: number }>
+    expect(picked).toEqual([{ token: expect.any(String), name: 'photo.jpg', size: 9 }])
+    expect(JSON.stringify(picked)).not.toContain(dir)
+    expect(dialogs[0]).toMatchObject({ filters: [{ name: 'Фото', extensions: ['jpg', 'jpeg', 'png', 'gif'] }] })
+    answer = { canceled: true, filePaths: [] }
+    expect(await call('myShop:pickFiles', 'files')).toEqual([])
+  })
+
+  it('myShop:shippingProfiles / processingProfiles while signed out', async () => {
+    const { c } = ctx()
+    registerIpc(c)
+    expect(await call('myShop:shippingProfiles')).toEqual({ ok: false, error: expect.stringContaining('Увійдіть') })
+    expect(await call('myShop:processingProfiles')).toEqual({ ok: false, error: expect.stringContaining('Увійдіть') })
+  })
+})
+
+describe('drafts over IPC', () => {
+  it('drafts:save stores picked files (by token) and pushes drafts:changed; list, update, delete', async () => {
+    const { c, sent } = ctx()
+    const dir = mkdtempSync(join(tmpdir(), 'etsy-draft-'))
+    const a = join(dir, 'cover.jpg')
+    writeFileSync(a, 'JPEG')
+    c.showOpenDialog = async () => ({ canceled: false, filePaths: [a] })
+    registerIpc(c)
+    const [picked] = (await call('myShop:pickFiles', 'images')) as Array<{ token: string }>
+    const fields = { ...EMPTY_DRAFT_FIELDS, title: 'Planner' }
+    const r = (await call('drafts:save', { fields, photos: [{ token: picked.token }], files: [] })) as {
+      ok: true
+      value: ListingDraft
+    }
+    expect(r.ok).toBe(true)
+    expect(r.value).toMatchObject({ source: 'app', status: 'draft', fields: { title: 'Planner' } })
+    expect(r.value.photos.map((p) => [p.name, p.size])).toEqual([['cover.jpg', 4]])
+    const pushed = sent.filter(([ch]) => ch === 'drafts:changed')
+    expect((pushed.at(-1)![1] as ListingDraft[]).map((d) => d.id)).toEqual([r.value.id])
+    const u = (await call('drafts:save', { id: r.value.id, fields: { ...fields, title: 'Planner 2' }, photos: [], files: [] })) as {
+      ok: true
+      value: ListingDraft
+    }
+    expect(u.value).toMatchObject({ id: r.value.id, photos: [], fields: { title: 'Planner 2' } })
+    expect(((await call('drafts:list')) as ListingDraft[]).length).toBe(1)
+    expect(await call('drafts:delete', r.value.id)).toBe(true)
+    expect(await call('drafts:delete', r.value.id)).toBe(false)
+    expect(await call('drafts:list')).toEqual([])
+  })
+
+  it('drafts:save refuses an unknown token, garbage and a bad id; never throws', async () => {
+    const { c } = ctx()
+    registerIpc(c)
+    expect(await call('drafts:save', { fields: EMPTY_DRAFT_FIELDS, photos: [{ token: 'forged' }], files: [] })).toEqual({
+      ok: false,
+      error: 'Вибраний файл більше недоступний — виберіть його ще раз.'
+    })
+    expect(await call('drafts:save', null)).toEqual({ ok: false, error: 'Некоректні дані чернетки.' })
+    expect(await call('drafts:save', { id: -3, fields: EMPTY_DRAFT_FIELDS, photos: [], files: [] })).toEqual({
+      ok: false,
+      error: 'Некоректний id чернетки.'
+    })
+  })
+
+  it('drafts:send while signed out: refused, recorded on the draft, renderer told', async () => {
+    const { c, sent } = ctx()
+    registerIpc(c)
+    const r = (await call('drafts:save', { fields: { ...EMPTY_DRAFT_FIELDS, title: 'P', description: 'd', price: '1', taxonomyId: 1 }, photos: [], files: [] })) as {
+      value: ListingDraft
+    }
+    const res = (await call('drafts:send', r.value.id, false)) as { ok: boolean; error: string }
+    expect(res.ok).toBe(false)
+    expect(res.error).toContain('Увійдіть')
+    expect(((await call('drafts:list')) as ListingDraft[])[0].status).toBe('error')
+    expect(sent.filter(([ch]) => ch === 'drafts:changed').length).toBeGreaterThanOrEqual(2)
+    expect(await call('drafts:send', 'x', false)).toEqual({ ok: false, error: 'Некоректний id чернетки.' })
   })
 })

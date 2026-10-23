@@ -1,4 +1,5 @@
-import { useStore } from '../store'
+import { ownShopId, useStore } from '../store'
+import { TOP_MODALS } from '../features/registry'
 import { ShopIcon } from './ShopIcon'
 
 function GearIcon(): JSX.Element {
@@ -22,10 +23,16 @@ export function Sidebar(): JSX.Element {
     setShowAddShop,
     setShowSettings,
     setShowMcp,
+    setShowMyShop,
+    openFeatureModal,
+    etsyAuth,
     mcpStatus,
     scanAll
   } = useStore()
   const anyScanning = Object.values(scanning).some(Boolean)
+  const mine = ownShopId({ etsyAuth })
+  // Signed in, the own shop is simply in the list (marked "мій"); the button is for signing in.
+  const showMyShopButton = mine == null || !shops.some((s) => s.id === mine)
 
   return (
     <aside className="sidebar">
@@ -55,6 +62,20 @@ export function Sidebar(): JSX.Element {
       <button className="add-shop" onClick={() => setShowAddShop(true)}>
         + Додати магазин
       </button>
+      {TOP_MODALS.map((m) => (
+        <button key={m.id} className="add-shop my-shop-btn" onClick={() => openFeatureModal(m.id)}>
+          {m.button}
+        </button>
+      ))}
+      {showMyShopButton && (
+        <button
+          className="add-shop my-shop-btn"
+          onClick={() => setShowMyShop(true)}
+          title={etsyAuth?.loggedIn ? 'Ви увійшли в Etsy' : 'Увійти в Etsy, щоб редагувати свій магазин і додавати лістинги'}
+        >
+          ✏️ Мій магазин
+        </button>
+      )}
 
       <div className="shop-list" role="list">
         {shops.length === 0 && (
@@ -74,7 +95,14 @@ export function Sidebar(): JSX.Element {
             >
               <ShopIcon url={s.iconUrl} name={s.shopName} />
               <div className="shop-item-text">
-                <div className="shop-item-name">{s.shopName}</div>
+                <div className="shop-item-name">
+                  {s.shopName}
+                  {s.id === mine && (
+                    <span className="mine-badge" title="Ваш магазин (ви увійшли в Etsy)">
+                      мій
+                    </span>
+                  )}
+                </div>
                 <div className="meta">
                   {busy ? (
                     <span className="scan-progress">{p?.label ?? 'Сканування…'}</span>

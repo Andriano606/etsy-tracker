@@ -2,6 +2,21 @@ import { vi } from 'vitest'
 import type {
   AddShopResult,
   BuyerCountryResult,
+  CreateListingProgress,
+  CreateListingResult,
+  ListingDraft,
+  PickedFile,
+  SaveDraftInput,
+  ShippingOption,
+  TaxonomyOption,
+  EtsyAuthStatus,
+  MyListing,
+  MyListingPatch,
+  MyListingState,
+  MyListingsPage,
+  MyShopPatch,
+  MyShopProfile,
+  MyShopResult,
   BuyerPrice,
   ImageCounts,
   ImageSyncState,
@@ -41,9 +56,99 @@ export const minioDefault: MinioStatus = {
   encrypted: false
 }
 
+/** Not signed in to Etsy (the default redirect URI). */
+export const etsyOut: EtsyAuthStatus = {
+  loggedIn: false,
+  redirectUri: 'https://localhost:3003/callback',
+  pending: false,
+  encrypted: false
+}
+
+/** Signed in as the owner of TidyFoxSheets. */
+export const etsyIn = (over: Partial<EtsyAuthStatus> = {}): EtsyAuthStatus => ({
+  ...etsyOut,
+  loggedIn: true,
+  encrypted: true,
+  userId: 555,
+  shopId: 68736507,
+  shopName: 'TidyFoxSheets',
+  scopes: ['listings_r', 'listings_w', 'listings_d', 'shops_r', 'shops_w', 'transactions_r', 'transactions_w', 'email_r', 'address_r'],
+  signedInAt: Date.UTC(2026, 9, 23),
+  reloginBy: Date.UTC(2027, 0, 21),
+  ...over
+})
+
+export const mkMyListing = (id: number, over: Partial<MyListing> = {}): MyListing => ({
+  listingId: id,
+  state: 'active',
+  title: `Budget Planner ${id}`,
+  description: `Description ${id}`,
+  tags: ['budget', 'planner'],
+  materials: [],
+  shouldAutoRenew: true,
+  type: 'download',
+  priceAmount: 500 + id,
+  priceDivisor: 100,
+  currency: 'USD',
+  quantity: 999,
+  url: `https://www.etsy.com/listing/${id}/x`,
+  imageUrl: `https://i.etsystatic.com/1/il_170x135.${id}.jpg`,
+  updatedAt: 1_760_000_000,
+  endingAt: 1_770_000_000,
+  ...over
+})
+
+export const mkMyShop = (over: Partial<MyShopProfile> = {}): MyShopProfile => ({
+  shopId: 68736507,
+  shopName: 'TidyFoxSheets',
+  title: 'Tidy spreadsheets',
+  announcement: 'Hello!',
+  saleMessage: 'Thanks',
+  digitalSaleMessage: 'Enjoy your download',
+  policyAdditional: '',
+  inEu: false,
+  countryIso: 'UA',
+  ...over
+})
+
+/** A draft kept in the app (digital, ready to send as an Etsy draft). */
+export const mkDraft = (id: number, over: Partial<ListingDraft> = {}): ListingDraft => ({
+  id,
+  source: 'app',
+  status: 'draft',
+  fields: {
+    type: 'download',
+    title: `Planner ${id}`,
+    description: 'A planner',
+    price: '5.99',
+    quantity: 999,
+    taxonomyId: 2,
+    taxonomyPath: 'Paper & Party Supplies › Paper › Calendars & Planners',
+    whoMade: 'i_did',
+    whenMade: 'made_to_order',
+    isSupply: false,
+    tags: ['budget'],
+    materials: [],
+    shouldAutoRenew: true,
+    shippingProfileId: null,
+    readinessStateId: null
+  },
+  photos: [],
+  files: [],
+  createdAt: Date.UTC(2026, 9, 23, 10),
+  updatedAt: Date.UTC(2026, 9, 23, 11),
+  sentAt: null,
+  sentListingId: null,
+  sentPublished: null,
+  lastError: null,
+  problems: [],
+  ...over
+})
+
 /** The MCP server as main reports it before it was ever enabled (no token yet). */
 export const mcpOff: McpStatus = {
   enabled: false,
+  allowWrites: false,
   port: 9102,
   url: 'http://127.0.0.1:9102/mcp',
   token: null,
@@ -255,6 +360,16 @@ export const emptyStats = (shopId = 1, range: StatsRange = 'all', over: Partial<
   ...over
 })
 
+const featureRoutes = new Map<string, unknown>()
+
+/**
+ * What `featureCall(feature, action)` answers: a value (→ {ok: true, value}),
+ * a full {ok, …} result, or a function of the args returning either.
+ */
+export function mockFeature(routes: Record<string, unknown>): void {
+  for (const [k, v] of Object.entries(routes)) featureRoutes.set(k, v)
+}
+
 /** A fully-stubbed window.api with sensible default resolutions. */
 export function makeApi() {
   return {
@@ -317,9 +432,84 @@ export function makeApi() {
     getShopStats: vi.fn(
       async (shopId: number, range: StatsRange): Promise<ShopStatsPayload | null> => emptyStats(shopId, range)
     ),
+    getEtsyAuth: vi.fn(async (): Promise<EtsyAuthStatus> => etsyOut),
+    beginEtsyLogin: vi.fn(
+      async (_redirectUri?: string): Promise<MyShopResult<string>> => ({
+        ok: true,
+        value: 'https://www.etsy.com/oauth/connect?response_type=code'
+      })
+    ),
+    completeEtsyLogin: vi.fn(
+      async (_pasted: string): Promise<MyShopResult<EtsyAuthStatus>> => ({ ok: true, value: etsyIn() })
+    ),
+    logoutEtsy: vi.fn(async (): Promise<EtsyAuthStatus> => etsyOut),
+    onEtsyAuth: vi.fn(() => () => {}),
+    getMyShop: vi.fn(async (): Promise<MyShopResult<MyShopProfile>> => ({ ok: true, value: mkMyShop() })),
+    saveMyShop: vi.fn(
+      async (patch: MyShopPatch): Promise<MyShopResult<MyShopProfile>> => ({
+        ok: true,
+        value: mkMyShop(patch)
+      })
+    ),
+    getMyListings: vi.fn(
+      async (state: MyListingState, offset = 0): Promise<MyShopResult<MyListingsPage>> => ({
+        ok: true,
+        value: { state, total: 0, offset, listings: [] }
+      })
+    ),
+    saveMyListing: vi.fn(
+      async (listingId: number, patch: MyListingPatch): Promise<MyShopResult<MyListing>> => ({
+        ok: true,
+        value: mkMyListing(listingId, { ...(patch as Partial<MyListing>), imageUrl: null })
+      })
+    ),
+    pickListingFiles: vi.fn(async (_kind: 'images' | 'files' | 'videos'): Promise<PickedFile[]> => []),
+    getTaxonomy: vi.fn(
+      async (): Promise<MyShopResult<TaxonomyOption[]>> => ({
+        ok: true,
+        value: [
+          { id: 1, path: 'Paper & Party Supplies' },
+          { id: 2, path: 'Paper & Party Supplies › Paper › Calendars & Planners' },
+          { id: 3, path: 'Home & Living › Office › Planners' }
+        ]
+      })
+    ),
+    getShippingProfiles: vi.fn(
+      async (): Promise<MyShopResult<ShippingOption[]>> => ({ ok: true, value: [{ id: 11, label: 'Standard (з UA)' }] })
+    ),
+    getProcessingProfiles: vi.fn(
+      async (): Promise<MyShopResult<ShippingOption[]>> => ({ ok: true, value: [{ id: 21, label: '1–3 дн.' }] })
+    ),
+    listDrafts: vi.fn(async (): Promise<ListingDraft[]> => []),
+    saveDraft: vi.fn(async (input: SaveDraftInput): Promise<MyShopResult<ListingDraft>> => ({
+      ok: true,
+      value: mkDraft(input.id ?? 501, { fields: input.fields })
+    })),
+    deleteDraft: vi.fn(async (_id: number): Promise<boolean> => true),
+    sendDraft: vi.fn(
+      async (_id: number, publish: boolean): Promise<CreateListingResult> => ({
+        ok: true,
+        listingId: 4242,
+        published: publish,
+        warnings: []
+      })
+    ),
+    onDraftsChanged: vi.fn(() => () => {}),
+    /** Every feature action: answers from `featureRoutes` (see mockFeature), else {ok: false, error: 'no mock'}. */
+    featureCall: vi.fn(async (feature: string, action: string, args: Record<string, unknown> = {}): Promise<MyShopResult<unknown>> => {
+      const r = featureRoutes.get(`${feature}.${action}`)
+      if (r === undefined) return { ok: false, error: `no mock for ${feature}.${action}` }
+      const v = typeof r === 'function' ? await (r as (a: Record<string, unknown>) => unknown)(args) : r
+      return v && typeof v === 'object' && 'ok' in (v as object) ? (v as MyShopResult<unknown>) : { ok: true, value: v }
+    }),
+    onFeatureEvent: vi.fn((_cb: (e: { feature: string; type: string; payload: unknown }) => void) => () => {}),
+    onCreateListingProgress: vi.fn((_cb: (p: CreateListingProgress) => void) => () => {}),
     getMcpStatus: vi.fn(async (): Promise<McpStatus> => mcpOff),
     setMcp: vi.fn(
       async (input: McpSettingsInput): Promise<{ ok: true; status: McpStatus } | { ok: false; error: string }> => {
+        if (input.allowWrites !== undefined && input.enabled === undefined && input.port === undefined) {
+          return { ok: true, status: mcpOn({ allowWrites: input.allowWrites }) }
+        }
         const port = Number(input.port ?? 9102)
         const enabled = !!input.enabled
         return {
@@ -363,8 +553,14 @@ export function resetStore(): void {
     imageSync: null,
     minioStatus: null,
     mcpStatus: null,
+    etsyAuth: null,
     showSettings: false,
     showMcp: false,
+    showMyShop: false,
+    draftsView: null,
+    drafts: [],
+    shopPanelsFor: null,
+    featureModal: null,
     showAddShop: false,
     detailListing: null,
     historyScan: null,
@@ -376,6 +572,7 @@ export function resetStore(): void {
 
 /** Install a fresh stubbed window.api and reset the store. Returns the api. */
 export function setupRenderer(): Api {
+  featureRoutes.clear()
   const api = makeApi()
   ;(window as unknown as { api: Api }).api = api
   try {

@@ -1,0 +1,53 @@
+/* Feature "compete" — live data panels (see compete.tsx). */
+
+.compete-section {
+  margin-top: 8px;
+}
+.compete-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0 4px;
+}
+.compete-head h4 {
+  margin: 0;
+}
+.compete-head .btn.small {
+  margin-left: auto;
+}
+.compete-swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-left: 8px;
+  border-radius: 3px;
+  border: 1px solid var(--hairline);
+  vertical-align: middle;
+}
+.compete-pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.compete-reviews {
+  list-style: none;
+  padding-left: 0;
+}
+.compete-review {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.compete-stars {
+  color: var(--accent);
+  letter-spacing: 1px;
+}
+.compete-review-photo {
+  display: block;
+  max-width: 160px;
+  max-height: 160px;
+  margin-top: 6px;
+  border-radius: 5px;
+  object-fit: cover;
+}
+.compete-carriers {
+  margin-top: 12px;
+}

@@ -39,3 +39,20 @@ export async function addShop(
   if (!summary) return { ok: false, error: 'Не вдалося зберегти магазин.' }
   return { ok: true, shop: summary }
 }
+
+/**
+ * Track the signed-in user's own shop (by its Etsy id, from GET /users/me):
+ * nothing to do when it is already tracked. Returns whether it was added.
+ */
+export async function ensureShopTracked(
+  db: Db,
+  client: EtsyClient,
+  shopId: number,
+  now: number = Date.now()
+): Promise<boolean> {
+  if (getShop(db, shopId)) return false
+  const shop = mapShop(await client.getShop(shopId), now)
+  if (getShop(db, shop.id) || findShopByName(db, shop.shopName)) return false
+  insertShop(db, shop)
+  return true
+}

@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 import type {
+  EtsyAuthStatus,
+  ListingDraft,
   ImageCounts,
   ImageSyncState,
   KeyStatus,
@@ -87,9 +89,20 @@ interface AppState {
   minioStatus: MinioStatus | null
   /** The local MCP server (the MCP modal; the sidebar button's dot). */
   mcpStatus: McpStatus | null
+  /** Signed in to Etsy (OAuth) for "Мій магазин"; pushed by main on every change. */
+  etsyAuth: EtsyAuthStatus | null
 
   showSettings: boolean
   showMcp: boolean
+  showMyShop: boolean
+  /** "📝 Чернетки": null = closed, 'list', or a draft open in the editor (null id = a new one). */
+  draftsView: null | 'list' | { draftId: number | null }
+  /** Listing drafts kept in the app (main pushes `drafts:changed`). */
+  drafts: ListingDraft[]
+  /** The shop whose "ℹ️ Більше" window (feature shop panels) is open. */
+  shopPanelsFor: number | null
+  /** The open sidebar feature window (TOP_MODALS id). */
+  featureModal: string | null
   showAddShop: boolean
   detailListing: Listing | null
   historyScan: ScanSummary | null
@@ -128,6 +141,12 @@ interface AppState {
 
   setShowSettings: (v: boolean) => void
   setShowMcp: (v: boolean) => void
+  setShowMyShop: (v: boolean) => void
+  openDrafts: (v: null | 'list' | { draftId: number | null }) => void
+  openShopPanels: (shopId: number | null) => void
+  openFeatureModal: (id: string | null) => void
+  setDrafts: (d: ListingDraft[]) => void
+  setEtsyAuth: (s: EtsyAuthStatus) => void
   setMcpStatus: (s: McpStatus) => void
   setShowAddShop: (v: boolean) => void
   openListing: (l: Listing | null) => void
@@ -135,6 +154,11 @@ interface AppState {
   openStats: (shopId: number | null) => void
   requestConfirm: (message: string) => Promise<boolean>
   resolveConfirm: (ok: boolean) => void
+}
+
+/** The signed-in user's own shop id (Etsy sign-in), or null. */
+export function ownShopId(s: Pick<AppState, 'etsyAuth'>): number | null {
+  return s.etsyAuth?.loggedIn ? (s.etsyAuth.shopId ?? null) : null
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -160,9 +184,15 @@ export const useStore = create<AppState>((set, get) => ({
   imageSync: null,
   minioStatus: null,
   mcpStatus: null,
+  etsyAuth: null,
 
   showSettings: false,
   showMcp: false,
+  showMyShop: false,
+  draftsView: null,
+  drafts: [],
+  shopPanelsFor: null,
+  featureModal: null,
   showAddShop: false,
   detailListing: null,
   historyScan: null,
@@ -171,15 +201,17 @@ export const useStore = create<AppState>((set, get) => ({
   confirmRequest: null,
 
   load: async () => {
-    const [keyStatus, shops, quota, minioStatus, buyerCountry, mcpStatus] = await Promise.all([
+    const [keyStatus, shops, quota, minioStatus, buyerCountry, mcpStatus, etsyAuth] = await Promise.all([
       window.api.getKeyStatus(),
       window.api.listShops(),
       window.api.getQuota(),
       window.api.getMinioStatus(),
       window.api.getBuyerCountry().catch(() => null),
-      window.api.getMcpStatus().catch(() => null)
+      window.api.getMcpStatus().catch(() => null),
+      window.api.getEtsyAuth().catch(() => null)
     ])
-    set({ keyStatus, shops, quota, minioStatus, buyerCountry, mcpStatus, loaded: true })
+    const drafts = await window.api.listDrafts().catch(() => [] as ListingDraft[])
+    set({ keyStatus, shops, quota, minioStatus, buyerCountry, mcpStatus, etsyAuth, drafts, loaded: true })
     const remembered = loadActiveShop()
     const pick = shops.find((s) => s.id === remembered)?.id ?? shops[0]?.id ?? null
     await get().selectShop(pick)
@@ -390,6 +422,12 @@ export const useStore = create<AppState>((set, get) => ({
 
   setShowSettings: (showSettings) => set({ showSettings }),
   setShowMcp: (showMcp) => set({ showMcp }),
+  setShowMyShop: (showMyShop) => set({ showMyShop }),
+  openDrafts: (draftsView) => set({ draftsView }),
+  openShopPanels: (shopPanelsFor) => set({ shopPanelsFor }),
+  openFeatureModal: (featureModal) => set({ featureModal }),
+  setDrafts: (drafts) => set({ drafts }),
+  setEtsyAuth: (etsyAuth) => set({ etsyAuth }),
   setMcpStatus: (mcpStatus) => set({ mcpStatus }),
   setShowAddShop: (showAddShop) => set({ showAddShop }),
   openListing: (detailListing) => set({ detailListing }),

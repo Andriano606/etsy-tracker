@@ -4,18 +4,29 @@ import type { Quota } from '../shared/types'
 import { isAllowedExternalUrl } from '../shared/externalUrl'
 import { markImageMissing, markReviewImageMissing, openDb } from './db'
 import { createEtsyClient } from './etsyApi'
+import { type EtsyAuth, createEtsyAuth } from './etsyAuth'
 import { IMAGE_SCHEME, createImageProtocolHandler } from './imageProtocol'
 import { type ImageStore, ImageStoreError, createMinioImageStore } from './imageStore'
 import { createImageSyncer } from './imageSync'
-import { onReviewSyncDone, registerIpc, startImageSync, type IpcContext } from './ipc'
+import {
+  ensureOwnShopTracked,
+  notifyDraftsChanged,
+  notifyShopsChanged,
+  onReviewSyncDone,
+  registerIpc,
+  startImageSync,
+  type IpcContext
+} from './ipc'
 import { handleMcpBody } from './mcpProtocol'
 import { type McpService, createMcpService } from './mcpServer'
 import { createMcpTools, mcpServerInfo } from './mcpTools'
+import { createTaxonomyCache } from './myShop'
 import { createReviewSyncer } from './reviewSync'
 import { createScanner } from './scanner'
 import {
   type MinioConfig,
   createBuyerCountryStore,
+  createEtsyAuthStore,
   createKeyStore,
   createMcpSettingsStore,
   createMinioSettingsStore
@@ -110,12 +121,29 @@ if (!app.requestSingleInstanceLock()) {
       const wc = getWindow()
       if (wc && !wc.isDestroyed()) wc.send(channel, payload)
     }
+    // Signed in to Etsy (OAuth) for "Мій магазин"; the client asks it for a
+    // token only on own-shop calls, so it is created after (closures).
+    let etsyAuth: EtsyAuth | null = null
     const client = createEtsyClient({
       getApiKey: () => keyStore.getKey(),
       onQuota: (q) => {
         quota = q
         send('quota:changed', q)
-      }
+      },
+      getAccessToken: () => etsyAuth?.getAccessToken() ?? Promise.resolve(null),
+      refreshAccessToken: () => etsyAuth?.invalidate() ?? Promise.resolve(null)
+    })
+    etsyAuth = createEtsyAuth({
+      store: createEtsyAuthStore(join(userData, 'settings.json'), safeStorage),
+      getClientId: () => keyStore.getKey()?.split(':')[0] ?? null,
+      whoAmI: async (token) => {
+        const me = await client.getMe(token)
+        const shopId = me.shop_id ?? null
+        let shopName: string | null = null
+        if (shopId) shopName = (await client.getShop(shopId).catch(() => null))?.shop_name ?? null
+        return { userId: me.user_id, shopId, shopName }
+      },
+      onChange: (s) => send('etsyAuth:changed', s)
     })
     const scanner = createScanner({
       db,
@@ -168,6 +196,16 @@ if (!app.requestSingleInstanceLock()) {
     // tools over the same db; photos through the same handler as the window.
     const mcpTools = createMcpTools({
       db,
+      // The user's own store (signed in via "Мій магазин"); writes only while
+      // the MCP modal's "allow changes" switch is on (read per call).
+      own: {
+        client,
+        status: () => etsyAuth!.status(),
+        writesAllowed: () => mcpSettings.get().allowWrites,
+        taxonomy: createTaxonomyCache(client),
+        accessToken: () => etsyAuth!.getAccessToken()
+      },
+      onDraftsChanged: () => notifyDraftsChanged({ db, getWindow }),
       readImage: async (url) => {
         const res = await imageHandler({ url } as Request)
         if (!res.ok) return null
@@ -217,11 +255,16 @@ if (!app.requestSingleInstanceLock()) {
       reviews,
       buyerCountry,
       mcpSettings,
-      mcp
+      mcp,
+      etsyAuth
     }
     ctxRef = ctx
     registerIpc(ctx)
     createWindow()
+    // Signed in before (an older build didn't track the own shop): add it now.
+    void ensureOwnShopTracked(ctx).then((added) => {
+      if (added) notifyShopsChanged(ctx)
+    })
     // Images left 'pending' (MinIO was down, the app quit mid-sync, or rows
     // backfilled by migration v2) are retried shortly after start.
     setTimeout(() => startImageSync(ctx, null), 5000)

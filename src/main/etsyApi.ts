@@ -295,6 +295,12 @@ export type EtsyErrorKind =
   | 'server'
   | 'network'
   | 'bad_response'
+  /** An own-shop call without being signed in to Etsy. */
+  | 'not_signed_in'
+  /** Etsy refused the OAuth token (401) even after a refresh. */
+  | 'oauth'
+  /** Signed in, but Etsy refused the action (403: missing scope, not the user's shop…). */
+  | 'forbidden'
 
 export class EtsyApiError extends Error {
   constructor(
@@ -330,6 +336,12 @@ function errorMessage(kind: EtsyErrorKind, status: number | undefined, detail?: 
       return `Немає з’єднання з Etsy.${tail}`
     case 'bad_response':
       return 'Etsy повернув неочікувану відповідь.'
+    case 'not_signed_in':
+      return 'Увійдіть в Etsy («Мій магазин» → «Увійти через Etsy»), щоб змінювати свій магазин.'
+    case 'oauth':
+      return `Вхід в Etsy більше не дійсний — увійдіть ще раз («Мій магазин»).${tail}`
+    case 'forbidden':
+      return `Etsy не дозволив цю дію (HTTP 403) — можливо, бракує дозволу або це не ваш магазин.${tail}`
   }
 }
 
@@ -400,9 +412,67 @@ export interface EtsyClientOptions {
   /** How many times a timed-out request is retried (within maxRetries). Default 1. */
   maxTimeoutRetries?: number
   onQuota?: (q: Quota) => void
+  /** The signed-in user's OAuth access token (refreshed as needed), null when signed out. */
+  getAccessToken?: () => Promise<string | null>
+  /** Etsy refused the token (401): refresh it once; null = signed out. */
+  refreshAccessToken?: () => Promise<string | null>
 }
 
 export type Params = Record<string, string | number | boolean | Array<string | number> | undefined>
+
+/** One API call. GETs are what scans use; PATCH/PUT edit the user's own shop. */
+export interface CallOptions {
+  method?: 'GET' | 'PATCH' | 'PUT' | 'POST' | 'DELETE'
+  query?: Params
+  /** application/x-www-form-urlencoded body (arrays comma-separated, like Etsy's examples). */
+  form?: Params
+  /** multipart/form-data body (file uploads); fetch sets the boundary. */
+  multipart?: FormData
+  /** application/json body (e.g. updateListingInventory). */
+  json?: unknown
+  /** Act as the signed-in user: true = the current token, a string = this token. */
+  oauth?: boolean | string
+  /** Override the stored API key (key:test). */
+  apiKey?: string
+}
+
+/** A file to upload (uploadListingImage / uploadListingFile). */
+export interface UploadFile {
+  data: Uint8Array<ArrayBuffer>
+  name: string
+  type: string
+  /** Position (1 = first); omitted = let the store append it. */
+  rank?: number
+}
+
+export interface EtsyTaxonomyNode {
+  id: number
+  level?: number
+  name: string
+  parent_id?: number | null
+  children?: EtsyTaxonomyNode[]
+}
+
+export interface EtsyShippingProfile {
+  shipping_profile_id: number
+  title?: string | null
+  origin_country_iso?: string | null
+  is_deleted?: boolean
+}
+
+export interface EtsyProcessingProfile {
+  readiness_state_id: number
+  readiness_state?: string | null
+  min_processing_days?: number | null
+  max_processing_days?: number | null
+  processing_days_display_label?: string | null
+}
+
+/** GET /users/me (getMe). */
+export interface EtsySelf {
+  user_id: number
+  shop_id?: number | null
+}
 
 export interface ActiveListingsResult {
   listings: EtsyListing[]
@@ -447,6 +517,33 @@ export interface EtsyClient {
    * optional created-time bounds. The OAS documents no result order.
    */
   getShopReviews(shopId: number, q?: ReviewQuery): Promise<Paged<EtsyTransactionReview>>
+  /** Any call, incl. own-shop writes with the OAuth token. */
+  call<T>(path: string, o?: CallOptions): Promise<T>
+  /** The signed-in user (OAuth, scope shops_r). */
+  getMe(accessToken?: string): Promise<EtsySelf>
+  /** The user's own listings in one state (OAuth, listings_r), with images. */
+  getShopListingsByState(
+    shopId: number,
+    state: string,
+    offset?: number,
+    limit?: number
+  ): Promise<Paged<EtsyListingWithAssociations>>
+  /** PATCH updateListing (OAuth, listings_w): only the given fields change. */
+  updateListing(shopId: number, listingId: number, form: Params): Promise<EtsyListing>
+  /** PUT updateShop (OAuth, shops_w). */
+  updateShop(shopId: number, form: Params): Promise<EtsyShop>
+  /** POST createDraftListing (OAuth, listings_w) — never retried. */
+  createDraftListing(shopId: number, form: Params): Promise<EtsyListing>
+  /** POST uploadListingImage (multipart `image`, `rank`). */
+  uploadListingImage(shopId: number, listingId: number, f: UploadFile): Promise<EtsyListingImage>
+  /** POST uploadListingFile (multipart `file`, `name`, `rank`) — digital listings. */
+  uploadListingFile(shopId: number, listingId: number, f: UploadFile): Promise<unknown>
+  /** GET /seller-taxonomy/nodes — the whole category tree (API key only). */
+  getSellerTaxonomy(): Promise<EtsyTaxonomyNode[]>
+  /** The shop's shipping profiles (OAuth, shops_r) — physical listings need one. */
+  getShippingProfiles(shopId: number): Promise<EtsyShippingProfile[]>
+  /** The shop's processing profiles ("readiness states", OAuth, shops_r). */
+  getProcessingProfiles(shopId: number): Promise<EtsyProcessingProfile[]>
 }
 
 export function buildUrl(baseUrl: string, path: string, params: Params = {}): string {
@@ -457,6 +554,16 @@ export function buildUrl(baseUrl: string, path: string, params: Params = {}): st
     url.searchParams.set(k, Array.isArray(v) ? v.join(',') : String(v))
   }
   return url.toString()
+}
+
+/** A form body: arrays comma-separated (Etsy's own examples), booleans as true/false. */
+export function formBody(params: Params): string {
+  const f = new URLSearchParams()
+  for (const [k, v] of Object.entries(params)) {
+    if (v === undefined) continue
+    f.set(k, Array.isArray(v) ? v.join(',') : String(v))
+  }
+  return f.toString()
 }
 
 export function createEtsyClient(opts: EtsyClientOptions): EtsyClient {
@@ -491,8 +598,23 @@ export function createEtsyClient(opts: EtsyClientOptions): EtsyClient {
     return backoffBase * 2 ** attempt + Math.floor(random() * backoffBase)
   }
 
-  async function once<T>(path: string, params: Params | undefined, key: string): Promise<T> {
-    const url = buildUrl(baseUrl, path, params)
+  async function once<T>(path: string, o: CallOptions, key: string, bearer: string | null): Promise<T> {
+    const url = buildUrl(baseUrl, path, o.query)
+    const method = o.method ?? 'GET'
+    // POST creates things: a retry after a lost response could create it twice.
+    const retriable = method !== 'POST'
+    const headers: Record<string, string> = { 'x-api-key': key, accept: 'application/json' }
+    if (bearer) headers.authorization = `Bearer ${bearer}`
+    let body: string | FormData | undefined
+    if (o.multipart) body = o.multipart
+    else if (o.json !== undefined) {
+      headers['content-type'] = 'application/json'
+      body = JSON.stringify(o.json)
+    }
+    else if (o.form) {
+      headers['content-type'] = 'application/x-www-form-urlencoded'
+      body = formBody(o.form)
+    }
     let timeouts = 0
     for (let attempt = 0; ; attempt++) {
       const wait = lastRequestAt + minInterval - now()
@@ -504,12 +626,14 @@ export function createEtsyClient(opts: EtsyClientOptions): EtsyClient {
       // is retried at most maxTimeoutRetries times (it has already waited).
       const ctrl = new AbortController()
       const timer = setTimeout(() => ctrl.abort(), requestTimeout)
-      const retryTimeout = (): boolean => timeouts++ < maxTimeoutRetries && attempt < maxRetries
+      const retryTimeout = (): boolean => retriable && timeouts++ < maxTimeoutRetries && attempt < maxRetries
       try {
         let res: Response
         try {
           res = await doFetch(url, {
-            headers: { 'x-api-key': key, accept: 'application/json' },
+            method,
+            headers,
+            ...(body !== undefined ? { body } : {}),
             signal: ctrl.signal
           })
         } catch (e) {
@@ -517,7 +641,7 @@ export function createEtsyClient(opts: EtsyClientOptions): EtsyClient {
             if (retryTimeout()) continue
             throw timeoutError()
           }
-          if (attempt < maxRetries) {
+          if (retriable && attempt < maxRetries) {
             await sleep(backoff(attempt))
             continue
           }
@@ -529,8 +653,11 @@ export function createEtsyClient(opts: EtsyClientOptions): EtsyClient {
         if (quota) opts.onQuota?.(quota)
 
         if (res.ok) {
+          // DELETEs answer 204 / an empty body: that's success with nothing to read.
+          if (res.status === 204) return undefined as T
           try {
-            return (await res.json()) as T
+            const text = await res.text()
+            return (text.trim() ? JSON.parse(text) : undefined) as T
           } catch {
             if (ctrl.signal.aborted) {
               if (retryTimeout()) continue
@@ -559,13 +686,16 @@ export function createEtsyClient(opts: EtsyClientOptions): EtsyClient {
           }
           throw makeError('rate_limit', 429, requestId, detail)
         }
-        if (res.status >= 500) {
-          if (attempt < maxRetries) {
+        // 501 Not Implemented is never transient (an endpoint Etsy hasn't built yet).
+        if (res.status >= 500 && res.status !== 501) {
+          if (retriable && attempt < maxRetries) {
             await sleep(backoff(attempt))
             continue
           }
           throw makeError('server', res.status, requestId, detail)
         }
+        if (bearer && res.status === 401) throw makeError('oauth', 401, requestId, detail)
+        if (bearer && res.status === 403) throw makeError('forbidden', 403, requestId, detail)
         if (res.status === 401 || res.status === 403) {
           throw makeError('auth', res.status, requestId, detail)
         }
@@ -578,12 +708,31 @@ export function createEtsyClient(opts: EtsyClientOptions): EtsyClient {
     }
   }
 
-  function request<T>(path: string, params?: Params, apiKey?: string): Promise<T> {
-    const key = apiKey ?? opts.getApiKey()
-    if (!key) return Promise.reject(makeError('no_key'))
-    const run = queue.then(() => once<T>(path, params, key))
+  function enqueue<T>(path: string, o: CallOptions, key: string, bearer: string | null): Promise<T> {
+    const run = queue.then(() => once<T>(path, o, key, bearer))
     queue = run.catch(() => undefined)
     return run
+  }
+
+  async function call<T>(path: string, o: CallOptions = {}): Promise<T> {
+    const key = o.apiKey ?? opts.getApiKey()
+    if (!key) throw makeError('no_key')
+    if (!o.oauth) return enqueue<T>(path, o, key, null)
+    const token = typeof o.oauth === 'string' ? o.oauth : ((await opts.getAccessToken?.()) ?? null)
+    if (!token) throw makeError('not_signed_in')
+    try {
+      return await enqueue<T>(path, o, key, token)
+    } catch (e) {
+      // A token Etsy refuses before its expiry (revoked, clock skew): refresh once.
+      if (!(e instanceof EtsyApiError) || e.kind !== 'oauth' || typeof o.oauth === 'string') throw e
+      const fresh = (await opts.refreshAccessToken?.()) ?? null
+      if (!fresh) throw e
+      return enqueue<T>(path, o, key, fresh)
+    }
+  }
+
+  function request<T>(path: string, params?: Params, apiKey?: string): Promise<T> {
+    return call<T>(path, { query: params, apiKey })
   }
 
   function expectPaged<T>(body: Paged<T>): Paged<T> {
@@ -806,6 +955,79 @@ export function createEtsyClient(opts: EtsyClientOptions): EtsyClient {
           max_created: clamp(q.maxCreated)
         })
       )
+    },
+
+    call,
+
+    getMe(accessToken) {
+      return call<EtsySelf>('/v3/application/users/me', { oauth: accessToken ?? true })
+    },
+
+    async getShopListingsByState(shopId, state, offset = 0, limit = PAGE_LIMIT) {
+      return expectPaged(
+        await call<Paged<EtsyListingWithAssociations>>(`/v3/application/shops/${shopId}/listings`, {
+          oauth: true,
+          query: { state, limit: Math.min(PAGE_LIMIT, Math.max(1, limit)), offset: offset || undefined, includes: ['Images'] }
+        })
+      )
+    },
+
+    updateListing(shopId, listingId, form) {
+      return call<EtsyListing>(`/v3/application/shops/${shopId}/listings/${listingId}`, {
+        method: 'PATCH',
+        oauth: true,
+        form
+      })
+    },
+
+    updateShop(shopId, form) {
+      return call<EtsyShop>(`/v3/application/shops/${shopId}`, { method: 'PUT', oauth: true, form })
+    },
+
+    createDraftListing(shopId, form) {
+      return call<EtsyListing>(`/v3/application/shops/${shopId}/listings`, { method: 'POST', oauth: true, form })
+    },
+
+    uploadListingImage(shopId, listingId, f) {
+      const fd = new FormData()
+      fd.set('image', new Blob([f.data], { type: f.type }), f.name)
+      if (f.rank != null) fd.set('rank', String(f.rank))
+      return call<EtsyListingImage>(`/v3/application/shops/${shopId}/listings/${listingId}/images`, {
+        method: 'POST',
+        oauth: true,
+        multipart: fd
+      })
+    },
+
+    uploadListingFile(shopId, listingId, f) {
+      const fd = new FormData()
+      fd.set('file', new Blob([f.data], { type: f.type }), f.name)
+      fd.set('name', f.name)
+      if (f.rank != null) fd.set('rank', String(f.rank))
+      return call(`/v3/application/shops/${shopId}/listings/${listingId}/files`, {
+        method: 'POST',
+        oauth: true,
+        multipart: fd
+      })
+    },
+
+    async getSellerTaxonomy() {
+      return expectPaged(await call<Paged<EtsyTaxonomyNode>>('/v3/application/seller-taxonomy/nodes')).results
+    },
+
+    async getShippingProfiles(shopId) {
+      return expectPaged(
+        await call<Paged<EtsyShippingProfile>>(`/v3/application/shops/${shopId}/shipping-profiles`, { oauth: true })
+      ).results
+    },
+
+    async getProcessingProfiles(shopId) {
+      return expectPaged(
+        await call<Paged<EtsyProcessingProfile>>(`/v3/application/shops/${shopId}/readiness-state-definitions`, {
+          oauth: true,
+          query: { limit: PAGE_LIMIT }
+        })
+      ).results
     },
 
     detailIncludes: () => includes,

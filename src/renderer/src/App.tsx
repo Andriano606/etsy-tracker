@@ -4,6 +4,9 @@ import { Sidebar } from './components/Sidebar'
 import { ShopView } from './components/ShopView'
 import { SettingsModal, TRADEMARK_NOTICE } from './components/SettingsModal'
 import { McpModal } from './components/McpModal'
+import { MyShopModal } from './components/MyShopModal'
+import { DraftsModal } from './components/DraftsModal'
+import { FeatureModalHost, ShopPanelsModal } from './features/hosts'
 import { AddShopModal } from './components/AddShopModal'
 import { ListingModal } from './components/ListingModal'
 import { HistoryModal } from './components/ScanHistory'
@@ -25,7 +28,9 @@ export function App(): JSX.Element {
     setQuota,
     setError,
     setImageSync,
-    setReviewSync
+    setReviewSync,
+    setEtsyAuth,
+    setDrafts
   } = useStore()
 
   useEffect(() => {
@@ -36,10 +41,12 @@ export function App(): JSX.Element {
       window.api.onScanState(({ shopId, running }) => setScanning(shopId, running)),
       window.api.onQuota(setQuota),
       window.api.onImageSync(setImageSync),
-      window.api.onReviewSync(setReviewSync)
+      window.api.onReviewSync(setReviewSync),
+      window.api.onEtsyAuth(setEtsyAuth),
+      window.api.onDraftsChanged(setDrafts)
     ]
     return () => offs.forEach((off) => off())
-  }, [load, setShops, setProgress, setScanning, setQuota, setImageSync, setReviewSync])
+  }, [load, setShops, setProgress, setScanning, setQuota, setImageSync, setReviewSync, setEtsyAuth, setDrafts])
 
   let main: JSX.Element | null
   if (!loaded) main = <div className="placeholder">Завантаження…</div>
@@ -65,6 +72,10 @@ export function App(): JSX.Element {
       </main>
       <SettingsModal />
       <McpModal />
+      <MyShopModal />
+      <DraftsModal />
+      <ShopPanelsModal />
+      <FeatureModalHost />
       <AddShopModal />
       {/* A listing can be opened from the statistics or the history — render it on top. */}
       <StatsModal />

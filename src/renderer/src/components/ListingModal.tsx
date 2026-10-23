@@ -14,7 +14,9 @@ import {
 import { buyerPriceIncludes, discountLabel, formatMoney, hasActiveDiscount, shownPrice } from '@shared/price'
 import { countryLabel } from '@shared/countries'
 import { LISTING_TYPE_LABEL, WHO_MADE_LABEL, whenMadeLabel } from '@shared/changes'
-import { useStore } from '../store'
+import { ownShopId, useStore } from '../store'
+import { LazyDetails } from '../features/LazyDetails'
+import { LISTING_PANELS } from '../features/registry'
 import { imageSrc, reviewImageSrc } from '../imageUrl'
 import { ExternalLink } from './ExternalLink'
 import { useEscape } from './useEscape'
@@ -470,7 +472,7 @@ function ReviewsSection({ listing }: { listing: Listing }): JSX.Element | null {
 
 /** Listing details: gallery, popularity, facts, "Деталі", tags, plain-text description, reviews, raw JSON. */
 export function ListingModal(): JSX.Element | null {
-  const { detailListing: l, openListing } = useStore()
+  const { detailListing: l, openListing, etsyAuth } = useStore()
   const [idx, setIdx] = useState(0)
   useEffect(() => setIdx(0), [l?.listingId])
   const close = (): void => openListing(null)
@@ -608,6 +610,11 @@ export function ListingModal(): JSX.Element | null {
             <PriceHistory listingId={l.listingId} />
             <StatsHistory listingId={l.listingId} />
             <RawJson listingId={l.listingId} />
+            {LISTING_PANELS.map((p) => (
+              <LazyDetails key={p.id} label={p.label} testId={`listing-panel-${p.id}`} className="raw-json">
+                {() => <p.Component listing={l} mine={l.shopId === ownShopId({ etsyAuth })} />}
+              </LazyDetails>
+            ))}
           </div>
         </div>
         <div className="modal-actions">

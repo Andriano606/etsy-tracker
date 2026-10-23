@@ -204,6 +204,53 @@ describe('MCP modal', () => {
   })
 })
 
+describe('MCP modal: changes to the own store', () => {
+  it('lists read tools and write tools separately', async () => {
+    await open(mcpOn())
+    const writes = screen.getByTestId('mcp-write-tools')
+    for (const name of ['create_product', 'update_my_product', 'add_product_media', 'update_my_store']) {
+      expect(within(writes).getByText(name)).toBeInTheDocument()
+    }
+    expect(within(writes).queryByText('list_my_products')).toBeNull()
+  })
+
+  it('turning "allow changes" on asks first and saves only that; off needs no confirm', async () => {
+    useStore.setState({ etsyAuth: { loggedIn: true, redirectUri: '', pending: false, encrypted: true, shopId: 1 } })
+    await open(mcpOn())
+    const box = screen.getByLabelText('Дозволити Claude змінювати мій магазин')
+    expect(box).not.toBeChecked()
+    expect(screen.queryByText(/Спершу увійдіть у свій магазин/)).toBeNull()
+    await act(async () => {
+      fireEvent.click(box)
+    })
+    expect(screen.getByText(/Дозволити Claude змінювати ваш магазин на Etsy\?/)).toBeInTheDocument()
+    await act(async () => {
+      fireEvent.click(screen.getByText('Скасувати'))
+    })
+    expect(api.setMcp).not.toHaveBeenCalled()
+    await act(async () => {
+      fireEvent.click(box)
+    })
+    api.getMcpStatus.mockResolvedValue(mcpOn({ allowWrites: true }))
+    await act(async () => {
+      fireEvent.click(screen.getByText('Підтвердити'))
+    })
+    expect(api.setMcp).toHaveBeenCalledWith({ allowWrites: true })
+    expect(screen.getByLabelText('Дозволити Claude змінювати мій магазин')).toBeChecked()
+    api.setMcp.mockClear()
+    api.getMcpStatus.mockResolvedValue(mcpOn({ allowWrites: false }))
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText('Дозволити Claude змінювати мій магазин'))
+    })
+    expect(api.setMcp).toHaveBeenCalledWith({ allowWrites: false })
+  })
+
+  it('reminds to sign in to the own store first', async () => {
+    await open(mcpOn())
+    expect(screen.getByText(/Спершу увійдіть у свій магазин/)).toBeInTheDocument()
+  })
+})
+
 describe('Sidebar MCP button', () => {
   it('a green dot while the server runs, a red one when enabled but failing, none when off', () => {
     useStore.setState({ mcpStatus: mcpOn() })

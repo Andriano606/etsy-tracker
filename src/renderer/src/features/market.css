@@ -1,0 +1,52 @@
+/* Feature "market": the "Пошук по всьому Etsy" window. */
+.market-search .field input,
+.market-search .field select {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 8px 10px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+}
+.market-search .field select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.market-submit,
+.market-more {
+  margin: 12px 0;
+}
+.market-summary {
+  margin: 14px 0 10px;
+  font-size: 13px;
+  color: var(--text-body);
+}
+.market-grid {
+  margin-top: 8px;
+}
+.market-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+.market-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.market-actions .btn.small {
+  margin-left: 0;
+}
+.market-card .test-result {
+  margin-top: 6px;
+  font-size: 12px;
+}
+.market-search .chosen-cat input {
+  flex: 1;
+}

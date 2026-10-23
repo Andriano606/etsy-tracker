@@ -6,6 +6,7 @@ import {
   REVIEW_EPOCH_MIN,
   buildUrl,
   createEtsyClient,
+  formBody,
   parseQuota,
   parseRetryAfter
 } from '../../src/main/etsyApi'
@@ -777,5 +778,196 @@ describe('buyer prices (includes=BuyerPrice + buyer_country)', () => {
     expect(map.size).toBe(3)
     expect(etsy.requests.every((u) => u.searchParams.get('buyer_country') === 'PL')).toBe(true)
     expect(etsy.count('/v3/application/listings/2')).toBe(1)
+  })
+})
+
+describe('own-shop calls (OAuth)', () => {
+  const ok = (body: unknown = {}): FakeReply => ({ body })
+
+  it('a signed call sends the API key and the bearer token', async () => {
+    const f = queuedFetch([ok({ user_id: 555, shop_id: 77 })])
+    const { c } = client(f, { getAccessToken: async () => '555.tok' })
+    expect(await c.getMe()).toEqual({ user_id: 555, shop_id: 77 })
+    expect(f.calls[0].url.pathname).toBe('/v3/application/users/me')
+    expect(f.calls[0].headers).toMatchObject({ 'x-api-key': 'mykeystring:mysecret', authorization: 'Bearer 555.tok' })
+    expect(f.calls[0].method).toBe('GET')
+  })
+
+  it('an explicit token (right after sign-in) is used as is', async () => {
+    const f = queuedFetch([ok({ user_id: 1 })])
+    const getAccessToken = vi.fn(async () => 'stored')
+    const { c } = client(f, { getAccessToken })
+    await c.getMe('fresh')
+    expect(f.calls[0].headers.authorization).toBe('Bearer fresh')
+    expect(getAccessToken).not.toHaveBeenCalled()
+  })
+
+  it('unsigned calls never carry a bearer token', async () => {
+    const f = queuedFetch([ok({ shop_id: 1, shop_name: 'X' })])
+    const { c } = client(f, { getAccessToken: async () => 'tok' })
+    await c.getShop(1)
+    expect(f.calls[0].headers.authorization).toBeUndefined()
+  })
+
+  it('signed out: a clear error, no request', async () => {
+    const f = queuedFetch([ok()])
+    const { c } = client(f, { getAccessToken: async () => null })
+    const e = await err(c.getMe())
+    expect(e.kind).toBe('not_signed_in')
+    expect(e.message).toContain('Увійдіть в Etsy')
+    expect(f.calls).toHaveLength(0)
+    expect((await err(client(f).c.getMe())).kind).toBe('not_signed_in')
+  })
+
+  it('updateListing: PATCH with a form body (arrays comma-separated)', async () => {
+    const f = queuedFetch([ok({ listing_id: 9, title: 'New' })])
+    const { c } = client(f, { getAccessToken: async () => 'tok' })
+    expect(await c.updateListing(77, 9, { title: 'New & better', tags: ['a b', 'c'], should_auto_renew: false })).toEqual({
+      listing_id: 9,
+      title: 'New'
+    })
+    expect(f.calls[0].method).toBe('PATCH')
+    expect(f.calls[0].url.pathname).toBe('/v3/application/shops/77/listings/9')
+    expect(f.calls[0].headers['content-type']).toBe('application/x-www-form-urlencoded')
+    expect(Object.fromEntries(new URLSearchParams(f.calls[0].body!))).toEqual({
+      title: 'New & better',
+      tags: 'a b,c',
+      should_auto_renew: 'false'
+    })
+  })
+
+  it('updateShop: PUT with a form body', async () => {
+    const f = queuedFetch([ok({ shop_id: 77 })])
+    const { c } = client(f, { getAccessToken: async () => 'tok' })
+    await c.updateShop(77, { announcement: 'Hi' })
+    expect(f.calls[0].method).toBe('PUT')
+    expect(f.calls[0].url.pathname).toBe('/v3/application/shops/77')
+    expect(f.calls[0].body).toBe('announcement=Hi')
+  })
+
+  it('getShopListingsByState: any state, with images, paged', async () => {
+    const f = queuedFetch([ok({ count: 1, results: [{ listing_id: 1 }] })])
+    const { c } = client(f, { getAccessToken: async () => 'tok' })
+    expect((await c.getShopListingsByState(77, 'draft', 100)).count).toBe(1)
+    const q = Object.fromEntries(f.calls[0].url.searchParams)
+    expect(f.calls[0].url.pathname).toBe('/v3/application/shops/77/listings')
+    expect(q).toEqual({ state: 'draft', limit: '100', offset: '100', includes: 'Images' })
+    await expect(client(queuedFetch([ok({})]), { getAccessToken: async () => 't' }).c.getShopListingsByState(1, 'active')).rejects.toThrow()
+  })
+
+  it('a refused token (401) is refreshed once and the call retried', async () => {
+    const f = queuedFetch([{ status: 401, body: { error: 'invalid_token' } }, ok({ user_id: 1 })])
+    const refreshAccessToken = vi.fn(async () => 'new')
+    const { c } = client(f, { getAccessToken: async () => 'old', refreshAccessToken })
+    expect(await c.getMe()).toEqual({ user_id: 1 })
+    expect(refreshAccessToken).toHaveBeenCalledTimes(1)
+    expect(f.calls.map((x) => x.headers.authorization)).toEqual(['Bearer old', 'Bearer new'])
+  })
+
+  it('still 401 after the refresh, or no refresh possible: "sign in again"', async () => {
+    const f = queuedFetch([{ status: 401, body: { error: 'invalid_token' } }])
+    const { c } = client(f, { getAccessToken: async () => 'old', refreshAccessToken: async () => 'new' })
+    const e = await err(c.getMe())
+    expect(e.kind).toBe('oauth')
+    expect(e.message).toContain('увійдіть ще раз')
+    const g = queuedFetch([{ status: 401 }])
+    expect((await err(client(g, { getAccessToken: async () => 'old', refreshAccessToken: async () => null }).c.getMe())).kind).toBe('oauth')
+    expect(g.calls).toHaveLength(1)
+  })
+
+  it('403 while signed in is "not allowed", not "bad API key"', async () => {
+    const f = queuedFetch([{ status: 403, body: { error: 'Insufficient scope' } }])
+    const { c } = client(f, { getAccessToken: async () => 'tok' })
+    const e = await err(c.updateShop(1, { title: 'x' }))
+    expect(e.kind).toBe('forbidden')
+    expect(e.message).toContain('Insufficient scope')
+    expect(e.message).not.toContain('API-ключ')
+  })
+
+  it('PATCH/PUT are retried on 5xx (idempotent); POST is not (it could create twice)', async () => {
+    const f = queuedFetch([{ status: 503 }, ok({ shop_id: 1 })])
+    const { c } = client(f, { getAccessToken: async () => 'tok' })
+    await c.updateShop(1, { title: 'x' })
+    expect(f.calls).toHaveLength(2)
+    const g = queuedFetch([{ status: 503 }, ok({})])
+    const { c: c2 } = client(g, { getAccessToken: async () => 'tok' })
+    expect((await err(c2.call('/v3/application/shops/1/listings', { method: 'POST', oauth: true, form: { title: 'x' } }))).kind).toBe(
+      'server'
+    )
+    expect(g.calls).toHaveLength(1)
+    const h = queuedFetch([{ throws: new TypeError('reset') }, ok({})])
+    const { c: c3 } = client(h, { getAccessToken: async () => 'tok' })
+    expect((await err(c3.call('/x', { method: 'POST', oauth: true }))).kind).toBe('network')
+    expect(h.calls).toHaveLength(1)
+  })
+
+  it('formBody: arrays comma-joined, undefined skipped, booleans as text', () => {
+    expect(formBody({ a: ['x', 'y'], b: undefined, c: true, d: 5, e: '' })).toBe('a=x%2Cy&c=true&d=5&e=')
+  })
+})
+
+describe('creating listings (OAuth)', () => {
+  const signed = (f: typeof globalThis.fetch) => client(f, { getAccessToken: async () => 'tok' }).c
+
+  it('createDraftListing: a POST form to the shop', async () => {
+    const f = queuedFetch([{ body: { listing_id: 99, state: 'draft' } }])
+    expect((await signed(f).createDraftListing(77, { title: 'T', price: 5.99, tags: ['a', 'b'] })).listing_id).toBe(99)
+    expect(f.calls[0].method).toBe('POST')
+    expect(f.calls[0].url.pathname).toBe('/v3/application/shops/77/listings')
+    expect(f.calls[0].body).toBe('title=T&price=5.99&tags=a%2Cb')
+  })
+
+  it('uploads are multipart: the image with its rank, the file with its name', async () => {
+    const f = queuedFetch([{ body: { listing_image_id: 1 } }, { body: { listing_file_id: 2 } }])
+    const c = signed(f)
+    await c.uploadListingImage(77, 99, { data: new Uint8Array([1, 2, 3]), name: 'a.jpg', type: 'image/jpeg', rank: 2 })
+    await c.uploadListingFile(77, 99, { data: new Uint8Array([4]), name: 'Planner.xlsx', type: 'application/zip', rank: 1 })
+    expect(f.calls.map((x) => [x.method, x.url.pathname])).toEqual([
+      ['POST', '/v3/application/shops/77/listings/99/images'],
+      ['POST', '/v3/application/shops/77/listings/99/files']
+    ])
+    const img = f.calls[0].rawBody as FormData
+    expect(img.get('rank')).toBe('2')
+    const blob = img.get('image') as File
+    expect(blob.name).toBe('a.jpg')
+    expect(blob.type).toBe('image/jpeg')
+    expect([...new Uint8Array(await blob.arrayBuffer())]).toEqual([1, 2, 3])
+    const file = f.calls[1].rawBody as FormData
+    expect(file.get('name')).toBe('Planner.xlsx')
+    expect((file.get('file') as File).name).toBe('Planner.xlsx')
+    expect(f.calls[0].headers['content-type']).toBeUndefined() // fetch sets the multipart boundary
+  })
+
+  it('an upload is never retried after a 5xx (it could duplicate the photo)', async () => {
+    const f = queuedFetch([{ status: 502 }, { body: {} }])
+    const e = await err(signed(f).uploadListingImage(1, 2, { data: new Uint8Array([1]), name: 'a.png', type: 'image/png', rank: 1 }))
+    expect(e.kind).toBe('server')
+    expect(f.calls).toHaveLength(1)
+  })
+
+  it('taxonomy (API key only), shipping and processing profiles (OAuth)', async () => {
+    const f = queuedFetch([
+      { body: { count: 1, results: [{ id: 1, name: 'Paper', children: [] }] } },
+      { body: { count: 1, results: [{ shipping_profile_id: 5, title: 'Std' }] } },
+      { body: { count: 1, results: [{ readiness_state_id: 6 }] } }
+    ])
+    const c = signed(f)
+    expect(await c.getSellerTaxonomy()).toEqual([{ id: 1, name: 'Paper', children: [] }])
+    expect(f.calls[0].headers.authorization).toBeUndefined()
+    expect((await c.getShippingProfiles(77))[0].shipping_profile_id).toBe(5)
+    expect(f.calls[1].url.pathname).toBe('/v3/application/shops/77/shipping-profiles')
+    expect(f.calls[1].headers.authorization).toBe('Bearer tok')
+    expect((await c.getProcessingProfiles(77))[0].readiness_state_id).toBe(6)
+    expect(f.calls[2].url.pathname).toBe('/v3/application/shops/77/readiness-state-definitions')
+  })
+})
+
+describe('501 Not Implemented', () => {
+  it('is not retried (an endpoint that does not exist yet)', async () => {
+    const f = queuedFetch([{ status: 501, body: { error: 'Not implemented' } }, { body: {} }])
+    const e = await err(client(f).c.request('/v3/application/listings/1/properties/2'))
+    expect(e.kind).toBe('server')
+    expect(e.status).toBe(501)
+    expect(f.calls).toHaveLength(1)
   })
 })

@@ -47,6 +47,11 @@ import {
 } from './db'
 import { type McpServerInfo, type McpTool, ToolInputError, errorResult, textResult } from './mcpProtocol'
 import { shopStatsPayload } from './shopStats'
+import { neutralText } from './neutral'
+import { type OwnStoreDeps, createDraftTools, createStoreTools } from './mcpStoreTools'
+import { featureMcpTools } from './features'
+
+export { neutralText }
 
 export interface McpToolDeps {
   db: Db
@@ -56,23 +61,29 @@ export interface McpToolDeps {
    * — the image protocol handler in the app; null = not available.
    */
   readImage?: (url: string) => Promise<{ data: Buffer; mimeType: string } | null>
+  /** The user's own store (signed in in the app): the store tools; absent = not available. */
+  own?: OwnStoreDeps
+  /** Drafts kept in the app changed (prepare_product …): tell the renderer. */
+  onDraftsChanged?: () => void
 }
 
 /** Larger images are refused (base64 in a model's context). */
 export const MCP_MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
-// ------------------------------------------------------------- neutral output
+/**
+ * Image types MCP clients (Claude) can show. Etsy's CDN negotiates the format
+ * with Chromium's Accept header, so some stored 570xN copies are AVIF — those
+ * are skipped for the original (always JPEG) instead of being sent unreadable.
+ */
+export const MCP_IMAGE_TYPES: readonly string[] = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
 
-const MARKET_URL = /(?:https?:\/\/)?(?:[\w-]+\.)*(?:etsy\.com|etsy\.me|etsystatic\.com)(?:\/[^\s<>"')\]]*)?/gi
-const MARKET_WORD = /(?<![a-z])etsy/gi
-
-/** Free text with the marketplace's links and name taken out. */
-export function neutralText(s: string): string
-export function neutralText(s: string | null | undefined): string | null
-export function neutralText(s: string | null | undefined): string | null {
-  if (s == null) return null
-  return s.replace(MARKET_URL, '[link]').replace(MARKET_WORD, 'marketplace')
+/** `image/JPEG; charset=…` → `image/jpeg` (and the non-standard `image/jpg`). */
+export function imageMime(contentType: string): string {
+  const t = contentType.split(';')[0].trim().toLowerCase()
+  return t === 'image/jpg' ? 'image/jpeg' : t
 }
+
+// ------------------------------------------------------------- neutral output
 
 const n = neutralText
 const list = (a: readonly string[] | null | undefined): string[] => (a ?? []).map((s) => n(s))
@@ -256,10 +267,12 @@ function storeNumbers(s: ShopStats | null | undefined) {
   }
 }
 
-function storeSummary(s: ShopSummary) {
+function storeSummary(s: ShopSummary, mine: number | null = null) {
   const p = s.profile ?? null
   return {
     id: s.id,
+    /** The user's own store (connected in the app): list_my_products / create_product / … work on it. */
+    is_mine: mine != null && s.id === mine,
     name: n(s.shopName),
     title: n(s.title),
     currency: s.currency,
@@ -277,11 +290,11 @@ function storeSummary(s: ShopSummary) {
   }
 }
 
-function storeFull(s: ShopSummary) {
+function storeFull(s: ShopSummary, mine: number | null = null) {
   const p = s.profile ?? null
   const r = s.reviews ?? null
   return {
-    ...storeSummary(s),
+    ...storeSummary(s, mine),
     owner_username: n(p?.loginName),
     announcement: n(p?.announcement),
     sale_message: n(p?.saleMessage),
@@ -581,11 +594,21 @@ Prices: "base" is the seller's own price before tax and discounts. "current" is 
 
 Popularity: favorites = how many people saved the product; views = total views (updated about once a day); featured_position = position among the products the store features (null = not featured). *_change fields compare the latest snapshot with the previous one. Store sales_count is the store's total number of sales; per-product sales are not available — review counts are the best proxy for how often a product sells.
 
-Ids: store ids, product ids, image ids, review ids and snapshot ids are stable numbers. Times are ISO 8601 UTC.`
+Ids: store ids, product ids, image ids, review ids and snapshot ids are stable numbers. Times are ISO 8601 UTC.
+
+The user's own store: if the user connected it in the app, list_stores marks it with is_mine: true. list_my_products reads its products live in any status (drafts and inactive ones too); find_categories and get_product_options help to prepare a new product. create_product, update_my_product, add_product_media and update_my_store CHANGE the live store: use them only for changes the user asked for, prefer drafts (publish=false) unless the user said to publish, and confirm before publishing because a listing fee applies. They work only while the user allows changes in the app; otherwise they answer how to enable it.
+
+More tools: search_market searches the WHOLE marketplace (not only the followed stores) — keywords, category (list_market_categories), price; get_store_sections / get_store_featured / get_store_return_policies / get_product_live_details read live details of any store or product. For the user's own store there are also tools for inventory (price, quantity, variations), photos/video/files, attributes, personalization, translations, sections, shipping/processing profiles, return policies, holidays, orders (list_my_orders, mark_my_order_shipped…), sales (list_my_sales) and money (list_my_ledger); reads need the store connected, changes also need "allow changes". Buyer contact details are left out unless explicitly asked for.
+
+To propose a NEW product, prefer prepare_product: it saves a draft inside the user's app (nothing reaches the store); the user reviews, edits and sends it from there. list_prepared_products shows those drafts; send_prepared_product sends one only when the user asks you to (needs the 'allow changes' switch).`
 
 export function createMcpTools(deps: McpToolDeps): McpTool[] {
   const { db } = deps
   const now = deps.now ?? Date.now
+  const mine = (): number | null => {
+    const st = deps.own?.status()
+    return st?.loggedIn ? (st.shopId ?? null) : null
+  }
 
   const tools: McpTool[] = [
     {
@@ -595,7 +618,8 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
         'All stores the user follows, with their headline numbers (active products, total sales, rating, review count, favorites) and the latest snapshot (when it was taken, how many products were added/removed/changed). Start here to get store ids.',
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
       run: () => {
-        const stores = listShopSummaries(db).map(storeSummary)
+        const m = mine()
+        const stores = listShopSummaries(db).map((s) => storeSummary(s, m))
         return textResult({ count: stores.length, stores })
       }
     },
@@ -610,7 +634,7 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
         required: ['store_id'],
         additionalProperties: false
       },
-      run: (a) => textResult(storeFull(requireStore(db, a.store_id)))
+      run: (a) => textResult(storeFull(requireStore(db, a.store_id), mine()))
     },
     {
       name: 'search_products',
@@ -994,8 +1018,9 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
               : `Product ${l.listingId} has ${l.images.length} photo(s).`
           )
         }
-        const size = a.size === 'full' ? 'fullxfull' : '570xN'
-        const out = await readImage(`etsyimg://img/${img.id}/${size}`)
+        // medium = the 570 px copy, else the original (a missing or AVIF copy).
+        const sizes = a.size === 'full' ? ['fullxfull'] : ['570xN', 'fullxfull']
+        const out = await readImage(sizes.map((size) => `etsyimg://img/${img.id}/${size}`))
         if ('error' in out) return errorResult(out.error)
         return {
           content: [
@@ -1032,7 +1057,7 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
           .get(id) as { id: number; has_photo: number } | undefined
         if (!r) throw new ToolInputError(`No review with id ${id}.`)
         if (!r.has_photo) throw new ToolInputError(`Review ${id} has no photo.`)
-        const out = await readImage(`etsyimg://review/${id}/fullxfull`)
+        const out = await readImage([`etsyimg://review/${id}/fullxfull`])
         if ('error' in out) return errorResult(out.error)
         return {
           content: [
@@ -1044,13 +1069,36 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
     }
   ]
 
-  async function readImage(url: string): Promise<{ data: Buffer; mimeType: string } | { error: string }> {
-    const img = deps.readImage ? await deps.readImage(url).catch(() => null) : null
-    if (!img) return { error: 'The photo is not available right now (not stored locally and could not be downloaded).' }
-    if (img.data.length > MCP_MAX_IMAGE_BYTES) {
-      return { error: 'The photo is too large to return; ask for size "medium".' }
+  tools.push(...createStoreTools(deps.own), ...createDraftTools(deps.own, { db, now, onChanged: deps.onDraftsChanged }))
+  tools.push(
+    ...featureMcpTools({
+      db,
+      client: deps.own?.client ?? null,
+      authStatus: () => deps.own?.status() ?? { loggedIn: false, redirectUri: '', pending: false, encrypted: false },
+      writesAllowed: () => deps.own?.writesAllowed() ?? false,
+      taxonomy: () => deps.own?.taxonomy() ?? Promise.resolve([]),
+      readFile: deps.own?.readFile,
+      statFile: deps.own?.statFile,
+      accessToken: () => deps.own?.accessToken?.() ?? Promise.resolve(null),
+      now
+    })
+  )
+
+  /** The first of `urls` that reads as a showable image of an acceptable size. */
+  async function readImage(urls: string[]): Promise<{ data: Buffer; mimeType: string } | { error: string }> {
+    let unsupported: string | null = null
+    let tooLarge = false
+    for (const url of urls) {
+      const img = deps.readImage ? await deps.readImage(url).catch(() => null) : null
+      if (!img) continue
+      const mimeType = imageMime(img.mimeType)
+      if (!MCP_IMAGE_TYPES.includes(mimeType)) unsupported = mimeType
+      else if (img.data.length > MCP_MAX_IMAGE_BYTES) tooLarge = true
+      else return { data: img.data, mimeType }
     }
-    return img
+    if (tooLarge) return { error: 'The photo is too large to return; ask for size "medium".' }
+    if (unsupported) return { error: `The photo is only available as ${unsupported}, which cannot be returned as an image.` }
+    return { error: 'The photo is not available right now (not stored locally and could not be downloaded).' }
   }
 
   return tools

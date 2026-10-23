@@ -275,6 +275,7 @@ describe('MCP server settings', () => {
   it('defaults: off, port 9102, no token yet', () => {
     expect(createMcpSettingsStore(file, fakeSafeStorage()).get()).toEqual({
       enabled: false,
+      allowWrites: false,
       port: 9102,
       token: null,
       tokenEncrypted: false
@@ -343,6 +344,14 @@ describe('MCP server settings', () => {
     s.ensureToken()
     expect(keys.getKey()).toBe(`${KEY}:${SECRET}`)
     expect(createBuyerCountryStore(file).get()).toBe('DE')
+  })
+
+  it('allowWrites (store changes through MCP) is saved on its own', () => {
+    const s = createMcpSettingsStore(file, fakeSafeStorage())
+    s.set({ enabled: true, port: 9300 })
+    expect(s.set({ allowWrites: true })).toMatchObject({ enabled: true, port: 9300, allowWrites: true })
+    expect(createMcpSettingsStore(file, fakeSafeStorage()).get().allowWrites).toBe(true)
+    expect(s.set({ allowWrites: false }).allowWrites).toBe(false)
   })
 
   it('newMcpToken is random', () => {

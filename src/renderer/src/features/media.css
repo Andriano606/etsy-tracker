@@ -1,0 +1,80 @@
+/* Feature "media" (features/media/*): the own listing's photos, video and files. */
+
+.media-section h4 {
+  margin: 14px 0 6px;
+  font-size: 13px;
+  color: var(--text);
+}
+.media-photos {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px;
+}
+.media-photos li {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.media-photos img,
+.media-photos .media-thumb-empty {
+  width: 100%;
+  aspect-ratio: 170 / 135;
+  object-fit: cover;
+  border-radius: 6px;
+  background: var(--bg-2);
+}
+.media-meta {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.media-alt {
+  display: flex;
+  gap: 4px;
+}
+.media-alt input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 7px;
+  color: var(--text);
+  font-size: 12px;
+}
+.media-alt input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.media-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.media-video {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  font-size: 13px;
+}
+.media-video img,
+.media-video .media-thumb-empty {
+  width: 160px;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 6px;
+  background: var(--bg-3);
+  flex-shrink: 0;
+}
+.media-video .media-actions {
+  margin-top: 6px;
+}
+.media-section .settings-actions {
+  align-items: center;
+}

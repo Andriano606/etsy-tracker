@@ -8,6 +8,7 @@ import { Readable } from 'stream'
 import type { ImageSize } from '../shared/types'
 import { type Db, type ImageRow, type ReviewImageRow, getImageRow, getReviewImageRow } from './db'
 import type { ImageStore } from './imageStore'
+import { getDraftMediaData } from './drafts'
 import { isEtsyCdnUrl } from '../shared/externalUrl'
 
 export const IMAGE_SCHEME = 'etsyimg'
@@ -41,6 +42,21 @@ export function parseReviewImageUrl(url: string): number | null {
   }
   if (u.protocol !== `${IMAGE_SCHEME}:` || u.hostname !== 'review') return null
   const m = u.pathname.match(/^\/(\d{1,20})\/fullxfull$/)
+  if (!m) return null
+  const id = Number(m[1])
+  return Number.isSafeInteger(id) && id > 0 ? id : null
+}
+
+/** `etsyimg://draft/7` → 7 (a photo of a listing draft kept in the app); null otherwise. */
+export function parseDraftImageUrl(url: string): number | null {
+  let u: URL
+  try {
+    u = new URL(url)
+  } catch {
+    return null
+  }
+  if (u.protocol !== `${IMAGE_SCHEME}:` || u.hostname !== 'draft') return null
+  const m = u.pathname.match(/^\/(\d{1,20})$/)
   if (!m) return null
   const id = Number(m[1])
   return Number.isSafeInteger(id) && id > 0 ? id : null
@@ -145,6 +161,16 @@ export function createImageProtocolHandler(deps: ImageProtocolDeps): (req: Reque
   }
 
   return async (req) => {
+    // A draft's photo lives in the db (no CDN, no MinIO).
+    const draftMedia = parseDraftImageUrl(req.url)
+    if (draftMedia != null) {
+      const row = getDraftMediaData(deps.db, draftMedia)
+      if (!row || row.kind !== 'photo') return new Response(null, { status: 404 })
+      return new Response(new Uint8Array(row.data), {
+        status: 200,
+        headers: { 'content-type': row.mime, 'cache-control': 'no-store' }
+      })
+    }
     let src: ImageSource
     let onMissing: (() => void) | undefined
     let store: ImageStore | null

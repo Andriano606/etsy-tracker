@@ -777,6 +777,8 @@ export interface ShopStatsPayload {
 /** The local MCP server (Settings → "MCP"): its settings plus whether it runs. */
 export interface McpStatus {
   enabled: boolean
+  /** MCP clients may change the user's own store (create/edit listings, store texts). */
+  allowWrites: boolean
   port: number
   /** http://127.0.0.1:{port}/mcp */
   url: string
@@ -798,5 +800,211 @@ export interface McpStatus {
 
 export interface McpSettingsInput {
   enabled?: boolean
+  allowWrites?: boolean
   port?: number | string
+}
+
+/** Signed in to Etsy (OAuth) to edit the user's own shop — never the tokens themselves. */
+export interface EtsyAuthStatus {
+  loggedIn: boolean
+  /** The redirect URI used for sign-in (must equal one registered for the app on Etsy). */
+  redirectUri: string
+  /** A sign-in was started and waits for the pasted redirect URL. */
+  pending: boolean
+  /** The stored tokens are protected by a real OS keyring. */
+  encrypted: boolean
+  /** Stored tokens could not be decrypted — sign in again. */
+  unreadable?: boolean
+  userId?: number
+  shopId?: number | null
+  shopName?: string | null
+  scopes?: string[]
+  /** Epoch ms. */
+  signedInAt?: number
+  /** Epoch ms: the refresh token runs out (90 days after it was issued) — sign in again by then. */
+  reloginBy?: number
+}
+
+/** A listing's state on Etsy (getListingsByShop `state`). */
+export type MyListingState = 'active' | 'inactive' | 'draft' | 'expired' | 'sold_out'
+
+/** One listing of the signed-in user's own shop (any state), as the editor needs it. */
+export interface MyListing {
+  listingId: number
+  state: string
+  title: string
+  description: string
+  tags: string[]
+  materials: string[]
+  shouldAutoRenew: boolean | null
+  /** listing_type: physical | download | both */
+  type: string | null
+  priceAmount: number | null
+  priceDivisor: number | null
+  currency: string | null
+  quantity: number | null
+  url: string | null
+  /** First image, 170x135 on the Etsy CDN (CSP allows i.etsystatic.com); null when none / not a CDN URL. */
+  imageUrl: string | null
+  /** Etsy epoch seconds. */
+  updatedAt: number | null
+  endingAt: number | null
+}
+
+export interface MyListingsPage {
+  state: MyListingState
+  total: number
+  offset: number
+  listings: MyListing[]
+}
+
+/** The fields the editor can change (updateListing); absent = unchanged. */
+export interface MyListingPatch {
+  title?: string
+  description?: string
+  tags?: string[]
+  materials?: string[]
+  shouldAutoRenew?: boolean
+  state?: 'active' | 'inactive'
+}
+
+/** The editable texts of the user's shop (updateShop). */
+export interface MyShopProfile {
+  shopId: number
+  shopName: string
+  title: string
+  announcement: string
+  saleMessage: string
+  digitalSaleMessage: string
+  policyAdditional: string
+  /** Etsy says policy_additional may only be set for shops in the EU. */
+  inEu: boolean
+  countryIso: string | null
+}
+
+export type MyShopPatch = Partial<
+  Pick<MyShopProfile, 'title' | 'announcement' | 'saleMessage' | 'digitalSaleMessage' | 'policyAdditional'>
+>
+
+export type MyShopResult<T> = { ok: true; value: T } | { ok: false; error: string }
+
+/** A file the user picked in the native dialog: main keeps the path, the renderer only the token. */
+export interface PickedFile {
+  token: string
+  name: string
+  size: number
+}
+
+/** "Новий лістинг": everything createDraftListing needs, plus the uploads. */
+export interface NewListingInput {
+  /** download = a digital product (files delivered by Etsy); physical needs a shipping profile. */
+  type: 'download' | 'physical'
+  title: string
+  description: string
+  /** In the shop's currency, e.g. "5.99" (Etsy takes a decimal). */
+  price: string
+  quantity: number
+  taxonomyId: number | null
+  whoMade: string
+  whenMade: string
+  isSupply: boolean
+  tags: string[]
+  materials: string[]
+  shouldAutoRenew: boolean
+  shippingProfileId: number | null
+  readinessStateId: number | null
+  /** PickedFile tokens, in display order (the first is the main photo). */
+  images: string[]
+  /** Digital files (PickedFile tokens). */
+  files: string[]
+  /** Publish right away (Etsy's $0.20 fee) instead of leaving a draft. */
+  publish: boolean
+}
+
+export interface CreateListingProgress {
+  step: 'draft' | 'images' | 'files' | 'publish'
+  done: number
+  total: number
+  label: string
+}
+
+/**
+ * Creating a listing is several Etsy calls: once the draft exists, a later
+ * failure still returns its id so the user can finish it in the editor.
+ */
+export type CreateListingResult =
+  | { ok: true; listingId: number; published: boolean; warnings: string[] }
+  | { ok: false; error: string; listingId?: number }
+
+export interface TaxonomyOption {
+  id: number
+  /** "Paper & Party Supplies › Paper › Calendars & Planners" */
+  path: string
+}
+
+export interface ShippingOption {
+  id: number
+  label: string
+}
+
+/** A listing draft's texts and settings as kept in the app (everything but the media). */
+export interface DraftFields {
+  type: 'download' | 'physical'
+  title: string
+  description: string
+  /** As typed, e.g. "5.99". */
+  price: string
+  quantity: number
+  taxonomyId: number | null
+  /** The chosen category's "A › B › C" path, for display. */
+  taxonomyPath: string | null
+  whoMade: string
+  whenMade: string
+  isSupply: boolean
+  tags: string[]
+  materials: string[]
+  shouldAutoRenew: boolean
+  shippingProfileId: number | null
+  readinessStateId: number | null
+}
+
+/** A photo or buyer file stored with a draft (photos show via etsyimg://draft/{id}). */
+export interface DraftMedia {
+  id: number
+  kind: 'photo' | 'file'
+  position: number
+  name: string
+  mime: string
+  size: number
+}
+
+/** A listing prepared in the app (by the user or by Claude over MCP), reviewed before sending. */
+export interface ListingDraft {
+  id: number
+  source: 'app' | 'mcp'
+  /** draft = not sent; sent = the listing exists on Etsy; error = the last send failed. */
+  status: 'draft' | 'sent' | 'error'
+  fields: DraftFields
+  photos: DraftMedia[]
+  files: DraftMedia[]
+  createdAt: number
+  updatedAt: number
+  sentAt: number | null
+  sentListingId: number | null
+  sentPublished: boolean | null
+  lastError: string | null
+  /** What still blocks sending it as an Etsy draft (empty = ready). */
+  problems: string[]
+}
+
+/** A media slot when saving a draft: one already stored, or a freshly picked file. */
+export type DraftMediaRef = { mediaId: number } | { token: string }
+
+export interface SaveDraftInput {
+  /** Absent = a new draft. */
+  id?: number
+  fields: DraftFields
+  /** The full list in order (stored ones not listed are removed). */
+  photos: DraftMediaRef[]
+  files: DraftMediaRef[]
 }

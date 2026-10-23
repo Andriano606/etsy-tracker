@@ -1815,3 +1815,309 @@ label.check {
   line-height: 1.7;
   color: var(--text-body);
 }
+
+/* ---- Мій магазин (MyShopModal) ---- */
+.add-shop.my-shop-btn {
+  margin-top: -2px;
+  border-style: solid;
+  border-color: var(--border);
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.my-shop-modal {
+  width: 760px;
+}
+.my-shop-modal .field textarea,
+.my-shop-modal .field select {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 8px 10px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  resize: vertical;
+}
+.my-shop-modal .field select {
+  width: auto;
+  min-width: 220px;
+}
+.my-shop-modal .field input {
+  width: 100%;
+}
+.my-shop-modal .field textarea:focus,
+.my-shop-modal .field select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.my-shop-modal .field textarea:disabled,
+.my-shop-modal .field input:disabled {
+  opacity: 0.55;
+}
+.signin-paste {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.signin-paste ol {
+  margin: 0 0 12px;
+  padding-left: 18px;
+}
+.signed-in {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 14px;
+  font-size: 13px;
+}
+.my-shop-modal .tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.my-shop-modal .tabs button {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-dim);
+  padding: 7px 12px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.my-shop-modal .tabs button.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+.my-listings {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+}
+.my-listings li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.my-listings img,
+.my-listings .thumb-empty {
+  width: 56px;
+  height: 44px;
+  object-fit: cover;
+  border-radius: 5px;
+  background: var(--bg-3);
+  flex-shrink: 0;
+}
+.my-listing-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+}
+.my-listing-title {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-bottom: 2px;
+}
+.editor-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  font-size: 12.5px;
+}
+.editor-head .btn.small {
+  margin-left: 0;
+}
+.listing-editor ul.hint {
+  margin: 0 0 10px;
+  padding-left: 18px;
+}
+
+/* ---- Own shop in the list + "Новий лістинг" ---- */
+.mine-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 16px;
+  vertical-align: middle;
+  color: var(--accent-on);
+  background: var(--accent);
+  letter-spacing: 0.2px;
+}
+.shop-header h1 .mine-badge {
+  font-size: 11px;
+  line-height: 18px;
+}
+.field-row {
+  display: flex;
+  gap: 12px;
+}
+.field-row > .field {
+  flex: 1;
+  min-width: 0;
+}
+.radio-row {
+  display: flex;
+  gap: 18px;
+  font-size: 13px;
+}
+.chosen-cat {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-body);
+}
+.cat-results {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg);
+}
+.cat-results button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text-body);
+  font-size: 12.5px;
+  padding: 5px 8px;
+  border-radius: 5px;
+}
+.cat-results button:hover {
+  background: var(--bg-3);
+  color: var(--text);
+}
+.picked-files {
+  margin: 0 0 6px;
+  padding-left: 20px;
+  font-size: 12.5px;
+}
+.picked-files li {
+  padding: 3px 0;
+}
+.picked-files li > * {
+  vertical-align: middle;
+}
+.picked-name {
+  margin-right: 8px;
+  color: var(--text-body);
+}
+.btn.small.add-files {
+  margin-left: 0;
+}
+.hint.problems ul {
+  margin: 4px 0 10px;
+  padding-left: 18px;
+}
+.warn-text {
+  color: oklch(0.85 0.13 80);
+}
+.mcp-modal .settings-section h3 + .mcp-tools + h3 {
+  margin-top: 12px;
+}
+
+/* ---- Drafts in the app (DraftsModal) ---- */
+.count-badge {
+  display: inline-block;
+  margin-left: 6px;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+  color: var(--accent-on);
+  background: var(--accent);
+}
+.mcp-badge {
+  margin-left: 8px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  line-height: 16px;
+  color: var(--text-body);
+  background: var(--bg-4);
+  border: 1px solid var(--border);
+}
+.mcp-note {
+  margin-bottom: 12px;
+}
+.draft-thumb {
+  width: 34px;
+  height: 34px;
+  object-fit: cover;
+  border-radius: 4px;
+  margin-right: 8px;
+  vertical-align: middle;
+  background: var(--bg-3);
+}
+.settings-actions.wrap {
+  flex-wrap: wrap;
+}
+.draft-title {
+  font-size: 14px;
+  margin: 10px 0 6px;
+}
+
+/* ---- Features (feature:call) ---- */
+.feature-details {
+  margin-top: 10px;
+  border-top: 1px solid var(--hairline);
+  padding-top: 8px;
+}
+.feature-details > summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  padding: 4px 0;
+}
+.feature-body {
+  padding: 8px 0 4px;
+  font-size: 13px;
+}
+.feature-modal {
+  width: 920px;
+}
+.plain-list {
+  margin: 4px 0 10px;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.data-table th,
+.data-table td {
+  text-align: left;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--hairline);
+  vertical-align: top;
+}
+.data-table th {
+  color: var(--text-dim);
+  font-weight: 500;
+}

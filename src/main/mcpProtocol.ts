@@ -37,6 +37,10 @@ export interface McpTool {
   title: string
   description: string
   inputSchema: JsonSchema & { type: 'object' }
+  /** false = changes something (MCP annotations: readOnlyHint false). Default true. */
+  readOnly?: boolean
+  /** Changes are hard to undo (publishing, deactivating). Only meaningful when not read-only. */
+  destructive?: boolean
   /** Arguments already checked against `inputSchema`. */
   run(args: Record<string, unknown>): McpToolResult | Promise<McpToolResult>
 }
@@ -196,7 +200,13 @@ export async function handleMcpMessage(opts: McpHandlerOptions, msg: unknown): P
           title: t.title,
           description: t.description,
           inputSchema: t.inputSchema,
-          annotations: { title: t.title, readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
+          annotations: {
+            title: t.title,
+            readOnlyHint: t.readOnly !== false,
+            destructiveHint: t.readOnly === false && !!t.destructive,
+            idempotentHint: t.readOnly !== false,
+            openWorldHint: t.readOnly === false
+          }
         }))
       })
     case 'tools/call':

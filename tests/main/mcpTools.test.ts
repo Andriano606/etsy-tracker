@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest'
 import type { Db } from '../../src/main/db'
 import { handleMcpMessage, type McpTool, type McpToolResult } from '../../src/main/mcpProtocol'
-import { createMcpTools, mcpServerInfo, MCP_INSTRUCTIONS, neutralFields, neutralText } from '../../src/main/mcpTools'
+import { createMcpTools, imageMime, mcpServerInfo, MCP_INSTRUCTIONS, neutralFields, neutralText } from '../../src/main/mcpTools'
 import { createImageProtocolHandler } from '../../src/main/imageProtocol'
 import { createReviewSyncer } from '../../src/main/reviewSync'
 import { createScanner } from '../../src/main/scanner'
@@ -417,6 +417,62 @@ describe('photos', () => {
     expect(await toolError('get_review_photo', { review_id: 99_999 })).toContain('No review')
   })
 
+  describe('formats a client can show (Etsy\'s CDN sends Chromium AVIF/WebP for some 570 px copies)', () => {
+    /** Tools whose photo reads answer per size: `mime` or null (missing). */
+    function toolsWith(bySize: Record<string, string | null>) {
+      const asked: string[] = []
+      const tools = createMcpTools({
+        db: w.db,
+        readImage: async (url) => {
+          asked.push(url)
+          const size = url.split('/').pop()!
+          const mime = bySize[size]
+          return mime ? { data: Buffer.from(`${size}-bytes`), mimeType: mime } : null
+        }
+      })
+      const run = (args: Record<string, unknown>) => tools.find((t) => t.name === 'get_product_image')!.run({ product_id: 1, ...args })
+      return { run, asked }
+    }
+    const image = (r: McpToolResult) => r.content[1] as { data: string; mimeType: string }
+
+    it('an AVIF medium copy is replaced by the JPEG original', async () => {
+      const { run, asked } = toolsWith({ '570xN': 'image/avif', fullxfull: 'image/jpeg' })
+      const r = await run({})
+      expect(r.isError).toBeFalsy()
+      expect(image(r).mimeType).toBe('image/jpeg')
+      expect(Buffer.from(image(r).data, 'base64').toString()).toBe('fullxfull-bytes')
+      expect(asked.map((u) => u.split('/').pop())).toEqual(['570xN', 'fullxfull'])
+    })
+
+    it('a WebP medium copy is fine as it is', async () => {
+      const { run, asked } = toolsWith({ '570xN': 'image/webp', fullxfull: 'image/jpeg' })
+      expect(image(await run({})).mimeType).toBe('image/webp')
+      expect(asked).toHaveLength(1)
+    })
+
+    it('a missing medium copy falls back to the original too', async () => {
+      const { run } = toolsWith({ '570xN': null, fullxfull: 'image/jpeg' })
+      expect(Buffer.from(image(await run({})).data, 'base64').toString()).toBe('fullxfull-bytes')
+    })
+
+    it('content types are normalized (case, parameters, image/jpg)', async () => {
+      const { run } = toolsWith({ '570xN': 'Image/JPG; charset=binary' })
+      expect(image(await run({})).mimeType).toBe('image/jpeg')
+      expect(imageMime('image/PNG')).toBe('image/png')
+    })
+
+    it('nothing showable: a tool error naming the format', async () => {
+      const { run } = toolsWith({ '570xN': 'image/avif', fullxfull: 'image/avif' })
+      const r = await run({})
+      expect(r.isError).toBe(true)
+      expect((r.content[0] as { text: string }).text).toContain('image/avif')
+      const full = toolsWith({ '570xN': 'image/jpeg', fullxfull: 'image/heic' })
+      const r2 = await full.run({ size: 'full' })
+      expect(r2.isError).toBe(true)
+      expect(full.asked.map((u) => u.split('/').pop())).toEqual(['fullxfull'])
+    })
+  })
+
   it('a photo that cannot be read is a tool error, not a crash', async () => {
     const tools = createMcpTools({ db: w.db, readImage: async () => null })
     const t = tools.find((x) => x.name === 'get_product_image')!
@@ -470,6 +526,9 @@ describe('neutralText / neutralFields', () => {
     expect(neutralText('Etsy’s best; visit https://www.etsy.com/listing/1/x?ref=a now')).toBe('marketplace’s best; visit [link] now')
     expect(neutralText('ETSY.com/shop/x and etsystatic.com/img.jpg')).toBe('[link] and [link]')
     expect(neutralText('Betsy loves #EtsyFinds')).toBe('Betsy loves #marketplaceFinds')
+    expect(neutralText('You must add this language as a shop language in Shop Manager.')).toBe(
+      'You must add this language as a shop language in the store settings.'
+    )
     expect(neutralText(null)).toBeNull()
     expect(neutralText('')).toBe('')
   })

@@ -686,7 +686,7 @@ describe('migration v4 (from a real v3 database)', () => {
     const before = dump()
     expect(before.listings).toHaveLength(2)
     expect(before.reviews).toHaveLength(1)
-    migrate(db)
+    migrate(db, MIGRATIONS.slice(0, 4))
     expect(schemaVersion(db)).toBe(4)
     expect(dump()).toEqual(before)
 
@@ -853,5 +853,35 @@ describe('promotions table', () => {
     startPromotion(db, 20987654, 2, mkBp({ discountPercentage: 50 }), 'seen', scans[1], 100)
     expect(listScanPromotions(db, scans[1], 1).started.map((p) => p.discountPercentage)).toEqual([50])
     expect(listScanPromotions(db, scans[1]).started).toHaveLength(2)
+  })
+})
+
+describe('migration v5 (from a real v4 database)', () => {
+  it('adds the draft tables and leaves every v4 table untouched', () => {
+    const db = memDbAt(4)
+    insertShop(db, mkShop())
+    upsertListing(db, mkInput(1), 100)
+    const tables = () =>
+      (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as Array<{ name: string }>).map(
+        (r) => r.name
+      )
+    const v4Tables = tables()
+    const dump = () => Object.fromEntries(v4Tables.map((t) => [t, db.prepare(`SELECT * FROM ${t}`).all()]))
+    const before = dump()
+    migrate(db)
+    expect(schemaVersion(db)).toBe(5)
+    expect(dump()).toEqual(before)
+    expect(tables()).toEqual([...v4Tables, 'listing_draft_media', 'listing_drafts'].sort())
+    const cols = (t: string) => (db.prepare(`PRAGMA table_info(${t})`).all() as Array<{ name: string }>).map((r) => r.name)
+    expect(cols('listing_drafts')).toEqual([
+      'id', 'source', 'fields_json', 'created_at', 'updated_at', 'sent_at', 'sent_listing_id', 'sent_published', 'last_error'
+    ])
+    expect(cols('listing_draft_media')).toEqual(['id', 'draft_id', 'kind', 'position', 'name', 'mime', 'size', 'data'])
+    // Media go with their draft.
+    db.prepare("INSERT INTO listing_drafts (source, fields_json, created_at, updated_at) VALUES ('app', '{}', 1, 1)").run()
+    db.prepare("INSERT INTO listing_draft_media (draft_id, kind, position, name, mime, size, data) VALUES (1, 'photo', 1, 'a.jpg', 'image/jpeg', 1, x'00')").run()
+    db.prepare('DELETE FROM listing_drafts WHERE id = 1').run()
+    expect(db.prepare('SELECT COUNT(*) AS n FROM listing_draft_media').get()).toEqual({ n: 0 })
+    expect(() => db.prepare("INSERT INTO listing_drafts (source, fields_json, created_at, updated_at) VALUES ('web', '{}', 1, 1)").run()).toThrow()
   })
 })

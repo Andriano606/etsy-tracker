@@ -511,3 +511,140 @@ export interface ListingStatsPoint {
   /** false = the shop's history was still being backfilled: reviewCount is "≥". */
   reviewsComplete?: boolean | null
 }
+
+// ------------------------------------------------------------ statistics view
+
+/** The period the Statistics view covers ("Усе" / 90 / 30 / 7 днів). */
+export type StatsRange = 'all' | '90d' | '30d' | '7d'
+
+export const STATS_RANGES: readonly StatsRange[] = ['all', '90d', '30d', '7d']
+
+/** One successful scan in the period, with what was recorded for it. */
+export interface StatsScanPoint {
+  scanId: number
+  /** When the scan finished (ms). */
+  at: number
+  isBaseline: boolean
+  truncated: boolean
+  total: number
+  added: number
+  removed: number
+  changed: number
+  returned: number
+  /** shop_stats of that scan; all null when the scan has none (scans before schema v2). */
+  numFavorers: number | null
+  transactionSoldCount: number | null
+  reviewCount: number | null
+  reviewAverage: number | null
+  listingActiveCount: number | null
+  /** Sums over that scan's listing_stats rows; null when it has none. */
+  listingViews: number | null
+  listingFavorers: number | null
+}
+
+/** latest − earlier between two consecutive successful scans of the period (the anchor included). */
+export interface StatsInterval {
+  fromScanId: number
+  toScanId: number
+  /** ms */
+  from: number
+  to: number
+  days: number
+  sold: number | null
+  favorers: number | null
+  reviews: number | null
+  views: number | null
+}
+
+/**
+ * Sales per day over an interval of at least `STATS_MIN_RATE_MS` (shorter gaps
+ * between scans are merged with the next one — a sale or two within minutes
+ * would read as hundreds a day). Derived: Δ transaction_sold_count / days.
+ */
+export interface StatsSalesRate {
+  fromScanId: number
+  toScanId: number
+  from: number
+  to: number
+  days: number
+  sold: number
+  perDay: number
+}
+
+/** Reviews created in one calendar week / month (UTC), from the reviews table. */
+export interface StatsReviewBucket {
+  /** Start of the bucket, Etsy epoch seconds (Monday 00:00 UTC / the 1st 00:00 UTC). */
+  start: number
+  /** Exclusive end, seconds. */
+  end: number
+  count: number
+  /** Average rating of those reviews; null when there are none. */
+  avg: number | null
+  /** Counts by rating 1..5 (index 0 = 1★). */
+  ratings: [number, number, number, number, number]
+  /** The bucket reaches past "now" or starts before the period: not a full week/month. */
+  partial: boolean
+}
+
+/** One row of a "Топ товарів за ростом" table. */
+export interface StatsTopRow {
+  listingId: number
+  title: string
+  /** First active image (etsyimg://img/{id}/…); null when none is stored. */
+  imageId: number | null
+  /** The value at the first and last point the delta is taken over (null = unknown). */
+  start: number | null
+  end: number | null
+  delta: number
+  /** The values the sparkline draws, oldest first (per scan — at `StatsTop.seriesAt` — or reviews per equal time slice). */
+  series: Array<number | null>
+  /** The listing is in our `listings` table (else the title is "Товар #id" and it can't be opened). */
+  stored: boolean
+}
+
+export interface StatsTop {
+  /** The scans the views/favorers deltas compare (first and last of the period with listing_stats). */
+  fromScanId: number | null
+  toScanId: number | null
+  fromAt: number | null
+  toAt: number | null
+  /** When each views/favorers sparkline point was taken (ms; the scans with listing_stats, oldest first). */
+  seriesAt: number[]
+  views: StatsTopRow[]
+  favorers: StatsTopRow[]
+  /** Reviews created in the period (the reviews table), most first. */
+  reviews: StatsTopRow[]
+}
+
+/** Everything the Statistics view draws, computed in main (`stats:shop`). */
+export interface ShopStatsPayload {
+  shopId: number
+  range: StatsRange
+  /** Start of the period (ms); null for "Усе". */
+  from: number | null
+  /** "Now" when it was computed (ms). */
+  to: number
+  /** Successful scans of the period, oldest first (error/running scans are never included). */
+  scans: StatsScanPoint[]
+  /**
+   * The latest successful scan before the period (null for "Усе" or when the
+   * period has no scan): the starting point of the period's deltas, intervals,
+   * sales/day and top growth, and the left end of the scan lines.
+   */
+  anchor: StatsScanPoint | null
+  /** Between consecutive scans, the anchor first. */
+  intervals: StatsInterval[]
+  salesRate: StatsSalesRate[]
+  reviews: {
+    /** false while the shop's reviews were never synced (no buckets then). */
+    synced: boolean
+    /** false while the history is still being backfilled (counts are lower bounds). */
+    complete: boolean
+    /** Reviews created in the period and their average rating. */
+    total: number
+    avg: number | null
+    weeks: StatsReviewBucket[]
+    months: StatsReviewBucket[]
+  }
+  top: StatsTop
+}

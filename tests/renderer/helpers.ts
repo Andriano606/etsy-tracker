@@ -17,7 +17,9 @@ import type {
   ScanChange,
   ScanOutcome,
   ScanSummary,
-  ShopSummary
+  ShopStatsPayload,
+  ShopSummary,
+  StatsRange
 } from '../../src/shared/types'
 import { useStore } from '../../src/renderer/src/store'
 
@@ -160,6 +162,21 @@ export const mkChange = (
   ...over
 })
 
+/** What main answers for a shop with no scans and no reviews. */
+export const emptyStats = (shopId = 1, range: StatsRange = 'all', over: Partial<ShopStatsPayload> = {}): ShopStatsPayload => ({
+  shopId,
+  range,
+  from: null,
+  to: Date.now(),
+  scans: [],
+  anchor: null,
+  intervals: [],
+  salesRate: [],
+  reviews: { synced: false, complete: false, total: 0, avg: null, weeks: [], months: [] },
+  top: { fromScanId: null, toScanId: null, fromAt: null, toAt: null, seriesAt: [], views: [], favorers: [], reviews: [] },
+  ...over
+})
+
 /** A fully-stubbed window.api with sensible default resolutions. */
 export function makeApi() {
   return {
@@ -213,6 +230,9 @@ export function makeApi() {
     })),
     syncImages: vi.fn(async (): Promise<ImageSyncState> => ({ ...idleSync, running: true })),
     onImageSync: vi.fn(() => () => {}),
+    getShopStats: vi.fn(
+      async (shopId: number, range: StatsRange): Promise<ShopStatsPayload | null> => emptyStats(shopId, range)
+    ),
     openExternal: vi.fn(async () => true)
   }
 }
@@ -245,6 +265,7 @@ export function resetStore(): void {
     detailListing: null,
     historyScan: null,
     historyChanges: [],
+    statsShopId: null,
     confirmRequest: null
   })
 }

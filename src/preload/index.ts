@@ -18,7 +18,9 @@ import type {
   ScanOutcome,
   ScanProgress,
   ScanSummary,
-  ShopSummary
+  ShopStatsPayload,
+  ShopSummary,
+  StatsRange
 } from '../shared/types'
 
 function subscribe<T>(channel: string, cb: (payload: T) => void): () => void {
@@ -66,6 +68,10 @@ const api = {
   /** Start syncing the shop's reviews (continues a backfill); the live state comes via onReviewSync. */
   syncReviews: (shopId: number): Promise<void> => ipcRenderer.invoke('reviews:sync', shopId),
   onReviewSync: (cb: (s: ReviewSyncState) => void): (() => void) => subscribe('reviews:progress', cb),
+
+  /** The Statistics view's data for a shop and period (null for an unknown shop). */
+  getShopStats: (shopId: number, range: StatsRange): Promise<ShopStatsPayload | null> =>
+    ipcRenderer.invoke('stats:shop', { shopId, range }),
 
   scanShop: (shopId: number): Promise<ScanOutcome> => ipcRenderer.invoke('scan:shop', shopId),
   scanAll: (): Promise<ScanOutcome[]> => ipcRenderer.invoke('scan:all'),

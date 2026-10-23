@@ -15,7 +15,8 @@ import type {
   Review,
   ReviewPage,
   ReviewSyncState,
-  ScanOutcome
+  ScanOutcome,
+  ShopStatsPayload
 } from '../shared/types'
 import { isAllowedExternalUrl } from '../shared/externalUrl'
 import {
@@ -48,6 +49,7 @@ import {
   normalizeMinioEndpoint,
   validateBucketName
 } from './settings'
+import { parseStatsRange, shopStatsPayload } from './shopStats'
 import { addShop } from './shops'
 
 export interface IpcContext {
@@ -240,6 +242,14 @@ export function registerIpc(ctx: IpcContext): void {
     if (id != null) startReviewSync(ctx, id)
   })
   ipcMain.handle('scan:changes', (_e, scanId: number) => listScanChanges(db, scanId))
+  // The Statistics view: one compact, chart-ready payload per shop and period.
+  // A bad shop id answers null; an unknown range is "Усе".
+  ipcMain.handle('stats:shop', (_e, input: unknown): ShopStatsPayload | null => {
+    const o = (input && typeof input === 'object' ? input : {}) as { shopId?: unknown; range?: unknown }
+    const id = positiveId(o.shopId)
+    if (id == null) return null
+    return shopStatsPayload(db, id, parseStatsRange(o.range), Date.now())
+  })
 
   ipcMain.handle('scan:shop', async (_e, shopId: number) => {
     sendToRenderer(ctx, 'scan:state', { shopId, running: true })

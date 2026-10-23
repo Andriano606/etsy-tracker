@@ -410,3 +410,37 @@ describe('reviews after a scan', () => {
     expect(etsy.count(`/v3/application/shops/${SHOP_ID}/reviews`)).toBeGreaterThan(before)
   })
 })
+
+describe('stats:shop', () => {
+  it('answers null to a bad or unknown shop id and an "Усе" payload for an unknown range', async () => {
+    const { c } = ctx()
+    registerIpc(c)
+    const shop = seedShop(c.db)
+    for (const bad of [undefined, null, 'x', {}, { shopId: 0 }, { shopId: -1 }, { shopId: 1.5 }, { shopId: '1e400' }]) {
+      expect(await call('stats:shop', bad)).toBeNull()
+    }
+    expect(await call('stats:shop', { shopId: 999, range: '7d' })).toBeNull()
+    const p = (await call('stats:shop', { shopId: shop.id, range: 'forever' })) as { shopId: number; range: string; from: unknown }
+    expect(p).toMatchObject({ shopId: shop.id, range: 'all', from: null })
+    const w = (await call('stats:shop', { shopId: String(shop.id), range: '7d' })) as { range: string; from: number }
+    expect(w.range).toBe('7d')
+    expect(Date.now() - w.from).toBeGreaterThanOrEqual(7 * 86_400_000)
+  })
+
+  it('reflects a real scan: one ok scan with shop and listing sums', async () => {
+    const { c } = ctx()
+    c.keyStore.setKey('keystring1', 'secret1')
+    seedShop(c.db, { id: SHOP_ID })
+    registerIpc(c)
+    const out = (await call('scan:shop', SHOP_ID)) as { ok: boolean; scan: { id: number } }
+    expect(out.ok).toBe(true)
+    const p = (await call('stats:shop', { shopId: SHOP_ID, range: 'all' })) as {
+      scans: Array<{ scanId: number; isBaseline: boolean; listingViews: number | null }>
+      intervals: unknown[]
+    }
+    expect(p.scans).toHaveLength(1)
+    expect(p.scans[0]).toMatchObject({ scanId: out.scan.id, isBaseline: true })
+    expect(p.scans[0].listingViews).toBeGreaterThan(0)
+    expect(p.intervals).toEqual([])
+  })
+})

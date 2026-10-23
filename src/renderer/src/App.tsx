@@ -7,6 +7,7 @@ import { AddShopModal } from './components/AddShopModal'
 import { ListingModal } from './components/ListingModal'
 import { HistoryModal } from './components/ScanHistory'
 import { ConfirmModal } from './components/ConfirmModal'
+import { StatsModal } from './components/StatsModal'
 import { NoKeyState, NoShopsState } from './components/EmptyStates'
 
 export function App(): JSX.Element {
@@ -63,7 +64,8 @@ export function App(): JSX.Element {
       </main>
       <SettingsModal />
       <AddShopModal />
-      {/* A listing can be opened from the history modal — render it on top. */}
+      {/* A listing can be opened from the statistics or the history — render it on top. */}
+      <StatsModal />
       <HistoryModal />
       <ListingModal />
       <ConfirmModal />

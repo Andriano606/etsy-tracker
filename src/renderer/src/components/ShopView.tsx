@@ -183,7 +183,8 @@ export function ShopView(): JSX.Element | null {
     syncImages,
     newReviews,
     reviewSync,
-    syncReviews
+    syncReviews,
+    openStats
   } = useStore()
   const shop = shops.find((s) => s.id === activeShopId)
 
@@ -226,6 +227,9 @@ export function ShopView(): JSX.Element | null {
           />
         </div>
         <div className="shop-actions">
+          <button className="btn" onClick={() => openStats(shop.id)} title="Графіки між скануваннями">
+            📊 Статистика
+          </button>
           <button
             className="btn primary"
             disabled={busy || !keyStatus?.hasKey}

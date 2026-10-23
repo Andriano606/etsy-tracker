@@ -93,6 +93,8 @@ interface AppState {
   detailListing: Listing | null
   historyScan: ScanSummary | null
   historyChanges: ScanChange[]
+  /** The shop whose "📊 Статистика" view is open. */
+  statsShopId: number | null
   confirmRequest: { message: string; onResolve: (ok: boolean) => void } | null
 
   load: () => Promise<void>
@@ -125,6 +127,7 @@ interface AppState {
   setShowAddShop: (v: boolean) => void
   openListing: (l: Listing | null) => void
   openHistoryScan: (scan: ScanSummary | null) => Promise<void>
+  openStats: (shopId: number | null) => void
   requestConfirm: (message: string) => Promise<boolean>
   resolveConfirm: (ok: boolean) => void
 }
@@ -154,6 +157,7 @@ export const useStore = create<AppState>((set, get) => ({
   detailListing: null,
   historyScan: null,
   historyChanges: [],
+  statsShopId: null,
   confirmRequest: null,
 
   load: async () => {
@@ -359,6 +363,7 @@ export const useStore = create<AppState>((set, get) => ({
     const changes = await window.api.getScanChanges(scan.id)
     if (get().historyScan?.id === scan.id) set({ historyChanges: changes })
   },
+  openStats: (statsShopId) => set({ statsShopId }),
   requestConfirm: (message) =>
     new Promise<boolean>((resolve) => set({ confirmRequest: { message, onResolve: resolve } })),
   resolveConfirm: (ok) => {

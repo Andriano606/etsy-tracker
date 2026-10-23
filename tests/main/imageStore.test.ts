@@ -35,6 +35,7 @@ describe('imageStore helpers (the MinIO client itself is verified live, not in u
     expect(describeStoreError({ code: 'ECONNREFUSED' })).toMatch(/недоступний.*docker compose up -d/)
     expect(describeStoreError({ code: 'InvalidAccessKeyId' })).toMatch(/облікові дані/)
     expect(describeStoreError(new ImageStoreError('тайм-аут'))).toBe('тайм-аут')
+    expect(describeStoreError({ code: 'XMinioStorageFull' })).toMatch(/закінчилось місце.*MINIO_DATA_DIR/)
     expect(describeStoreError(new Error('weird'))).toMatch(/Помилка MinIO: weird/)
   })
 })

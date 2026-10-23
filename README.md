@@ -76,7 +76,7 @@ docker compose up -d     # у теці проєкту (вихідний код e
 
 ```bash
 docker run -d --name etsy-tracker-minio --restart unless-stopped \
-  -p 127.0.0.1:9100:9000 -p 127.0.0.1:9101:9001 -v etsy-tracker-minio-data:/data \
+  -p 127.0.0.1:9100:9000 -p 127.0.0.1:9101:9001 -v "$HOME/.local/share/etsy-tracker/minio":/data \
   -e MINIO_ROOT_USER=etsytracker -e MINIO_ROOT_PASSWORD=<ваш-пароль> \
   -e MINIO_API_CORS_ALLOW_ORIGIN=http://127.0.0.1:9101 \
   minio/minio:RELEASE.2025-09-07T16-13-09Z server /data --console-address :9001
@@ -118,7 +118,10 @@ bash scripts/install-desktop.sh   # додати зібраний AppImage в м
 ```
 
 Дані зберігаються в `~/.config/etsy-tracker/` (`etsy-tracker.db`, `settings.json`), фото —
-у томі Docker `etsy-tracker_minio-data`.
+у теці `~/.local/share/etsy-tracker/minio` (змінюється через `MINIO_DATA_DIR` у `.env`).
+Це звичайна тека на диску, а не том Docker: Docker Desktop тримає томи на власному
+віртуальному диску фіксованого розміру, і коли він заповнюється, MinIO відмовляється
+зберігати фото (`XMinioStorageFull`).
 
 ## Умови Etsy API
 

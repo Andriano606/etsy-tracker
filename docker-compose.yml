@@ -32,7 +32,10 @@ services:
       - "127.0.0.1:${MINIO_API_PORT:-9100}:9000"
       - "127.0.0.1:${MINIO_CONSOLE_PORT:-9101}:9001"
     volumes:
-      - minio-data:/data
+      # A host folder, not a named volume: Docker Desktop keeps named volumes on
+      # its fixed-size VM disk, and once that disk fills up MinIO refuses every
+      # write (XMinioStorageFull) no matter how much space the host has.
+      - ${MINIO_DATA_DIR:-${HOME}/.local/share/etsy-tracker/minio}:/data
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/live"]
       interval: 15s
@@ -40,6 +43,3 @@ services:
       retries: 5
       start_period: 10s
     restart: unless-stopped
-
-volumes:
-  minio-data:

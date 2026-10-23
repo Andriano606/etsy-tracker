@@ -111,6 +111,8 @@ export function describeStoreError(e: unknown): string {
     case 'SignatureDoesNotMatch':
     case 'AccessDenied':
       return `MinIO відхилив облікові дані (${err.code}). Перевірте Access key і Secret key.`
+    case 'XMinioStorageFull':
+      return 'У MinIO закінчилось місце на диску — звільніть місце там, де лежать його дані (MINIO_DATA_DIR). Фото докопіюються пізніше.'
     default:
       return `Помилка MinIO: ${err?.code ? `${err.code}: ` : ''}${err?.message ?? String(e)}`
   }

@@ -1,5 +1,7 @@
 import type {
+  BuyerPrice,
   ListingDetails,
+  MoneyValue,
   ListingImage,
   ListingVideo,
   PersonalizationQuestion,
@@ -12,6 +14,7 @@ import { shopUrlFor } from '../shared/shopUrl'
 import type { ListingInput, ListingStatsInput, ReviewInput, ShopInput } from './db'
 import type {
   EtsyListing,
+  EtsyListingBuyerPrice,
   EtsyListingImage,
   EtsyListingVideo,
   EtsyListingWithAssociations,
@@ -159,6 +162,81 @@ export function mapListingDetails(l: EtsyListing | EtsyListingWithAssociations):
   }
 }
 
+/** An Etsy Money as amount + divisor (exact, no floats); null when absent or malformed. */
+export function mapMoney(m: unknown): MoneyValue | null {
+  if (!m || typeof m !== 'object') return null
+  const o = m as { amount?: unknown; divisor?: unknown }
+  const amount = optInt(o.amount)
+  if (amount == null) return null
+  return { amount, divisor: int(o.divisor, 100) || 100 }
+}
+
+/**
+ * OAS `ListingBuyerPrice` → our record, for the buyer country it was asked
+ * for. null when Etsy sent none (null / not an object). The currency is taken
+ * once from original_price (else base/discounted price) — Etsy computes the
+ * whole set in one currency.
+ */
+export function mapBuyerPrice(bp: unknown, country: string, fetchedAt?: number): BuyerPrice | null {
+  if (!bp || typeof bp !== 'object' || Array.isArray(bp)) return null
+  const b = bp as EtsyListingBuyerPrice
+  const currency =
+    [b.original_price, b.base_price, b.discounted_price, b.discount_amount].find(
+      (m) => m && typeof m.currency_code === 'string' && m.currency_code
+    )?.currency_code ?? ''
+  const discounted = mapMoney(b.discounted_price)
+  return {
+    country,
+    currency,
+    base: mapMoney(b.base_price),
+    original: mapMoney(b.original_price),
+    discounted,
+    discountAmount: mapMoney(b.discount_amount),
+    discountPercentage: optInt(b.discount_percentage),
+    // OAS: has_discount = "an active promotion applies"; without a sale price there is nothing to show.
+    hasDiscount: b.has_discount === true && discounted != null,
+    discountStart: optInt(b.discount_start_epoch),
+    discountEnd: optInt(b.discount_end_epoch),
+    shipping: mapMoney(b.shipping_cost),
+    isFreeShipping: optBool(b.is_free_shipping),
+    ...(fetchedAt != null ? { fetchedAt } : {})
+  }
+}
+
+/** How the details of a scan were asked for buyer prices. */
+export interface BuyerPriceRequest {
+  /** The buyer country BuyerPrice was requested for (null = never requested). */
+  country: string | null
+  /**
+   * BuyerPrice is still being requested at the end of the details calls
+   * (false once the client found Etsy refusing it — later answers lack it).
+   */
+  asked: boolean
+  /** When it was learned (ms). */
+  at?: number
+}
+
+/**
+ * The buyer price of a details answer, as `ListingInput.buyerPrice`:
+ * - an object = the fresh price for `req.country` (`buyer_price` present);
+ * - null = known to be unavailable → clear: Etsy sent `buyer_price: null`, or
+ *   the key is absent while BuyerPrice isn't requested (no buyer country /
+ *   Etsy refused it) — a stored one would only go stale;
+ * - undefined = not learned this scan → keep the stored one: no details
+ *   answer, or BuyerPrice was requested but the object has no `buyer_price`
+ *   key (GET /listings/{id}: "currently only supported on /listings/batch").
+ */
+export function buyerPriceOf(
+  details: EtsyListingWithAssociations | null | undefined,
+  req: BuyerPriceRequest | null | undefined
+): BuyerPrice | null | undefined {
+  if (!details) return undefined
+  if (details.buyer_price !== undefined && 'buyer_price' in details) {
+    return req?.country ? mapBuyerPrice(details.buyer_price, req.country, req.at) : null
+  }
+  return req?.country && req.asked ? undefined : null
+}
+
 /**
  * Map an Etsy listing. `page` is the item from /shops/{id}/listings/active
  * (no associations); `details` the /listings/batch object with Images, Videos
@@ -170,12 +248,14 @@ export function mapListingDetails(l: EtsyListing | EtsyListingWithAssociations):
  * (`client.detailIncludes()`): personalization only counts as answered when
  * the object carries the key or `Personalization` was requested — after the
  * Images-only fallback a missing key means "not asked", not "none".
+ * `buyer` = how BuyerPrice was requested (see `buyerPriceOf`).
  */
 export function mapListing(
   page: EtsyListing,
   details: EtsyListingWithAssociations | null | undefined,
   shopCurrency?: string | null,
-  includes?: readonly string[]
+  includes?: readonly string[],
+  buyer?: BuyerPriceRequest | null
 ): ListingInput {
   const l: EtsyListingWithAssociations = details ?? page
   const personalizationFetched =
@@ -208,7 +288,8 @@ export function mapListing(
     videos: details && Array.isArray(details.videos) ? mapVideos(details.videos) : null,
     rawJson: JSON.stringify(l),
     detailsFetched: !!details,
-    personalizationFetched
+    personalizationFetched,
+    buyerPrice: buyerPriceOf(details, buyer)
   }
 }
 

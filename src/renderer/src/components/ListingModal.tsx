@@ -1,20 +1,24 @@
 import { Fragment, useEffect, useState } from 'react'
-import type { Listing, ListingDetails, ListingStatsPoint, Review } from '@shared/types'
+import type { BuyerPrice, Listing, ListingDetails, ListingStatsPoint, Promotion, Review } from '@shared/types'
 import {
   formatCount,
   formatDateTime,
   formatDelta,
   formatEtsyDate,
   formatPrice,
+  formatPromoPeriod,
   formatRating,
   formatReviewCount,
   ratingStars
 } from '@shared/format'
+import { buyerPriceIncludes, discountLabel, formatMoney, hasActiveDiscount, shownPrice } from '@shared/price'
+import { countryLabel } from '@shared/countries'
 import { LISTING_TYPE_LABEL, WHO_MADE_LABEL, whenMadeLabel } from '@shared/changes'
 import { useStore } from '../store'
 import { imageSrc, reviewImageSrc } from '../imageUrl'
 import { ExternalLink } from './ExternalLink'
 import { useEscape } from './useEscape'
+import { NowPrice, WasPrice } from './PriceParts'
 
 const yesNo = (v: boolean | null | undefined): string | null => (v == null ? null : v ? 'так' : 'ні')
 
@@ -153,6 +157,207 @@ function StatsHistory({ listingId }: { listingId: number }): JSX.Element {
               ))}
             </tbody>
           </table>
+        ))}
+    </details>
+  )
+}
+
+/** "Акція −60% з 01.10 до 31.10" for an active discount; '' without one. */
+export function promoText(bp: BuyerPrice | null | undefined, now: number = Date.now()): string {
+  if (!bp || !hasActiveDiscount(bp)) return ''
+  return ['Акція', discountLabel(bp), formatPromoPeriod(bp.discountStart, bp.discountEnd, now)]
+    .filter(Boolean)
+    .join(' ')
+}
+
+/**
+ * The price like Etsy shows it to a buyer in the configured country (sale
+ * price, original struck through, −N %, the promotion's dates), plus the
+ * seller's base price (no VAT, no promotion) — the one the API's `price` is.
+ */
+export function PriceBlock({ listing: l }: { listing: Listing }): JSX.Element {
+  const p = shownPrice(l)
+  const bp = l.buyerPrice
+  const base = formatPrice(l.priceAmount, l.priceDivisor, l.currency)
+  const promo = promoText(bp)
+  // Unknown buyer price: the main price already is the base price (the note says so).
+  return (
+    <div className="price-block" data-testid="price-block">
+      <div className="listing-price">
+        {p.kind === 'discounted' ? (
+          <NowPrice>{formatPrice(p.amount, p.divisor, p.currency)}</NowPrice>
+        ) : (
+          <span>{formatPrice(p.amount, p.divisor, p.currency)}</span>
+        )}
+        {p.kind === 'discounted' && bp?.original && <WasPrice>{formatMoney(bp.original, bp.currency)}</WasPrice>}
+        {p.kind === 'discounted' && <span className="badge-discount">{discountLabel(bp)}</span>}
+      </div>
+      <div className="hint" data-testid="price-note">
+        {bp
+          ? `Ціна для покупця: ${countryLabel(bp.country)}, ${buyerPriceIncludes(bp)}.`
+          : 'Ціна для покупця невідома — показано базову ціну продавця (без ПДВ і без знижок).'}
+      </div>
+      {promo && (
+        <div className="promo-line" data-testid="promo-line">
+          {promo}
+        </div>
+      )}
+      {bp && (
+      <dl className="listing-facts price-facts">
+        <dt>Базова ціна продавця</dt>
+        <dd data-testid="base-price">{base} (без ПДВ і знижок)</dd>
+        {bp.base && (
+          <>
+            <dt>З ПДВ, до знижки</dt>
+            <dd>{formatMoney(bp.base, bp.currency)}</dd>
+          </>
+        )}
+        {bp.discountAmount && hasActiveDiscount(bp) && (
+          <>
+            <dt>Знижка</dt>
+            <dd>{formatMoney(bp.discountAmount, bp.currency)}</dd>
+          </>
+        )}
+        {(bp.shipping || bp.isFreeShipping) && (
+          <>
+            <dt>Доставка ({bp.country})</dt>
+            <dd>{bp.isFreeShipping ? 'безкоштовно' : formatMoney(bp.shipping, bp.currency)}</dd>
+          </>
+        )}
+      </dl>
+      )}
+    </div>
+  )
+}
+
+const PROMO_STATUS: Record<string, string> = {
+  ended: 'закінчилась',
+  replaced: 'змінилась на іншу',
+  country: 'змінено країну покупця',
+  removed: 'товар зник з магазину',
+  unknown: 'закінчилась (коли саме — невідомо)'
+}
+
+/** "Ціни та акції": the listing's promotions and the price at every scan, loaded only when opened. */
+function PriceHistory({ listingId }: { listingId: number }): JSX.Element {
+  const [open, setOpen] = useState(false)
+  const [data, setData] = useState<{ promos: Promotion[]; points: ListingStatsPoint[] } | undefined>(undefined)
+  const [failed, setFailed] = useState(false)
+  const [attempt, setAttempt] = useState(0)
+  useEffect(() => {
+    setOpen(false)
+    setData(undefined)
+    setFailed(false)
+  }, [listingId])
+  useEffect(() => {
+    if (!open || data !== undefined) return
+    let alive = true
+    setFailed(false)
+    Promise.all([window.api.getListingPromotions(listingId), window.api.getListingStats(listingId)])
+      .then(([promos, points]) => {
+        if (alive) setData({ promos, points })
+      })
+      .catch(() => {
+        if (alive) setFailed(true)
+      })
+    return () => {
+      alive = false
+    }
+  }, [open, data, listingId, attempt])
+  const priced = data ? [...data.points].reverse().filter((p) => p.price) : []
+  return (
+    <details className="price-details" onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}>
+      <summary>Ціни та акції</summary>
+      {open &&
+        (data === undefined ? (
+          failed ? (
+            <p className="hint" data-testid="price-history-failed">
+              Не вдалося завантажити історію цін.{' '}
+              <button className="btn subtle small" onClick={() => setAttempt((n) => n + 1)}>
+                Спробувати ще
+              </button>
+            </p>
+          ) : (
+            <p className="hint">Завантаження…</p>
+          )
+        ) : (
+          <>
+            <h4>Акції</h4>
+            {data.promos.length === 0 ? (
+              <p className="hint">Акцій ще не було помічено.</p>
+            ) : (
+              <table className="stats-history" data-testid="promotions-history">
+                <thead>
+                  <tr>
+                    <th>Знижка</th>
+                    <th>Ціна</th>
+                    <th>Період на Etsy</th>
+                    <th>Помічено</th>
+                    <th>Стан</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.promos.map((pr) => (
+                    <tr key={pr.id}>
+                      <td>
+                        {pr.discountPercentage != null
+                          ? `−${pr.discountPercentage}%`
+                          : pr.discountAmount
+                            ? `−${formatMoney(pr.discountAmount, pr.currency ?? '')}`
+                            : '—'}
+                      </td>
+                      <td>
+                        {formatMoney(pr.discounted, pr.currency ?? '')}
+                        {pr.original && <WasPrice>{formatMoney(pr.original, pr.currency ?? '')}</WasPrice>}{' '}
+                        <span className="dim">{pr.country}</span>
+                      </td>
+                      <td>{formatPromoPeriod(pr.discountStart, pr.discountEnd) || '—'}</td>
+                      <td>
+                        {formatDateTime(pr.firstSeenAt)}
+                        {pr.startKind === 'running' && <span className="dim"> (уже тривала)</span>}
+                        {pr.startKind === 'country' && <span className="dim"> (після зміни країни)</span>}
+                        {pr.endedAt != null && ` — ${formatDateTime(pr.endedAt)}`}
+                      </td>
+                      <td>{pr.endedAt == null ? 'триває' : (PROMO_STATUS[pr.endReason ?? 'ended'] ?? 'закінчилась')}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            <h4>Ціна за скануваннями</h4>
+            {priced.length === 0 ? (
+              <p className="hint">Ще немає даних — вони з’являються після кожного сканування.</p>
+            ) : (
+              <table className="stats-history" data-testid="price-history">
+                <thead>
+                  <tr>
+                    <th>Сканування</th>
+                    <th>Ціна продавця</th>
+                    <th>Для покупця</th>
+                    <th>Знижка</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {priced.map((pt) => {
+                    const b = pt.buyerPrice
+                    const shown = b
+                      ? hasActiveDiscount(b)
+                        ? b.discounted
+                        : b.original
+                      : null
+                    return (
+                      <tr key={pt.scanId}>
+                        <td>{pt.at != null ? formatDateTime(pt.at) : `#${pt.scanId}`}</td>
+                        <td>{formatMoney(pt.price, pt.price!.currency)}</td>
+                        <td>{b ? `${formatMoney(shown, b.currency)} (${b.country})` : '—'}</td>
+                        <td>{b ? discountLabel(b) || '—' : '—'}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            )}
+          </>
         ))}
     </details>
   )
@@ -306,9 +511,7 @@ export function ListingModal(): JSX.Element | null {
 
           <div className="listing-info">
             <h2>{l.title}</h2>
-            <div className="listing-price">
-              {formatPrice(l.priceAmount, l.priceDivisor, l.currency)}
-            </div>
+            <PriceBlock listing={l} />
             {l.removedAt != null && (
               <div className="hint warn">Товар зник з магазину {formatDateTime(l.removedAt)}.</div>
             )}
@@ -402,6 +605,7 @@ export function ListingModal(): JSX.Element | null {
               </section>
             )}
             <ReviewsSection listing={l} />
+            <PriceHistory listingId={l.listingId} />
             <StatsHistory listingId={l.listingId} />
             <RawJson listingId={l.listingId} />
           </div>

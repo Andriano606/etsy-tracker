@@ -164,3 +164,58 @@ describe('SettingsModal: MinIO', () => {
     expect(screen.getByTestId('minio-secret-status')).toHaveTextContent(/не вдалося розшифрувати/)
   })
 })
+
+describe('SettingsModal: Країна покупця', () => {
+  it('shows the current country, saves another common one and says it applies from the next scan', async () => {
+    useStore.setState({ buyerCountry: 'UA' })
+    renderIt()
+    const section = screen.getByTestId('buyer-country-section')
+    expect(section).toHaveTextContent('Зараз: Україна (UA)')
+    const select = screen.getByLabelText('Країна') as HTMLSelectElement
+    expect(select.value).toBe('UA')
+    fireEvent.change(select, { target: { value: 'DE' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Зберегти країну' }))
+    await waitFor(() => expect(api.setBuyerCountry).toHaveBeenCalledWith('DE'))
+    expect(await screen.findByText('Збережено. Нова країна застосується з наступного сканування.')).toBeInTheDocument()
+    expect(useStore.getState().buyerCountry).toBe('DE')
+  })
+
+  it('"Інша…": free input, uppercased, validated before saving', async () => {
+    useStore.setState({ buyerCountry: 'UA' })
+    renderIt()
+    fireEvent.change(screen.getByLabelText('Країна'), { target: { value: '__other' } })
+    const input = screen.getByLabelText('Код країни (ISO 3166-1)') as HTMLInputElement
+    const save = screen.getByRole('button', { name: 'Зберегти країну' })
+    fireEvent.change(input, { target: { value: 'xx' } })
+    expect(input.value).toBe('XX')
+    expect(save).toBeDisabled()
+    expect(screen.getByText(/Невідомий код країни/)).toBeInTheDocument()
+    fireEvent.change(input, { target: { value: 'jp' } })
+    expect(save).toBeEnabled()
+    fireEvent.click(save)
+    await waitFor(() => expect(api.setBuyerCountry).toHaveBeenCalledWith('JP'))
+    await waitFor(() => expect(useStore.getState().buyerCountry).toBe('JP'))
+  })
+
+  it('a stored country outside the short list opens on "Інша…" with the code filled in', () => {
+    useStore.setState({ buyerCountry: 'NO' })
+    renderIt()
+    expect((screen.getByLabelText('Країна') as HTMLSelectElement).value).toBe('__other')
+    expect((screen.getByLabelText('Код країни (ISO 3166-1)') as HTMLInputElement).value).toBe('NO')
+  })
+
+  it('an error from main is shown and the country is kept', async () => {
+    api.setBuyerCountry.mockResolvedValue({ ok: false, error: 'Вкажіть двобуквений код країни за ISO 3166-1 (напр. UA, US, DE, GB).' })
+    useStore.setState({ buyerCountry: 'UA' })
+    renderIt()
+    fireEvent.change(screen.getByLabelText('Країна'), { target: { value: 'PL' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Зберегти країну' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(/ISO 3166-1/)
+    expect(useStore.getState().buyerCountry).toBe('UA')
+  })
+
+  it('before the setting is loaded the default UA is shown', () => {
+    renderIt()
+    expect(screen.getByTestId('buyer-country-section')).toHaveTextContent('Зараз: Україна (UA)')
+  })
+})

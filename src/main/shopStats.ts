@@ -83,17 +83,26 @@ interface ScanStatsRow {
   ls_rows: number | null
   ls_views: number | null
   ls_favorers: number | null
+  ps_priced: number | null
+  ps_discounted: number | null
 }
 
 const SCAN_STATS_SQL = `SELECT s.id, s.finished_at, s.is_baseline, s.truncated, s.total, s.added, s.removed, s.changed, s.returned,
      ss.num_favorers, ss.transaction_sold_count, ss.review_count, ss.review_average, ss.listing_active_count,
-     ls.n AS ls_rows, ls.v AS ls_views, ls.f AS ls_favorers
+     ls.n AS ls_rows, ls.v AS ls_views, ls.f AS ls_favorers,
+     ps.priced AS ps_priced, ps.discounted AS ps_discounted
    FROM scans s
    LEFT JOIN shop_stats ss ON ss.scan_id = s.id
    LEFT JOIN (
      SELECT scan_id, COUNT(*) AS n, SUM(views) AS v, SUM(num_favorers) AS f FROM listing_stats
      WHERE scan_id IN (SELECT id FROM scans WHERE shop_id = ?) GROUP BY scan_id
    ) ls ON ls.scan_id = s.id
+   LEFT JOIN (
+     SELECT scan_id, COUNT(buyer_country) AS priced,
+       SUM(CASE WHEN has_discount = 1 THEN 1 ELSE 0 END) AS discounted
+     FROM listing_price_stats
+     WHERE scan_id IN (SELECT id FROM scans WHERE shop_id = ?) GROUP BY scan_id
+   ) ps ON ps.scan_id = s.id
    WHERE s.shop_id = ? AND s.status = 'ok' AND s.finished_at IS NOT NULL`
 
 function toScanPoint(r: ScanStatsRow): StatsScanPoint {
@@ -113,7 +122,10 @@ function toScanPoint(r: ScanStatsRow): StatsScanPoint {
     reviewAverage: r.review_average,
     listingActiveCount: r.listing_active_count,
     listingViews: r.ls_rows ? r.ls_views : null,
-    listingFavorers: r.ls_rows ? r.ls_favorers : null
+    listingFavorers: r.ls_rows ? r.ls_favorers : null,
+    // Only scans that learned buyer prices know how many listings were discounted.
+    buyerPriced: r.ps_priced ? r.ps_priced : null,
+    discounted: r.ps_priced ? (r.ps_discounted ?? 0) : null
   }
 }
 
@@ -121,7 +133,7 @@ function toScanPoint(r: ScanStatsRow): StatsScanPoint {
 export function statsScans(db: Db, shopId: number, from: number | null): StatsScanPoint[] {
   const rows = db
     .prepare(`${SCAN_STATS_SQL} AND s.finished_at >= ? ORDER BY s.finished_at, s.id`)
-    .all(shopId, shopId, from ?? Number.MIN_SAFE_INTEGER) as unknown as ScanStatsRow[]
+    .all(shopId, shopId, shopId, from ?? Number.MIN_SAFE_INTEGER) as unknown as ScanStatsRow[]
   return rows.map(toScanPoint)
 }
 
@@ -133,7 +145,7 @@ export function statsScans(db: Db, shopId: number, from: number | null): StatsSc
 export function statsAnchor(db: Db, shopId: number, from: number): StatsScanPoint | null {
   const row = db
     .prepare(`${SCAN_STATS_SQL} AND s.finished_at < ? ORDER BY s.finished_at DESC, s.id DESC LIMIT 1`)
-    .get(shopId, shopId, from) as unknown as ScanStatsRow | undefined
+    .get(shopId, shopId, shopId, from) as unknown as ScanStatsRow | undefined
   return row ? toScanPoint(row) : null
 }
 

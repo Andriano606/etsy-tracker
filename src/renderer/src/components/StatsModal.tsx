@@ -29,6 +29,9 @@ export const NEED_TWO_SCANS = 'Потрібно щонайменше 2 скан�
 const NO_STATS_HINT =
   'Немає даних: ці показники записуються з кожним скануванням, починаючи з версії 2 (старші сканування їх не мають).'
 
+export const NO_BUYER_PRICES_HINT =
+  'Немає даних: ціни для покупця (з ПДВ і знижками) записуються з кожним скануванням, починаючи з версії 4, якщо Etsy їх віддає.'
+
 const num = (v: number, digits = 0): string => v.toLocaleString('uk-UA', { maximumFractionDigits: digits })
 const perDayText = (v: number): string => num(v, Math.abs(v) < 10 ? 1 : 0)
 
@@ -199,7 +202,8 @@ function ScanLine({
   domain,
   digits = 0,
   minSpan,
-  ceil
+  ceil,
+  emptyHint = NO_STATS_HINT
 }: {
   label: string
   data: ShopStatsPayload
@@ -208,12 +212,14 @@ function ScanLine({
   digits?: number
   minSpan?: number
   ceil?: number
+  /** Shown when no scan of the period knows the value. */
+  emptyHint?: ReactNode
 }): JSX.Element {
   if (!data.scans.length) return <Empty>У цьому періоді немає успішних сканувань.</Empty>
   const series = withAnchor(data)
   const points = series.map((s) => ({ t: s.at, v: pick(s) }))
   const known = series.filter((s) => pick(s) != null)
-  if (!known.length) return <Empty>{NO_STATS_HINT}</Empty>
+  if (!known.length) return <Empty>{emptyHint}</Empty>
   if (known.length < 2) {
     // One point is a stat, not a chart (the KPI row shows it too).
     const s = known[0]
@@ -687,6 +693,23 @@ export function StatsView({ data, onOpen }: { data: ShopStatsPayload; onOpen: (i
           <DataTable
             head={['Сканування', 'Перегляди', 'Обране']}
             rows={scanRows(data, [(s) => cell(s.listingViews), (s) => cell(s.listingFavorers)])}
+          />
+        </Card>
+        <Card
+          title="Товарів зі знижкою"
+          sub="за ціною для покупця (активні акції)"
+          testId="chart-discounted"
+        >
+          <ScanLine
+            label="Товарів зі знижкою"
+            data={data}
+            pick={(s) => s.discounted ?? null}
+            domain={domain}
+            emptyHint={NO_BUYER_PRICES_HINT}
+          />
+          <DataTable
+            head={['Сканування', 'Зі знижкою', 'З ціною для покупця']}
+            rows={scanRows(data, [(s) => cell(s.discounted ?? null), (s) => cell(s.buyerPriced ?? null)])}
           />
         </Card>
         <ChangesCard data={data} domain={changesDomain} />

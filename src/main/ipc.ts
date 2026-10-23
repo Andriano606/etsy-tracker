@@ -4,6 +4,7 @@
 import { ipcMain, shell } from 'electron'
 import type { WebContents } from 'electron'
 import type {
+  BuyerCountryResult,
   ImageCounts,
   ImageSyncState,
   KeyStatus,
@@ -11,11 +12,13 @@ import type {
   MinioSettingsInput,
   MinioStatus,
   MinioTestResult,
+  Promotion,
   Quota,
   Review,
   ReviewPage,
   ReviewSyncState,
   ScanOutcome,
+  ScanPromotions,
   ShopStatsPayload
 } from '../shared/types'
 import { isAllowedExternalUrl } from '../shared/externalUrl'
@@ -26,10 +29,12 @@ import {
   getListingRaw,
   imageCounts,
   listActiveListings,
+  listListingPromotions,
   listListingReviews,
   listListingStats,
   listNewReviews,
   listScanChanges,
+  listScanPromotions,
   listScans,
   listShopObjectKeys,
   listShopSummaries,
@@ -41,6 +46,7 @@ import type { ImageSyncer } from './imageSync'
 import type { ReviewSyncer } from './reviewSync'
 import type { Scanner } from './scanner'
 import {
+  type BuyerCountryStore,
   type KeyStore,
   type MinioConfig,
   type MinioSettingsStore,
@@ -69,6 +75,8 @@ export interface IpcContext {
   onMinioChanged: () => void
   /** The background review sync (GET /shops/{id}/reviews), after scans or on demand. */
   reviews: ReviewSyncer
+  /** Settings → "Країна покупця" (buyer prices; read by the scanner at each scan). */
+  buyerCountry: BuyerCountryStore
 }
 
 export interface ImageStatus {
@@ -242,6 +250,24 @@ export function registerIpc(ctx: IpcContext): void {
     if (id != null) startReviewSync(ctx, id)
   })
   ipcMain.handle('scan:changes', (_e, scanId: number) => listScanChanges(db, scanId))
+  // Promotions a scan saw start/end (the "Акції" group) and one listing's history.
+  ipcMain.handle('scan:promotions', (_e, scanId: number): ScanPromotions => {
+    const id = positiveId(scanId)
+    return id == null ? { started: [], ended: [] } : listScanPromotions(db, id)
+  })
+  ipcMain.handle('listing:promotions', (_e, listingId: number): Promotion[] => {
+    const id = positiveId(listingId)
+    return id == null ? [] : listListingPromotions(db, id)
+  })
+  // Settings → "Країна покупця": applies from the next scan (the scanner reads it per scan).
+  ipcMain.handle('buyerCountry:get', (): string => ctx.buyerCountry.get())
+  ipcMain.handle('buyerCountry:set', (_e, country: unknown): BuyerCountryResult => {
+    try {
+      return { ok: true, country: ctx.buyerCountry.set(country) }
+    } catch (e) {
+      return { ok: false, error: (e as Error).message }
+    }
+  })
   // The Statistics view: one compact, chart-ready payload per shop and period.
   // A bad shop id answers null; an unknown range is "Усе".
   ipcMain.handle('stats:shop', (_e, input: unknown): ShopStatsPayload | null => {

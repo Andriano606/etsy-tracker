@@ -12,6 +12,7 @@ import {
   createEtsyClient,
   type EtsyClient,
   type EtsyClientOptions,
+  type EtsyListingBuyerPrice,
   type EtsyListingImage,
   type EtsyListingWithAssociations,
   type EtsyShop,
@@ -139,7 +140,23 @@ export interface FakeEtsyOptions {
   batchUnknown?: 'skip' | '404'
   /** includes values answered with 403 (an association an API-key-only app may not read). */
   refuseIncludes?: string[]
+  /** HTTP status of a refused include (default 403; e.g. 400 for "invalid includes value"). */
+  refuseStatus?: number
 }
+
+/** A promotion the fake applies to a listing's buyer price. */
+export interface FakePromotion {
+  /** null = a fixed-amount discount (then `amount` is taken off). */
+  percentage: number | null
+  amount?: number
+  start: number
+  end: number
+}
+
+/** VAT % per buyer country the fake applies (others: 0). */
+export const FAKE_VAT: Record<string, number> = { UA: 20, DE: 19, GB: 20, FR: 20, PL: 23, US: 0 }
+
+const money = (amount: number, divisor: number, currency_code: string) => ({ amount, divisor, currency_code })
 
 /**
  * Order of /shops/{id}/reviews results. The OAS documents none; 'desc'
@@ -163,6 +180,21 @@ export class FakeEtsy {
   reviewOrder: ReviewOrder = 'desc'
   /** Answer every reviews request with this HTTP status (e.g. 403, 404). */
   reviewsStatus: number | null = null
+  refuseStatus: number
+  /** Active promotions by listing id (buyer prices only — the seller's `price` never changes). */
+  promotions: Record<number, FakePromotion | undefined> = {}
+  /** Shipping cost (amount, same divisor as the price) per buyer country; absent = shipping_cost null. */
+  shipping: Record<string, number> = {}
+  /**
+   * GET /listings/{id} attaches buyer_price too. Off by default: the OAS says
+   * buyer_price is "currently only supported on the /listings/batch endpoint".
+   */
+  singleBuyerPrice = false
+  /**
+   * /listings/batch attaches buyer_price when asked. false = Etsy accepts
+   * includes=BuyerPrice but silently leaves the key out.
+   */
+  batchBuyerPrice = true
 
   readonly fetch = fakeFetch((url) => this.handle(url))
 
@@ -171,6 +203,39 @@ export class FakeEtsy {
     this.intercept = opts.intercept
     this.batchUnknown = opts.batchUnknown ?? 'skip'
     this.refuseIncludes = opts.refuseIncludes ?? []
+    this.refuseStatus = opts.refuseStatus ?? 403
+  }
+
+  /**
+   * An OAS `ListingBuyerPrice` like Etsy computes it: price + VAT of the
+   * country (base/original), minus the listing's promotion. UK (GB) display
+   * prices include shipping (DMCC). null without a buyer_country ("Requires
+   * buyer_country parameter").
+   */
+  buyerPriceFor(l: EtsyListingWithAssociations, country: string | null): EtsyListingBuyerPrice | null {
+    if (!country) return null
+    const { amount, divisor, currency_code: cur } = l.price
+    const base = Math.round((amount * (100 + (FAKE_VAT[country] ?? 0))) / 100)
+    const ship = this.shipping[country]
+    const original = country === 'GB' && ship != null ? base + ship : base
+    const p = this.promotions[l.listing_id]
+    const discounted = p
+      ? p.percentage != null
+        ? Math.round((original * (100 - p.percentage)) / 100)
+        : original - (p.amount ?? 0)
+      : null
+    return {
+      base_price: money(base, divisor, cur),
+      shipping_cost: ship != null ? money(ship, divisor, cur) : null,
+      is_free_shipping: ship === 0,
+      original_price: money(original, divisor, cur),
+      discounted_price: discounted != null ? money(discounted, divisor, cur) : null,
+      discount_amount: discounted != null ? money(original - discounted, divisor, cur) : null,
+      discount_percentage: p ? p.percentage : null,
+      has_discount: !!p,
+      discount_start_epoch: p ? p.start : null,
+      discount_end_epoch: p ? p.end : null
+    }
   }
 
   client(over: Partial<EtsyClientOptions> = {}): EtsyClient {
@@ -199,11 +264,23 @@ export class FakeEtsy {
     return out as EtsyListingWithAssociations
   }
 
-  /** As a ShopListingWithAssociations with only the requested associations attached. */
-  private withIncludes(l: EtsyListingWithAssociations, includes: string[]): EtsyListingWithAssociations {
+  /**
+   * As a ShopListingWithAssociations with only the requested associations
+   * attached; BuyerPrice is computed for `buyer_country` (when `buyerPrice`).
+   */
+  private withIncludes(
+    l: EtsyListingWithAssociations,
+    includes: string[],
+    url: URL,
+    buyerPrice = true
+  ): EtsyListingWithAssociations {
     const out: Record<string, unknown> = { ...l }
     for (const [inc, key] of Object.entries(INCLUDE_KEY)) {
       if (!includes.includes(inc)) delete out[key]
+    }
+    if (includes.includes('BuyerPrice')) {
+      if (buyerPrice) out.buyer_price = this.buyerPriceFor(l, url.searchParams.get('buyer_country'))
+      else delete out.buyer_price
     }
     return out as EtsyListingWithAssociations
   }
@@ -211,7 +288,7 @@ export class FakeEtsy {
   private refused(url: URL): FakeReply | null {
     const inc = (url.searchParams.get('includes') ?? '').split(',').filter(Boolean)
     return inc.some((i) => this.refuseIncludes.includes(i))
-      ? { status: 403, body: { error: 'This include requires OAuth' } }
+      ? { status: this.refuseStatus, body: { error: 'This include requires OAuth' } }
       : null
   }
 
@@ -254,7 +331,7 @@ export class FakeEtsy {
       }
       const found = this.listings
         .filter((l) => ids.includes(l.listing_id))
-        .map((l) => this.withIncludes(l, includes))
+        .map((l) => this.withIncludes(l, includes, url, this.batchBuyerPrice))
       return { body: { count: found.length, results: found } }
     }
     const oneM = p.match(/^\/v3\/application\/listings\/(\d+)$/)
@@ -264,7 +341,7 @@ export class FakeEtsy {
       const refused = this.refused(url)
       if (refused) return refused
       const includes = (url.searchParams.get('includes') ?? '').split(',').filter(Boolean)
-      return { body: this.withIncludes(l, includes) }
+      return { body: this.withIncludes(l, includes, url, this.singleBuyerPrice) }
     }
     return { status: 404, body: { error: `no route ${p}` } }
   }

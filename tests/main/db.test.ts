@@ -45,9 +45,17 @@ import {
   emptyReviewSync,
   upsertReviews,
   writeReviewStats,
+  insertListingPriceStats,
+  startPromotion,
+  continuePromotion,
+  endPromotion,
+  getOpenPromotion,
+  listListingPromotions,
+  listScanPromotions,
   type Db
 } from '../../src/main/db'
 import { mapReview, mapShop } from '../../src/main/mapEtsy'
+import type { BuyerPrice } from '../../src/shared/types'
 import shopFx from '../fixtures/shop.json'
 import reviewFx from '../fixtures/transactionReview.json'
 import { memDb, memDbAt, mkInput, mkShop, seedShop } from '../helpers/db'
@@ -559,7 +567,7 @@ describe('migration v3 (from a real v2 database)', () => {
     const before = dump()
     expect(before.listings).toHaveLength(2)
     expect(before.scans).toHaveLength(2)
-    migrate(db)
+    migrate(db, MIGRATIONS.slice(0, 3))
     expect(dump()).toEqual(before)
     expect(schemaVersion(db)).toBe(3)
     const tables = db
@@ -583,7 +591,8 @@ describe('migration v3 (from a real v2 database)', () => {
       ])
     )
 
-    // v2 data reads back through today's functions.
+    // v2 data reads back through today's functions (on today's schema).
+    migrate(db)
     expect(listActiveListings(db, 20987654).map((l) => [l.listingId, l.views, l.numFavorers, l.images.length])).toEqual([
       [2, 20, 4, 0],
       [1, 10, 2, 1]
@@ -614,5 +623,235 @@ describe('migration v3 (from a real v2 database)', () => {
     for (const t of ['reviews', 'review_sync', 'listing_review_stats', 'shop_review_stats']) {
       expect(db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get()).toEqual({ n: 0 })
     }
+  })
+})
+
+const usd = (amount: number) => ({ amount, divisor: 100 })
+const mkBp = (over: Partial<BuyerPrice> = {}): BuyerPrice => ({
+  country: 'UA',
+  currency: 'USD',
+  base: usd(300),
+  original: usd(300),
+  discounted: usd(120),
+  discountAmount: usd(180),
+  discountPercentage: 60,
+  hasDiscount: true,
+  discountStart: 1_759_276_800,
+  discountEnd: 1_761_868_800,
+  shipping: usd(450),
+  isFreeShipping: false,
+  ...over
+})
+
+describe('migration v4 (from a real v3 database)', () => {
+  /** A database the v3 app wrote: shop, listings + images, ok scans with stats, changes, reviews + review stats. */
+  function v3Db(): Db {
+    const db = memDbAt(3)
+    expect(schemaVersion(db)).toBe(3)
+    insertShop(db, { ...mkShop(), profile: mapShop(shopFx as never, 1).profile })
+    upsertListing(db, mkInput(1, { views: 10, numFavorers: 2, images: [{ ...img(501), urlFull: 'https://i.etsystatic.com/a.jpg' }] }), 100)
+    upsertListing(db, mkInput(2, { views: 20, numFavorers: 4 }), 100)
+    const ids: number[] = []
+    for (const at of [1000, 2000]) {
+      const id = insertRunningScan(db, 20987654, at)
+      ids.push(id)
+      insertListingStats(db, id, [{ listingId: 1, views: 10, numFavorers: 2, featuredRank: null, quantity: 1 }])
+      insertShopStats(db, id, 20987654, { numFavorers: 5, transactionSoldCount: 9, reviewCount: 3, reviewAverage: 4.5, listingActiveCount: 2 })
+      finishScanOk(db, id, at + 1, { isBaseline: at === 1000, truncated: false, total: 2, added: 0, removed: 0, changed: 1, returned: 0 })
+      insertChange(db, id, 2, 'changed', { priceAmount: 1001 }, { priceAmount: 1002 })
+    }
+    saveReviewSync(db, { ...emptyReviewSync(20987654), backfill_upper: 10, backfill_complete: 1 })
+    upsertReviews(db, 20987654, [mapReview({ ...(reviewFx as never), shop_id: 20987654, listing_id: 1 })], {
+      now: 7,
+      scanId: ids[1],
+      isNew: () => true
+    })
+    writeReviewStats(db, 20987654, ids[1], 8)
+    return db
+  }
+
+  const V3_TABLES = [
+    'shops', 'listings', 'listing_images', 'listing_videos', 'listing_stats', 'shop_stats', 'scans', 'scan_changes',
+    'reviews', 'review_sync', 'listing_review_stats', 'shop_review_stats'
+  ]
+
+  it('keeps every v3 row and column unchanged and adds the buyer-price columns and tables', () => {
+    const db = v3Db()
+    const colsOf = (t: string) => db.prepare(`PRAGMA table_info(${t})`).all().map((r) => (r as { name: string }).name)
+    const v3Cols = Object.fromEntries(V3_TABLES.map((t) => [t, colsOf(t)]))
+    const dump = () =>
+      Object.fromEntries(
+        V3_TABLES.map((t) => [t, db.prepare(`SELECT ${v3Cols[t].join(', ')} FROM ${t} ORDER BY 1, 2`).all()])
+      )
+    const before = dump()
+    expect(before.listings).toHaveLength(2)
+    expect(before.reviews).toHaveLength(1)
+    migrate(db)
+    expect(schemaVersion(db)).toBe(4)
+    expect(dump()).toEqual(before)
+
+    const listingCols = colsOf('listings')
+    expect(listingCols).toEqual(
+      expect.arrayContaining([
+        'buyer_country', 'buyer_currency', 'buyer_base_amount', 'buyer_base_divisor', 'buyer_original_amount',
+        'buyer_original_divisor', 'buyer_discounted_amount', 'buyer_discounted_divisor', 'buyer_discount_amount',
+        'buyer_discount_divisor', 'buyer_discount_percentage', 'buyer_has_discount', 'buyer_discount_start',
+        'buyer_discount_end', 'buyer_shipping_amount', 'buyer_shipping_divisor', 'buyer_free_shipping', 'buyer_price_at'
+      ])
+    )
+    expect(colsOf('scans')).toEqual(expect.arrayContaining(['buyer_country', 'buyer_prices', 'promotions_started', 'promotions_ended']))
+    expect(colsOf('listing_price_stats')).toEqual(
+      expect.arrayContaining(['scan_id', 'listing_id', 'price_amount', 'price_divisor', 'price_currency', 'buyer_country', 'has_discount', 'discount_percentage'])
+    )
+    expect(colsOf('promotions')).toEqual(
+      expect.arrayContaining(['listing_id', 'shop_id', 'buyer_country', 'discount_percentage', 'start_kind', 'started_scan_id', 'ended_scan_id', 'end_reason'])
+    )
+    const indexes = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name IN ('promotions', 'listing_price_stats')")
+      .all()
+      .map((r) => (r as { name: string }).name)
+    expect(indexes).toEqual(expect.arrayContaining(['promotions_open', 'promotions_listing', 'listing_price_stats_listing']))
+
+    // v3 data reads back with "unknown" buyer prices — never a fake "no discount".
+    expect(getListing(db, 1)).toMatchObject({ buyerPrice: null, priceAmount: 1001, reviewCount: 1 })
+    expect(listScans(db, 20987654).map((s) => [s.buyerCountry, s.buyerPrices, s.promotionsStarted, s.promotionsEnded])).toEqual([
+      [null, null, 0, 0],
+      [null, null, 0, 0]
+    ])
+    expect(listListingStats(db, 1).map((p) => [p.views, p.price, p.buyerPrice, p.reviewCount])).toEqual([
+      [10, null, null, null],
+      [10, null, null, 1]
+    ])
+    expect(listScanChanges(db, listScans(db, 20987654)[0].id)[0].newValue).toEqual({ priceAmount: 1002 })
+  })
+
+  it('the migrated database takes buyer prices, price stats and promotions; a shop delete removes them', () => {
+    const db = v3Db()
+    migrate(db)
+    const [scanId] = listScans(db, 20987654).map((s) => s.id)
+    upsertListing(db, mkInput(1, { buyerPrice: mkBp() }), 3000)
+    insertListingPriceStats(db, scanId, [{ listingId: 1, priceAmount: 1001, priceDivisor: 100, currency: 'UAH', buyerPrice: mkBp() }])
+    startPromotion(db, 20987654, 1, mkBp(), 'seen', scanId, 3000)
+    expect(getListing(db, 1)!.buyerPrice).toMatchObject({ discountPercentage: 60, fetchedAt: 3000 })
+    expect(listListingStats(db, 1).at(-1)!.buyerPrice).toMatchObject({ discountPercentage: 60 })
+    expect(listScanPromotions(db, scanId).started).toHaveLength(1)
+    deleteShop(db, 20987654)
+    for (const t of ['promotions', 'listing_price_stats', 'listings', 'scans']) {
+      expect(db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get()).toEqual({ n: 0 })
+    }
+  })
+})
+
+describe('buyer price storage', () => {
+  it('round-trips every field exactly (amount + divisor, no floats)', () => {
+    const db = memDb()
+    seedShop(db)
+    upsertListing(db, mkInput(1, { buyerPrice: mkBp({ fetchedAt: 42 }) }), 100)
+    expect(getListing(db, 1)!.buyerPrice).toEqual(mkBp({ fetchedAt: 42 }))
+    // A buyer price without its own time takes the write time.
+    upsertListing(db, mkInput(1, { buyerPrice: mkBp({ discountPercentage: null, isFreeShipping: true, shipping: null }) }), 200)
+    expect(getListing(db, 1)!.buyerPrice).toMatchObject({ discountPercentage: null, isFreeShipping: true, shipping: null, fetchedAt: 200 })
+  })
+
+  it('undefined keeps the stored one, null clears it, an object replaces it', () => {
+    const db = memDb()
+    seedShop(db)
+    upsertListing(db, mkInput(1, { buyerPrice: mkBp() }), 100)
+    upsertListing(db, mkInput(1), 200) // not learned this scan
+    expect(getListing(db, 1)!.buyerPrice).toMatchObject({ hasDiscount: true, fetchedAt: 100 })
+    upsertListing(db, mkInput(1, { buyerPrice: mkBp({ country: 'DE', hasDiscount: false, discounted: null }) }), 300)
+    expect(getListing(db, 1)!.buyerPrice).toMatchObject({ country: 'DE', hasDiscount: false, discounted: null })
+    upsertListing(db, mkInput(1, { buyerPrice: null }), 400)
+    expect(getListing(db, 1)!.buyerPrice).toBeNull()
+    expect(db.prepare('SELECT buyer_price_at FROM listings WHERE listing_id = 1').get()).toEqual({ buyer_price_at: null })
+  })
+
+  it('listing_price_stats: the seller price always, the buyer price when known', () => {
+    const db = memDb()
+    seedShop(db)
+    upsertListing(db, mkInput(1), 100)
+    const scanId = insertRunningScan(db, 20987654, 1)
+    insertListingStats(db, scanId, [{ listingId: 1, views: 1, numFavorers: 1, featuredRank: null, quantity: 1 }])
+    insertListingPriceStats(db, scanId, [{ listingId: 1, priceAmount: 250, priceDivisor: 100, currency: 'USD', buyerPrice: null }])
+    finishScanOk(db, scanId, 2, { isBaseline: true, truncated: false, total: 1, added: 0, removed: 0, changed: 0, returned: 0 })
+    const s2 = insertRunningScan(db, 20987654, 3)
+    insertListingStats(db, s2, [{ listingId: 1, views: 1, numFavorers: 1, featuredRank: null, quantity: 1 }])
+    insertListingPriceStats(db, s2, [{ listingId: 1, priceAmount: 250, priceDivisor: 100, currency: 'USD', buyerPrice: mkBp() }])
+    finishScanOk(db, s2, 4, {
+      isBaseline: false, truncated: false, total: 1, added: 0, removed: 0, changed: 0, returned: 0,
+      buyerCountry: 'UA', buyerPrices: 'ok', promotionsStarted: 1, promotionsEnded: 0
+    })
+    expect(listListingStats(db, 1).map((p) => [p.price, p.buyerPrice?.discounted ?? null])).toEqual([
+      [{ amount: 250, divisor: 100, currency: 'USD' }, null],
+      [{ amount: 250, divisor: 100, currency: 'USD' }, usd(120)]
+    ])
+    expect(listScans(db, 20987654)[0]).toMatchObject({ buyerCountry: 'UA', buyerPrices: 'ok', promotionsStarted: 1, promotionsEnded: 0 })
+  })
+})
+
+describe('promotions table', () => {
+  function withScans(n: number) {
+    const db = memDb()
+    seedShop(db)
+    upsertListing(db, mkInput(1, { images: [img(11)] }), 1)
+    upsertListing(db, mkInput(2), 1)
+    const scans = Array.from({ length: n }, (_, i) => {
+      const id = insertRunningScan(db, 20987654, i * 10)
+      finishScanOk(db, id, i * 10 + 1, { isBaseline: i === 0, truncated: false, total: 2, added: 0, removed: 0, changed: 0, returned: 0 })
+      return id
+    })
+    return { db, scans }
+  }
+
+  it('start → continue → end; at most one running promotion per listing', () => {
+    const { db, scans } = withScans(3)
+    const id = startPromotion(db, 20987654, 1, mkBp(), 'seen', scans[0], 100)
+    expect(() => startPromotion(db, 20987654, 1, mkBp(), 'seen', scans[0], 100)).toThrow(/UNIQUE/)
+    continuePromotion(db, id, mkBp({ country: 'DE', discounted: usd(119), discountEnd: 1_762_000_000 }), scans[1], 200)
+    expect(getOpenPromotion(db, 1)).toMatchObject({
+      id, country: 'DE', discounted: usd(119), discountEnd: 1_762_000_000, firstSeenAt: 100, lastSeenAt: 200, startedScanId: scans[0]
+    })
+    endPromotion(db, id, 'ended', scans[2], 300)
+    endPromotion(db, id, 'replaced', scans[2], 400) // already over: no-op
+    expect(getOpenPromotion(db, 1)).toBeNull()
+    expect(listListingPromotions(db, 1)[0]).toMatchObject({ endedScanId: scans[2], endedAt: 300, endReason: 'ended' })
+    // A new one may start once the old is over.
+    startPromotion(db, 20987654, 1, mkBp({ discountPercentage: 10 }), 'seen', scans[2], 300)
+    expect(listListingPromotions(db, 1).map((p) => p.discountPercentage)).toEqual([10, 60])
+  })
+
+  it('listScanPromotions reports only real starts/ends, with the listing title and first image', () => {
+    const { db, scans } = withScans(2)
+    const e = startPromotion(db, 20987654, 1, mkBp({ discountPercentage: 5 }), 'seen', scans[0], 50)
+    endPromotion(db, e, 'ended', scans[1], 100)
+    startPromotion(db, 20987654, 1, mkBp(), 'seen', scans[1], 100)
+    const c = startPromotion(db, 20987654, 2, mkBp(), 'country', scans[0], 50)
+    endPromotion(db, c, 'country', scans[1], 100)
+    startPromotion(db, 20987654, 2, mkBp({ discountPercentage: 70 }), 'running', scans[1], 100)
+    const r = listScanPromotions(db, scans[1])
+    expect(r.started.map((p) => [p.listingId, p.startKind, p.listingTitle, p.listingImageId])).toEqual([[1, 'seen', 'Listing 1', 11]])
+    expect(r.ended.map((p) => [p.listingId, p.endReason])).toEqual([[1, 'ended']])
+    expect(listScanPromotions(db, 999)).toEqual({ started: [], ended: [] })
+  })
+
+  it('"removed" and "unknown" ends are stored but never listed as a scan’s ends; other reasons are refused', () => {
+    const { db, scans } = withScans(2)
+    const a = startPromotion(db, 20987654, 1, mkBp(), 'running', scans[0], 50)
+    endPromotion(db, a, 'removed', scans[1], 100)
+    const b = startPromotion(db, 20987654, 2, mkBp(), 'running', scans[0], 50)
+    endPromotion(db, b, 'unknown', scans[1], 100)
+    expect(listListingPromotions(db, 1)[0]).toMatchObject({ endReason: 'removed', endedScanId: scans[1] })
+    expect(listListingPromotions(db, 2)[0]).toMatchObject({ endReason: 'unknown', endedAt: 100 })
+    expect(listScanPromotions(db, scans[1]).ended).toEqual([])
+    const c = startPromotion(db, 20987654, 1, mkBp(), 'seen', scans[1], 100)
+    expect(() => endPromotion(db, c, 'bogus' as never, scans[1], 120)).toThrow(/CHECK/)
+  })
+
+  it('listScanPromotions caps each list (default 200 — the scan row has the real counts)', () => {
+    const { db, scans } = withScans(2)
+    startPromotion(db, 20987654, 1, mkBp({ discountPercentage: 10 }), 'seen', scans[1], 100)
+    startPromotion(db, 20987654, 2, mkBp({ discountPercentage: 50 }), 'seen', scans[1], 100)
+    expect(listScanPromotions(db, scans[1], 1).started.map((p) => p.discountPercentage)).toEqual([50])
+    expect(listScanPromotions(db, scans[1]).started).toHaveLength(2)
   })
 })

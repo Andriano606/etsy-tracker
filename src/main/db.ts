@@ -4,6 +4,7 @@
 
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite'
 import type {
+  BuyerPrice,
   ChangeKind,
   ImageCounts,
   ImageSyncStatus,
@@ -12,12 +13,17 @@ import type {
   ListingImage,
   ListingVideo,
   ListingStatsPoint,
+  MoneyValue,
   PersonalizationQuestion,
+  Promotion,
+  PromotionEndReason,
+  PromotionStartKind,
   Review,
   ReviewOrigin,
   ReviewPage,
   ReviewSyncInfo,
   ScanChange,
+  ScanPromotions,
   ScanStatus,
   ScanSummary,
   Shop,
@@ -365,6 +371,97 @@ export const MIGRATIONS: string[] = [
     synced_at INTEGER NOT NULL             -- ms
   );
   CREATE INDEX shop_review_stats_shop ON shop_review_stats(shop_id, scan_id);
+  `,
+  // v4: buyer-facing prices (includes=BuyerPrice + buyer_country: VAT,
+  // promotions) on the listing, per scan, and the promotions seen across scans.
+  `
+  -- The latest known buyer price of the listing (NULL buyer_country = unknown).
+  -- Money columns are Etsy's amount + divisor, exact; one currency per price set.
+  ALTER TABLE listings ADD COLUMN buyer_country TEXT;
+  ALTER TABLE listings ADD COLUMN buyer_currency TEXT;
+  ALTER TABLE listings ADD COLUMN buyer_base_amount INTEGER;
+  ALTER TABLE listings ADD COLUMN buyer_base_divisor INTEGER;
+  ALTER TABLE listings ADD COLUMN buyer_original_amount INTEGER;
+  ALTER TABLE listings ADD COLUMN buyer_original_divisor INTEGER;
+  ALTER TABLE listings ADD COLUMN buyer_discounted_amount INTEGER;
+  ALTER TABLE listings ADD COLUMN buyer_discounted_divisor INTEGER;
+  ALTER TABLE listings ADD COLUMN buyer_discount_amount INTEGER;
+  ALTER TABLE listings ADD COLUMN buyer_discount_divisor INTEGER;
+  ALTER TABLE listings ADD COLUMN buyer_discount_percentage INTEGER;
+  ALTER TABLE listings ADD COLUMN buyer_has_discount INTEGER;
+  ALTER TABLE listings ADD COLUMN buyer_discount_start INTEGER;   -- Etsy epoch seconds
+  ALTER TABLE listings ADD COLUMN buyer_discount_end INTEGER;
+  ALTER TABLE listings ADD COLUMN buyer_shipping_amount INTEGER;
+  ALTER TABLE listings ADD COLUMN buyer_shipping_divisor INTEGER;
+  ALTER TABLE listings ADD COLUMN buyer_free_shipping INTEGER;
+  ALTER TABLE listings ADD COLUMN buyer_price_at INTEGER;         -- ms: when it was learned
+
+  -- Which buyer country a scan asked prices for, whether Etsy served them, and
+  -- how many promotions it saw start / end.
+  ALTER TABLE scans ADD COLUMN buyer_country TEXT;
+  ALTER TABLE scans ADD COLUMN buyer_prices TEXT;                 -- 'ok' | 'unavailable' | NULL
+  ALTER TABLE scans ADD COLUMN promotions_started INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE scans ADD COLUMN promotions_ended INTEGER NOT NULL DEFAULT 0;
+
+  -- Seller price + buyer price of every current listing per successful scan
+  -- (buyer columns NULL = that scan didn't learn it).
+  CREATE TABLE listing_price_stats (
+    scan_id INTEGER NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
+    listing_id INTEGER NOT NULL,
+    price_amount INTEGER NOT NULL,
+    price_divisor INTEGER NOT NULL,
+    price_currency TEXT NOT NULL,
+    buyer_country TEXT,
+    currency TEXT,
+    base_amount INTEGER,
+    base_divisor INTEGER,
+    original_amount INTEGER,
+    original_divisor INTEGER,
+    discounted_amount INTEGER,
+    discounted_divisor INTEGER,
+    discount_amount INTEGER,
+    discount_divisor INTEGER,
+    discount_percentage INTEGER,
+    has_discount INTEGER,
+    discount_start INTEGER,
+    discount_end INTEGER,
+    shipping_amount INTEGER,
+    shipping_divisor INTEGER,
+    is_free_shipping INTEGER,
+    PRIMARY KEY (scan_id, listing_id)
+  ) WITHOUT ROWID;
+  CREATE INDEX listing_price_stats_listing ON listing_price_stats(listing_id, scan_id);
+
+  -- One row per promotion of a listing, from the first scan that saw it to the
+  -- first scan that saw it gone (ended_at NULL = running).
+  CREATE TABLE promotions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    shop_id INTEGER NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
+    listing_id INTEGER NOT NULL,
+    buyer_country TEXT NOT NULL,           -- of the latest observation
+    currency TEXT,
+    discount_percentage INTEGER,
+    discount_start INTEGER,                -- Etsy epoch seconds
+    discount_end INTEGER,
+    original_amount INTEGER,
+    original_divisor INTEGER,
+    discounted_amount INTEGER,
+    discounted_divisor INTEGER,
+    discount_amount INTEGER,
+    discount_divisor INTEGER,
+    start_kind TEXT NOT NULL CHECK (start_kind IN ('seen', 'running', 'country')),
+    started_scan_id INTEGER REFERENCES scans(id) ON DELETE SET NULL,
+    first_seen_at INTEGER NOT NULL,        -- ms
+    last_seen_at INTEGER NOT NULL,
+    last_seen_scan_id INTEGER REFERENCES scans(id) ON DELETE SET NULL,
+    ended_scan_id INTEGER REFERENCES scans(id) ON DELETE SET NULL,
+    ended_at INTEGER,                      -- ms; NULL = running
+    end_reason TEXT CHECK (end_reason IN ('ended', 'replaced', 'country', 'removed', 'unknown'))
+  );
+  CREATE UNIQUE INDEX promotions_open ON promotions(listing_id) WHERE ended_at IS NULL;
+  CREATE INDEX promotions_listing ON promotions(listing_id, first_seen_at);
+  CREATE INDEX promotions_started ON promotions(started_scan_id);
+  CREATE INDEX promotions_ended ON promotions(ended_scan_id);
   `
 ]
 
@@ -514,6 +611,9 @@ interface ListingRow {
   state_at: Nullable<number>
   raw_json: Nullable<string>
   details_fetched_at: Nullable<number>
+  // v4: the latest known buyer price (see BUYER_COLS).
+  buyer_country?: Nullable<string>
+  buyer_price_at?: Nullable<number>
 }
 
 export interface ImageRow {
@@ -577,6 +677,10 @@ interface ScanRow {
   removed: number
   changed: number
   returned: number
+  buyer_country?: string | null
+  buyer_prices?: string | null
+  promotions_started?: number | null
+  promotions_ended?: number | null
 }
 
 interface ChangeRow {
@@ -768,7 +872,8 @@ function toListing(r: ListingRow, x: ListingExtras): Listing {
     reviewCount: x.reviews ? x.reviews.count : null,
     reviewAvg: x.reviews ? x.reviews.avg : null,
     reviewsNew: x.reviews ? x.reviews.fresh : null,
-    reviewsPartial: x.reviews ? x.reviews.partial : false
+    reviewsPartial: x.reviews ? x.reviews.partial : false,
+    buyerPrice: buyerFromRow(r as unknown as Record<string, unknown>, listingBuyerCol, r.buyer_price_at ?? null)
   }
 }
 
@@ -786,8 +891,115 @@ function toScan(r: ScanRow): ScanSummary {
     added: r.added,
     removed: r.removed,
     changed: r.changed,
-    returned: r.returned
+    returned: r.returned,
+    buyerCountry: r.buyer_country ?? null,
+    buyerPrices: r.buyer_prices === 'ok' || r.buyer_prices === 'unavailable' ? r.buyer_prices : null,
+    promotionsStarted: r.promotions_started ?? 0,
+    promotionsEnded: r.promotions_ended ?? 0
   }
+}
+
+// --------------------------------------------------------------- buyer price
+
+/**
+ * The columns a BuyerPrice is stored in, by a canonical key. `listings` uses
+ * `buyer_<key>`; `listing_price_stats` uses the key itself, except
+ * country → buyer_country and free_shipping → is_free_shipping.
+ */
+const BUYER_KEYS = [
+  'country',
+  'currency',
+  'base_amount',
+  'base_divisor',
+  'original_amount',
+  'original_divisor',
+  'discounted_amount',
+  'discounted_divisor',
+  'discount_amount',
+  'discount_divisor',
+  'discount_percentage',
+  'has_discount',
+  'discount_start',
+  'discount_end',
+  'shipping_amount',
+  'shipping_divisor',
+  'free_shipping'
+] as const
+type BuyerKey = (typeof BUYER_KEYS)[number]
+
+const listingBuyerCol = (k: BuyerKey): string => `buyer_${k}`
+const statsBuyerCol = (k: BuyerKey): string =>
+  k === 'country' ? 'buyer_country' : k === 'free_shipping' ? 'is_free_shipping' : k
+
+/** BuyerPrice → value per canonical key (all NULL for null). */
+function buyerValues(bp: BuyerPrice | null): Record<BuyerKey, SQLInputValue> {
+  const m = (v: MoneyValue | null | undefined): [SQLInputValue, SQLInputValue] =>
+    v ? [v.amount, v.divisor] : [null, null]
+  const [baseA, baseD] = m(bp?.base)
+  const [origA, origD] = m(bp?.original)
+  const [discA, discD] = m(bp?.discounted)
+  const [amtA, amtD] = m(bp?.discountAmount)
+  const [shipA, shipD] = m(bp?.shipping)
+  return {
+    country: bp?.country ?? null,
+    currency: bp ? bp.currency : null,
+    base_amount: baseA,
+    base_divisor: baseD,
+    original_amount: origA,
+    original_divisor: origD,
+    discounted_amount: discA,
+    discounted_divisor: discD,
+    discount_amount: amtA,
+    discount_divisor: amtD,
+    discount_percentage: bp?.discountPercentage ?? null,
+    has_discount: bp ? bit(bp.hasDiscount) : null,
+    discount_start: bp?.discountStart ?? null,
+    discount_end: bp?.discountEnd ?? null,
+    shipping_amount: shipA,
+    shipping_divisor: shipD,
+    free_shipping: bit(bp?.isFreeShipping)
+  }
+}
+
+/** Read a BuyerPrice back from a row (null when it has no buyer country). */
+function buyerFromRow(
+  row: Record<string, unknown>,
+  col: (k: BuyerKey) => string,
+  fetchedAt?: number | null
+): BuyerPrice | null {
+  const v = (k: BuyerKey): unknown => row[col(k)]
+  const country = v('country')
+  if (typeof country !== 'string' || !country) return null
+  const n = (k: BuyerKey): number | null => {
+    const x = v(k)
+    return x == null ? null : Number(x)
+  }
+  const money = (a: BuyerKey, d: BuyerKey): MoneyValue | null =>
+    n(a) == null ? null : { amount: n(a)!, divisor: n(d) || 100 }
+  return {
+    country,
+    currency: String(v('currency') ?? ''),
+    base: money('base_amount', 'base_divisor'),
+    original: money('original_amount', 'original_divisor'),
+    discounted: money('discounted_amount', 'discounted_divisor'),
+    discountAmount: money('discount_amount', 'discount_divisor'),
+    discountPercentage: n('discount_percentage'),
+    hasDiscount: n('has_discount') === 1,
+    discountStart: n('discount_start'),
+    discountEnd: n('discount_end'),
+    shipping: money('shipping_amount', 'shipping_divisor'),
+    isFreeShipping: bool(n('free_shipping')),
+    ...(fetchedAt !== undefined ? { fetchedAt } : {})
+  }
+}
+
+/** Store (or clear, with null) the listing's latest buyer price. */
+function writeListingBuyerPrice(db: Db, listingId: number, bp: BuyerPrice | null, now: number): void {
+  const vals = buyerValues(bp)
+  db.prepare(
+    `UPDATE listings SET ${BUYER_KEYS.map((k) => `${listingBuyerCol(k)} = ?`).join(', ')}, buyer_price_at = ?
+     WHERE listing_id = ?`
+  ).run(...BUYER_KEYS.map((k) => vals[k]), bp ? (bp.fetchedAt ?? now) : null, listingId)
 }
 
 // ---------------------------------------------------------------------- shops
@@ -1021,6 +1233,11 @@ export type ListingInput = Omit<
    * False after the Images-only include fallback: the stored questions are kept.
    */
   personalizationFetched?: boolean
+  /**
+   * The buyer price this scan learned: undefined = not learned → keep the
+   * stored one; null = unavailable → clear it (see `buyerPriceOf`).
+   */
+  buyerPrice?: BuyerPrice | null
 }
 
 function imagesFor(db: Db, where: string, arg: number): Map<number, ListingImage[]> {
@@ -1215,6 +1432,7 @@ export function upsertListing(db: Db, l: ListingInput, now: number): void {
   ).run(...cols.map(([, v]) => v))
   if (l.images) syncListingImages(db, l.listingId, l.shopId, l.images, now)
   if (l.videos) syncListingVideos(db, l.listingId, l.videos, now)
+  if (l.buyerPrice !== undefined) writeListingBuyerPrice(db, l.listingId, l.buyerPrice, now)
 }
 
 /**
@@ -1353,6 +1571,28 @@ export function insertListingStats(db: Db, scanId: number, rows: ListingStatsInp
   for (const r of rows) st.run(scanId, r.listingId, r.views, r.numFavorers, r.featuredRank, r.quantity)
 }
 
+export interface ListingPriceStatsInput {
+  listingId: number
+  priceAmount: number
+  priceDivisor: number
+  currency: string
+  /** null = this scan didn't learn the buyer price. */
+  buyerPrice: BuyerPrice | null
+}
+
+/** Seller + buyer price of every current listing at a scan (the price/promotion history). */
+export function insertListingPriceStats(db: Db, scanId: number, rows: ListingPriceStatsInput[]): void {
+  const st = db.prepare(
+    `INSERT OR REPLACE INTO listing_price_stats (scan_id, listing_id, price_amount, price_divisor, price_currency,
+       ${BUYER_KEYS.map(statsBuyerCol).join(', ')})
+     VALUES (?, ?, ?, ?, ?, ${BUYER_KEYS.map(() => '?').join(', ')})`
+  )
+  for (const r of rows) {
+    const vals = buyerValues(r.buyerPrice)
+    st.run(scanId, r.listingId, r.priceAmount, r.priceDivisor, r.currency, ...BUYER_KEYS.map((k) => vals[k]))
+  }
+}
+
 export function insertShopStats(db: Db, scanId: number, shopId: number, s: ShopStats): void {
   db.prepare(
     `INSERT OR REPLACE INTO shop_stats (scan_id, shop_id, num_favorers, transaction_sold_count,
@@ -1375,9 +1615,12 @@ export function listListingStats(db: Db, listingId: number): ListingStatsPoint[]
   const rows = db
     .prepare(
       `SELECT s.scan_id, sc.finished_at, s.views, s.num_favorers, s.featured_rank, s.quantity,
-         rs.review_count, rs.review_avg, rs.complete AS reviews_complete
+         rs.review_count, rs.review_avg, rs.complete AS reviews_complete,
+         ps.scan_id AS ps_scan, ps.price_amount, ps.price_divisor, ps.price_currency,
+         ${BUYER_KEYS.map((k) => `ps.${statsBuyerCol(k)}`).join(', ')}
        FROM listing_stats s JOIN scans sc ON sc.id = s.scan_id
        LEFT JOIN listing_review_stats rs ON rs.scan_id = s.scan_id AND rs.listing_id = s.listing_id
+       LEFT JOIN listing_price_stats ps ON ps.scan_id = s.scan_id AND ps.listing_id = s.listing_id
        WHERE s.listing_id = ? ORDER BY s.scan_id`
     )
     .all(listingId) as Array<{
@@ -1390,6 +1633,10 @@ export function listListingStats(db: Db, listingId: number): ListingStatsPoint[]
     review_count: number | null
     review_avg: number | null
     reviews_complete: number | null
+    ps_scan: number | null
+    price_amount: number | null
+    price_divisor: number | null
+    price_currency: string | null
   }>
   return rows.map((r) => ({
     scanId: r.scan_id,
@@ -1400,7 +1647,12 @@ export function listListingStats(db: Db, listingId: number): ListingStatsPoint[]
     quantity: r.quantity,
     reviewCount: r.review_count,
     reviewAvg: r.review_avg,
-    reviewsComplete: bool(r.reviews_complete)
+    reviewsComplete: bool(r.reviews_complete),
+    price:
+      r.ps_scan != null && r.price_amount != null
+        ? { amount: r.price_amount, divisor: r.price_divisor || 100, currency: r.price_currency ?? '' }
+        : null,
+    buyerPrice: r.ps_scan != null ? buyerFromRow(r as unknown as Record<string, unknown>, statsBuyerCol) : null
   }))
 }
 
@@ -1618,6 +1870,11 @@ export interface ScanTotals {
   removed: number
   changed: number
   returned: number
+  /** The buyer country asked for (null = none) and whether Etsy served BuyerPrice. */
+  buyerCountry?: string | null
+  buyerPrices?: 'ok' | 'unavailable' | null
+  promotionsStarted?: number
+  promotionsEnded?: number
 }
 
 export function finishScanOk(db: Db, scanId: number, finishedAt: number, t: ScanTotals): void {
@@ -1636,6 +1893,13 @@ export function finishScanOk(db: Db, scanId: number, finishedAt: number, t: Scan
     t.returned,
     scanId
   )
+  // v4 columns, only when given (a caller without buyer prices works on any schema).
+  const v4 = [t.buyerCountry, t.buyerPrices, t.promotionsStarted, t.promotionsEnded]
+  if (v4.some((v) => v !== undefined)) {
+    db.prepare(
+      'UPDATE scans SET buyer_country = ?, buyer_prices = ?, promotions_started = ?, promotions_ended = ? WHERE id = ?'
+    ).run(t.buyerCountry ?? null, t.buyerPrices ?? null, t.promotionsStarted ?? 0, t.promotionsEnded ?? 0, scanId)
+  }
 }
 
 export function finishScanError(db: Db, scanId: number, finishedAt: number, error: string): void {
@@ -1707,6 +1971,154 @@ export function listScanChanges(db: Db, scanId: number): ScanChange[] {
     newValue: parseJson<TrackedFields | null>(r.new_value, null),
     listing: getListing(db, r.listing_id)
   }))
+}
+
+// ----------------------------------------------------------------- promotions
+
+interface PromotionRow {
+  id: number
+  shop_id: number
+  listing_id: number
+  buyer_country: string
+  currency: string | null
+  discount_percentage: number | null
+  discount_start: number | null
+  discount_end: number | null
+  original_amount: number | null
+  original_divisor: number | null
+  discounted_amount: number | null
+  discounted_divisor: number | null
+  discount_amount: number | null
+  discount_divisor: number | null
+  start_kind: PromotionStartKind
+  started_scan_id: number | null
+  first_seen_at: number
+  last_seen_at: number
+  last_seen_scan_id: number | null
+  ended_scan_id: number | null
+  ended_at: number | null
+  end_reason: PromotionEndReason | null
+  listing_title?: string | null
+  listing_image_id?: number | null
+}
+
+function toPromotion(r: PromotionRow): Promotion {
+  const money = (a: number | null, d: number | null): MoneyValue | null =>
+    a == null ? null : { amount: a, divisor: d || 100 }
+  const p: Promotion = {
+    id: r.id,
+    listingId: r.listing_id,
+    shopId: r.shop_id,
+    country: r.buyer_country,
+    currency: r.currency,
+    discountPercentage: r.discount_percentage,
+    discountStart: r.discount_start,
+    discountEnd: r.discount_end,
+    original: money(r.original_amount, r.original_divisor),
+    discounted: money(r.discounted_amount, r.discounted_divisor),
+    discountAmount: money(r.discount_amount, r.discount_divisor),
+    startKind: r.start_kind,
+    startedScanId: r.started_scan_id,
+    firstSeenAt: r.first_seen_at,
+    lastSeenAt: r.last_seen_at,
+    endedScanId: r.ended_scan_id,
+    endedAt: r.ended_at,
+    endReason: r.end_reason
+  }
+  if (r.listing_title !== undefined) p.listingTitle = r.listing_title
+  if (r.listing_image_id !== undefined) p.listingImageId = r.listing_image_id
+  return p
+}
+
+/** The listing's running promotion (at most one — `promotions_open`), or null. */
+export function getOpenPromotion(db: Db, listingId: number): Promotion | null {
+  const r = db.prepare('SELECT * FROM promotions WHERE listing_id = ? AND ended_at IS NULL').get(listingId) as
+    | PromotionRow
+    | undefined
+  return r ? toPromotion(r) : null
+}
+
+/** The observed terms of a promotion (from a BuyerPrice with a discount). */
+function promotionTerms(bp: BuyerPrice): SQLInputValue[] {
+  const v = buyerValues(bp)
+  return [
+    bp.country,
+    v.currency,
+    v.discount_percentage,
+    v.discount_start,
+    v.discount_end,
+    v.original_amount,
+    v.original_divisor,
+    v.discounted_amount,
+    v.discounted_divisor,
+    v.discount_amount,
+    v.discount_divisor
+  ]
+}
+
+export function startPromotion(
+  db: Db,
+  shopId: number,
+  listingId: number,
+  bp: BuyerPrice,
+  kind: PromotionStartKind,
+  scanId: number,
+  now: number
+): number {
+  const r = db
+    .prepare(
+      `INSERT INTO promotions (shop_id, listing_id, buyer_country, currency, discount_percentage, discount_start,
+         discount_end, original_amount, original_divisor, discounted_amount, discounted_divisor, discount_amount,
+         discount_divisor, start_kind, started_scan_id, first_seen_at, last_seen_at, last_seen_scan_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(shopId, listingId, ...promotionTerms(bp), kind, scanId, now, now, scanId)
+  return Number(r.lastInsertRowid)
+}
+
+/** A scan saw the running promotion again: latest terms/prices/country + last seen. */
+export function continuePromotion(db: Db, id: number, bp: BuyerPrice, scanId: number, now: number): void {
+  db.prepare(
+    `UPDATE promotions SET buyer_country = ?, currency = ?, discount_percentage = ?, discount_start = ?,
+       discount_end = ?, original_amount = ?, original_divisor = ?, discounted_amount = ?, discounted_divisor = ?,
+       discount_amount = ?, discount_divisor = ?, last_seen_at = ?, last_seen_scan_id = ?
+     WHERE id = ?`
+  ).run(...promotionTerms(bp), now, scanId, id)
+}
+
+export function endPromotion(db: Db, id: number, reason: PromotionEndReason, scanId: number, now: number): void {
+  db.prepare(
+    'UPDATE promotions SET ended_scan_id = ?, ended_at = ?, end_reason = ? WHERE id = ? AND ended_at IS NULL'
+  ).run(scanId, now, reason, id)
+}
+
+/** Every promotion of a listing, newest first (the modal's history). */
+export function listListingPromotions(db: Db, listingId: number): Promotion[] {
+  const rows = db
+    .prepare('SELECT * FROM promotions WHERE listing_id = ? ORDER BY first_seen_at DESC, id DESC')
+    .all(listingId) as unknown as PromotionRow[]
+  return rows.map(toPromotion)
+}
+
+/**
+ * Promotions a scan saw start (`start_kind = 'seen'`) or end (`ended` /
+ * `replaced`) — the "Акції" group. Ones only explained by a buyer-country
+ * switch, or already running at the first observation, are left out.
+ */
+export function listScanPromotions(db: Db, scanId: number, limit = 200): ScanPromotions {
+  const sel = `SELECT p.*, l.title AS listing_title,
+      (SELECT i.listing_image_id FROM listing_images i WHERE i.listing_id = p.listing_id AND i.removed_at IS NULL
+       ORDER BY i.rank, i.listing_image_id LIMIT 1) AS listing_image_id
+    FROM promotions p LEFT JOIN listings l ON l.listing_id = p.listing_id`
+  const started = db
+    .prepare(`${sel} WHERE p.started_scan_id = ? AND p.start_kind = 'seen' ORDER BY p.discount_percentage DESC, p.id LIMIT ?`)
+    .all(scanId, limit) as unknown as PromotionRow[]
+  const ended = db
+    .prepare(
+      `${sel} WHERE p.ended_scan_id = ? AND p.end_reason IN ('ended', 'replaced') ORDER BY p.discount_percentage DESC, p.id LIMIT ?`
+    )
+    .all(scanId, limit) as unknown as PromotionRow[]
+  return { started: started.map(toPromotion), ended: ended.map(toPromotion) }
 }
 
 // -------------------------------------------------------------------- reviews

@@ -7,6 +7,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
 import { dirname } from 'path'
 import type { KeyStatus, MinioSettingsInput, MinioStatus } from '../shared/types'
+import { DEFAULT_BUYER_COUNTRY, normalizeCountry } from '../shared/countries'
 
 export interface SafeStorageLike {
   isEncryptionAvailable(): boolean
@@ -34,6 +35,8 @@ interface StoredMinio {
 interface SettingsFile {
   apiKey?: StoredKey
   minio?: StoredMinio
+  /** ISO 3166-1 alpha-2 buyer country for Etsy's buyer-facing prices (not a secret). */
+  buyerCountry?: string
 }
 
 /** Read settings.json; a missing or corrupt file reads as empty. */
@@ -268,6 +271,38 @@ export function createMinioSettingsStore(filePath: string, safe: SafeStorageLike
       if (data.minio) delete data.minio.secretKey
       writeSettings(filePath, data)
       return status()
+    }
+  }
+}
+
+// ------------------------------------------------------------- buyer country
+
+export interface BuyerCountryStore {
+  /** The saved country, else `DEFAULT_BUYER_COUNTRY` (also for a corrupt saved value). */
+  get(): string
+  /** Validate (ISO 3166-1 alpha-2, uppercased; "UK" = GB) and save. Throws a Ukrainian message. */
+  set(raw: unknown): string
+}
+
+export const BUYER_COUNTRY_ERROR =
+  'Вкажіть двобуквений код країни за ISO 3166-1 (напр. UA, US, DE, GB).'
+
+/**
+ * Settings → "Країна покупця", in settings.json next to the secrets (it isn't
+ * one, so plain). Read by the scanner at the start of every scan.
+ */
+export function createBuyerCountryStore(filePath: string): BuyerCountryStore {
+  return {
+    get() {
+      return normalizeCountry(readSettings(filePath).buyerCountry) ?? DEFAULT_BUYER_COUNTRY
+    },
+    set(raw) {
+      const c = normalizeCountry(raw)
+      if (!c) throw new Error(BUYER_COUNTRY_ERROR)
+      const data = readSettings(filePath)
+      data.buyerCountry = c
+      writeSettings(filePath, data)
+      return c
     }
   }
 }

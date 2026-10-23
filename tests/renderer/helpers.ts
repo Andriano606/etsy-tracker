@@ -1,6 +1,8 @@
 import { vi } from 'vitest'
 import type {
   AddShopResult,
+  BuyerCountryResult,
+  BuyerPrice,
   ImageCounts,
   ImageSyncState,
   KeyStatus,
@@ -10,12 +12,14 @@ import type {
   MinioSettingsInput,
   MinioStatus,
   MinioTestResult,
+  Promotion,
   Quota,
   Review,
   ReviewPage,
   ReviewSyncState,
   ScanChange,
   ScanOutcome,
+  ScanPromotions,
   ScanSummary,
   ShopStatsPayload,
   ShopSummary,
@@ -162,6 +166,54 @@ export const mkChange = (
   ...over
 })
 
+/**
+ * A buyer price like the issue's example: USD 2.50 base → 3.00 with 20 % UA
+ * VAT → 1.20 with a 60 % promotion. `over` replaces fields; `discount: false`
+ * gives the no-promotion shape.
+ */
+export const mkBuyerPrice = (over: Partial<BuyerPrice> & { discount?: boolean } = {}): BuyerPrice => {
+  const { discount = true, ...rest } = over
+  return {
+    country: 'UA',
+    currency: 'USD',
+    base: { amount: 300, divisor: 100 },
+    original: { amount: 300, divisor: 100 },
+    discounted: discount ? { amount: 120, divisor: 100 } : null,
+    discountAmount: discount ? { amount: 180, divisor: 100 } : null,
+    discountPercentage: discount ? 60 : null,
+    hasDiscount: discount,
+    discountStart: discount ? Math.floor(new Date(new Date().getFullYear(), 9, 1).getTime() / 1000) : null,
+    discountEnd: discount ? Math.floor(new Date(new Date().getFullYear(), 9, 31).getTime() / 1000) : null,
+    shipping: null,
+    isFreeShipping: null,
+    ...rest
+  }
+}
+
+export const mkPromotion = (id: number, over: Partial<Promotion> = {}): Promotion => ({
+  id,
+  listingId: 1,
+  shopId: 1,
+  country: 'UA',
+  currency: 'USD',
+  discountPercentage: 60,
+  discountStart: 1_759_276_800,
+  discountEnd: 1_761_868_800,
+  original: { amount: 300, divisor: 100 },
+  discounted: { amount: 120, divisor: 100 },
+  discountAmount: { amount: 180, divisor: 100 },
+  startKind: 'seen',
+  startedScanId: 1,
+  firstSeenAt: 1_759_300_000_000,
+  lastSeenAt: 1_759_300_000_000,
+  endedScanId: null,
+  endedAt: null,
+  endReason: null,
+  ...over
+})
+
+export const noPromotions = (): ScanPromotions => ({ started: [], ended: [] })
+
 /** What main answers for a shop with no scans and no reviews. */
 export const emptyStats = (shopId = 1, range: StatsRange = 'all', over: Partial<ShopStatsPayload> = {}): ShopStatsPayload => ({
   shopId,
@@ -197,6 +249,12 @@ export function makeApi() {
     getListing: vi.fn(async (): Promise<Listing | null> => null),
     listScans: vi.fn(async (): Promise<ScanSummary[]> => []),
     getScanChanges: vi.fn(async (): Promise<ScanChange[]> => []),
+    getScanPromotions: vi.fn(async (_scanId: number): Promise<ScanPromotions> => noPromotions()),
+    getListingPromotions: vi.fn(async (_listingId: number): Promise<Promotion[]> => []),
+    getBuyerCountry: vi.fn(async (): Promise<string> => 'UA'),
+    setBuyerCountry: vi.fn(
+      async (country: string): Promise<BuyerCountryResult> => ({ ok: true, country: country.trim().toUpperCase() })
+    ),
     scanShop: vi.fn(async (shopId: number): Promise<ScanOutcome> => ({ ok: true, shopId, scan: mkScan() })),
     scanAll: vi.fn(async (): Promise<ScanOutcome[]> => []),
     onScanProgress: vi.fn(() => () => {}),
@@ -249,6 +307,7 @@ export function resetStore(): void {
     listings: [],
     lastChanges: [],
     newReviews: [],
+    scanPromotions: { started: [], ended: [] },
     reviewSync: {},
     scans: [],
     scanning: {},
@@ -257,6 +316,8 @@ export function resetStore(): void {
     error: null,
     search: '',
     sort: 'newest',
+    discountOnly: false,
+    buyerCountry: null,
     imageCounts: null,
     imageSync: null,
     minioStatus: null,

@@ -5,7 +5,7 @@ import { ShopView } from '../../../src/renderer/src/components/ShopView'
 import { ConfirmModal } from '../../../src/renderer/src/components/ConfirmModal'
 import { HistoryModal } from '../../../src/renderer/src/components/ScanHistory'
 import { useStore } from '../../../src/renderer/src/store'
-import { idleReviews, idleSync, mkChange, mkListing, mkReview, mkScan, mkShop, setupRenderer, withKey, type Api } from '../helpers'
+import { idleReviews, idleSync, mkBuyerPrice, mkChange, mkListing, mkPromotion, mkReview, mkScan, mkShop, setupRenderer, withKey, type Api } from '../helpers'
 
 let api: Api
 beforeEach(() => {
@@ -455,5 +455,145 @@ describe('ShopView: reviews', () => {
   it('no new reviews → no group (also for a baseline scan)', () => {
     show({ shops: [mkShop({ lastOkScan: mkScan({ isBaseline: true }) })], newReviews: [] })
     expect(screen.queryByTestId('new-reviews')).toBeNull()
+  })
+})
+
+describe('ShopView: buyer prices and promotions', () => {
+  const sale = (pct: number) =>
+    mkBuyerPrice({ discountPercentage: pct, discounted: { amount: 300 - pct * 3, divisor: 100 } })
+  const grid = () => screen.getAllByTestId('listing-card').map((c) => c.querySelector('.card-title')!.textContent)
+
+  it('"Найбільша знижка" sorts the grid; "Зі знижкою" filters it', async () => {
+    show({
+      shops: [mkShop({ lastOkScan: mkScan() })],
+      listings: [
+        mkListing(1, { title: 'No sale' }),
+        mkListing(2, { title: 'Ten', buyerPrice: sale(10) }),
+        mkListing(3, { title: 'Sixty', buyerPrice: sale(60) }),
+        mkListing(4, { title: 'VAT only', buyerPrice: mkBuyerPrice({ discount: false }) })
+      ]
+    })
+    fireEvent.change(screen.getByLabelText('Сортування'), { target: { value: 'discount' } })
+    expect(useStore.getState().sort).toBe('discount')
+    expect(grid()).toEqual(['Sixty', 'Ten', 'VAT only', 'No sale'])
+    fireEvent.click(screen.getByLabelText('Зі знижкою'))
+    expect(useStore.getState().discountOnly).toBe(true)
+    expect(grid()).toEqual(['Sixty', 'Ten'])
+    fireEvent.click(screen.getByLabelText('Зі знижкою'))
+    expect(grid()).toHaveLength(4)
+  })
+
+  it('"Зі знижкою" with no discounted listing says nothing was found', () => {
+    show({ shops: [mkShop({ lastOkScan: mkScan() })], listings: [mkListing(1)], discountOnly: true })
+    expect(screen.getByText('Нічого не знайдено.')).toBeInTheDocument()
+  })
+
+  it('the scan results list promotions that started / ended; a row opens the listing', async () => {
+    const l = mkListing(5, { title: 'Sale mug' })
+    api.getListing.mockResolvedValue(l)
+    show({
+      shops: [mkShop({ lastOkScan: mkScan({ promotionsStarted: 1, promotionsEnded: 1 }) })],
+      listings: [l],
+      scanPromotions: {
+        started: [mkPromotion(1, { listingId: 5, listingTitle: 'Sale mug', listingImageId: 50 })],
+        ended: [mkPromotion(2, { listingId: 6, listingTitle: 'Old sale', discountPercentage: 15, endedAt: 1, endReason: 'ended' })]
+      }
+    })
+    const group = screen.getByTestId('scan-promotions')
+    expect(group.querySelector('summary')).toHaveTextContent('Акції: почалися 1, закінчилися 1')
+    const started = within(screen.getByTestId('promotions-started'))
+    expect(started.getByText('Sale mug')).toBeInTheDocument()
+    expect(started.getByText('−60%')).toBeInTheDocument()
+    expect(within(screen.getByTestId('promotions-started')).getByRole('button').querySelector('img')).toHaveAttribute(
+      'src',
+      'etsyimg://img/50/75x75'
+    )
+    expect(within(screen.getByTestId('promotions-ended')).getByText('−15%')).toBeInTheDocument()
+    await act(async () => {
+      fireEvent.click(started.getByText('Sale mug'))
+    })
+    expect(api.getListing).toHaveBeenCalledWith(5)
+    expect(useStore.getState().detailListing).toBe(l)
+  })
+
+  it('"Акції" counts come from the scan (main caps the lists at 200): "(показано 2 з 430)"', () => {
+    show({
+      shops: [mkShop({ lastOkScan: mkScan({ promotionsStarted: 430, promotionsEnded: 0 }) })],
+      listings: [mkListing(1)],
+      scanPromotions: { started: [mkPromotion(1, { listingId: 1 }), mkPromotion(2, { listingId: 2 })], ended: [] }
+    })
+    const group = screen.getByTestId('scan-promotions')
+    expect(group.querySelector('summary')!.textContent).toBe('Акції: почалися 430')
+    expect(group.querySelector('h4')).toHaveTextContent('Почалися (показано 2 з 430)')
+    expect(screen.getByTestId('promotions-started').children).toHaveLength(2)
+    expect(screen.queryByTestId('promotions-ended')).toBeNull()
+  })
+
+  it('"Акції" with only ended promotions: no "почалися", only the ended list, no "(показано …)" when all are listed', () => {
+    show({
+      shops: [mkShop({ lastOkScan: mkScan({ promotionsStarted: 0, promotionsEnded: 1 }) })],
+      listings: [mkListing(1)],
+      scanPromotions: { started: [], ended: [mkPromotion(3, { listingId: 1, endedAt: 1, endReason: 'ended' })] }
+    })
+    const group = screen.getByTestId('scan-promotions')
+    expect(group.querySelector('summary')!.textContent).toBe('Акції: закінчилися 1')
+    expect(screen.queryByTestId('promotions-started')).toBeNull()
+    expect(group.querySelector('h4')!.textContent).toBe('Закінчилися')
+  })
+
+  it('"Акції" rows: fixed amount, no terms at all, a listing we never stored, no original price or currency', () => {
+    show({
+      shops: [mkShop({ lastOkScan: mkScan({ promotionsStarted: 3, promotionsEnded: 0 }) })],
+      listings: [mkListing(1)],
+      scanPromotions: {
+        started: [
+          mkPromotion(1, { listingId: 1, listingTitle: 'Fixed', listingImageId: 10, discountPercentage: null }),
+          mkPromotion(2, { listingId: 2, listingTitle: 'Bare', listingImageId: 20, discountPercentage: null, discountAmount: null }),
+          mkPromotion(3, { listingId: 6, listingTitle: null, listingImageId: null, original: null, currency: null })
+        ],
+        ended: []
+      }
+    })
+    const rows = screen.getByTestId('promotions-started').querySelectorAll('li')
+    expect(rows[0].querySelector('.badge-discount')!.textContent!.replace(/\s/g, ' ')).toBe('−1,80 USD')
+    expect(rows[0].querySelector('s.price-was')).toHaveTextContent('3,00')
+    expect(rows[0]).toHaveTextContent('стара ціна')
+    expect(rows[1].querySelector('.badge-discount')!.textContent).toBe('знижка')
+    expect(within(rows[2] as HTMLElement).getByText('Товар 6')).toBeInTheDocument()
+    expect(rows[2].querySelector('button')).toHaveAttribute('title', 'Товар 6')
+    expect(rows[2].querySelector('img')).toBeNull()
+    expect(rows[2].querySelector('.no-img')).toHaveTextContent('—')
+    expect(rows[2].querySelector('s.price-was')).toBeNull()
+    expect(rows[2].querySelector('.promo-terms')).toHaveTextContent('1.20')
+  })
+
+  it('no promotion events: no "Акції" group', () => {
+    show({ shops: [mkShop({ lastOkScan: mkScan() })], listings: [mkListing(1)] })
+    expect(screen.queryByTestId('scan-promotions')).toBeNull()
+  })
+
+  it('says when Etsy did not serve buyer prices, and when a new country waits for the next scan', () => {
+    const { unmount } = show({
+      shops: [mkShop({ lastOkScan: mkScan({ buyerCountry: 'UA', buyerPrices: 'unavailable' }) })],
+      listings: [mkListing(1)],
+      buyerCountry: 'UA'
+    })
+    expect(screen.getByTestId('buyer-prices-unavailable')).toHaveTextContent('показано базові ціни продавця')
+    expect(screen.queryByTestId('buyer-country-pending')).toBeNull()
+    unmount()
+    show({
+      shops: [mkShop({ lastOkScan: mkScan({ buyerCountry: 'UA', buyerPrices: 'ok' }) })],
+      listings: [mkListing(1)],
+      buyerCountry: 'DE'
+    })
+    expect(screen.queryByTestId('buyer-prices-unavailable')).toBeNull()
+    expect(screen.getByTestId('buyer-country-pending')).toHaveTextContent(
+      'Ціни показано для покупця з UA; нова країна (DE) застосується з наступного сканування.'
+    )
+  })
+
+  it('grid cards show the buyer price', () => {
+    show({ shops: [mkShop({ lastOkScan: mkScan() })], listings: [mkListing(1, { buyerPrice: mkBuyerPrice() })] })
+    expect(screen.getByTestId('discount-badge')).toHaveTextContent('−60%')
   })
 })

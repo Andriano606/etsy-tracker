@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buyerPriceOf,
   listingStats,
+  mapBuyerPrice,
+  mapMoney,
   mapImage,
   mapImages,
   mapListing,
@@ -18,6 +21,7 @@ import listingFx from '../fixtures/listing.json'
 import detailsFx from '../fixtures/listingWithAssociations.json'
 import imageFx from '../fixtures/listingImage.json'
 import shopFx from '../fixtures/shop.json'
+import buyerPriceFx from '../fixtures/listingBuyerPrice.json'
 
 const page = listingFx as unknown as EtsyListing
 const details = detailsFx as unknown as EtsyListingWithAssociations
@@ -334,5 +338,110 @@ describe('mapReview (OAS TransactionReview)', () => {
     expect(reviewKey(base)).toBe('x-22-0-1750000000')
     expect(reviewKey({ ...base, buyer_user_id: 9 })).toBe('x-22-9-1750000000')
     expect(reviewKey({ ...base, transaction_id: 0 })).toBe('x-22-0-1750000000')
+  })
+})
+
+describe('buyer price (OAS ListingBuyerPrice)', () => {
+  it('mapMoney keeps amount + divisor exactly; malformed → null', () => {
+    expect(mapMoney({ amount: 120, divisor: 100, currency_code: 'USD' })).toEqual({ amount: 120, divisor: 100 })
+    expect(mapMoney({ amount: '7', divisor: 0 })).toEqual({ amount: 7, divisor: 100 })
+    expect(mapMoney({ divisor: 100 })).toBeNull()
+    expect(mapMoney(null)).toBeNull()
+    expect(mapMoney('1.20')).toBeNull()
+  })
+
+  it('maps every field of the fixture (the issue: 2.50 + 20 % VAT = 3.00, −60 % = 1.20)', () => {
+    expect(mapBuyerPrice(buyerPriceFx, 'UA', 5)).toEqual({
+      country: 'UA',
+      currency: 'USD',
+      base: { amount: 300, divisor: 100 },
+      original: { amount: 300, divisor: 100 },
+      discounted: { amount: 120, divisor: 100 },
+      discountAmount: { amount: 180, divisor: 100 },
+      discountPercentage: 60,
+      hasDiscount: true,
+      discountStart: 1759276800,
+      discountEnd: 1761868800,
+      shipping: { amount: 450, divisor: 100 },
+      isFreeShipping: false,
+      fetchedAt: 5
+    })
+  })
+
+  it('no promotion: the nullable fields are null; has_discount without a sale price counts as none', () => {
+    const none = {
+      ...buyerPriceFx,
+      shipping_cost: null,
+      is_free_shipping: true,
+      discounted_price: null,
+      discount_amount: null,
+      discount_percentage: null,
+      has_discount: false,
+      discount_start_epoch: null,
+      discount_end_epoch: null
+    }
+    expect(mapBuyerPrice(none, 'DE')).toEqual({
+      country: 'DE',
+      currency: 'USD',
+      base: { amount: 300, divisor: 100 },
+      original: { amount: 300, divisor: 100 },
+      discounted: null,
+      discountAmount: null,
+      discountPercentage: null,
+      hasDiscount: false,
+      discountStart: null,
+      discountEnd: null,
+      shipping: null,
+      isFreeShipping: true
+    })
+    expect(mapBuyerPrice({ ...none, has_discount: true }, 'DE')!.hasDiscount).toBe(false)
+    // A fixed-amount promotion: no percentage.
+    expect(mapBuyerPrice({ ...buyerPriceFx, discount_percentage: null }, 'UA')).toMatchObject({
+      hasDiscount: true,
+      discountPercentage: null,
+      discountAmount: { amount: 180, divisor: 100 }
+    })
+  })
+
+  it('the currency comes from original_price, else another Money; nothing at all is ""', () => {
+    expect(mapBuyerPrice({ base_price: { amount: 1, divisor: 100, currency_code: 'EUR' } }, 'DE')!.currency).toBe('EUR')
+    expect(mapBuyerPrice({}, 'DE')).toMatchObject({ currency: '', original: null, base: null, hasDiscount: false })
+  })
+
+  it('null, arrays and scalars are no buyer price', () => {
+    for (const v of [null, undefined, [], 'x', 3]) expect(mapBuyerPrice(v, 'UA')).toBeNull()
+  })
+
+  it('buyerPriceOf: object → mapped, null → clear, absent → keep only while asked', () => {
+    const asked = { country: 'UA', asked: true, at: 9 }
+    const refused = { country: 'UA', asked: false }
+    const withBp = { ...details, buyer_price: buyerPriceFx } as EtsyListingWithAssociations
+    const nullBp = { ...details, buyer_price: null } as EtsyListingWithAssociations
+    const { buyer_price: _drop, ...noKey } = details as EtsyListingWithAssociations & { buyer_price?: unknown }
+    const absent = noKey as EtsyListingWithAssociations
+    expect(buyerPriceOf(withBp, asked)).toMatchObject({ country: 'UA', hasDiscount: true, fetchedAt: 9 })
+    // Answered earlier in the scan, before Etsy refused it: still a fresh price.
+    expect(buyerPriceOf(withBp, refused)).toMatchObject({ country: 'UA' })
+    expect(buyerPriceOf(nullBp, asked)).toBeNull()
+    expect(buyerPriceOf(absent, asked)).toBeUndefined() // e.g. GET /listings/{id}
+    expect(buyerPriceOf(absent, refused)).toBeNull()
+    expect(buyerPriceOf(absent, { country: null, asked: false })).toBeNull()
+    expect(buyerPriceOf(withBp, { country: null, asked: false })).toBeNull()
+    expect(buyerPriceOf(null, asked)).toBeUndefined() // no details answer: keep
+    expect(buyerPriceOf(absent, null)).toBeNull()
+  })
+
+  it('mapListing carries it; the seller price stays ShopListing.price', () => {
+    const l = { ...details, price: { amount: 250, divisor: 100, currency_code: 'USD' }, buyer_price: buyerPriceFx }
+    const m = mapListing(page, l as EtsyListingWithAssociations, 'USD', ['Images', 'BuyerPrice'], {
+      country: 'UA',
+      asked: true
+    })
+    expect(m).toMatchObject({ priceAmount: 250, priceDivisor: 100, currency: 'USD' })
+    expect(m.buyerPrice).toMatchObject({ discounted: { amount: 120, divisor: 100 }, original: { amount: 300, divisor: 100 } })
+    // raw_json keeps the whole API object, buyer_price included.
+    expect(JSON.parse(m.rawJson!).buyer_price).toEqual(buyerPriceFx)
+    expect(mapListing(page, null, 'USD', [], { country: 'UA', asked: true }).buyerPrice).toBeUndefined()
+    expect(mapListing(page, details, 'USD').buyerPrice).toBeNull()
   })
 })

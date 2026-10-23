@@ -369,3 +369,33 @@ describe('📊 Статистика', () => {
     expect(avg.querySelectorAll('polyline.line')).toHaveLength(2)
   })
 })
+
+describe('📊 Статистика: товарів зі знижкою', () => {
+  it('draws the count per scan, with the data table (discounted / with a buyer price)', async () => {
+    const p = many(4)
+    p.scans = p.scans.map((s, i) => ({ ...s, discounted: [null, 3, 5, 2][i], buyerPriced: [null, 57, 57, 56][i] }))
+    const dlg = await openStats(p)
+    const card = within(dlg).getByTestId('chart-discounted')
+    expect(within(card).getByText('Товарів зі знижкою')).toBeInTheDocument()
+    expect(card.querySelectorAll('polyline.line')).toHaveLength(1)
+    expect(card.querySelectorAll('circle.dot')).toHaveLength(3)
+    const rows = card.querySelectorAll('tbody tr')
+    expect(rows).toHaveLength(4)
+    expect(rows[0]).toHaveTextContent(/2\s*56$/)
+    expect(rows[3]).toHaveTextContent(/——$/)
+  })
+
+  it('scans without buyer prices (before v4, or Etsy refused them) say so', async () => {
+    const dlg = await openStats(many(3))
+    expect(within(within(dlg).getByTestId('chart-discounted')).getByText(/починаючи з версії 4/)).toBeInTheDocument()
+  })
+
+  it('one scan with buyer prices: the value as a stat', async () => {
+    const p = many(3)
+    p.scans = p.scans.map((s, i) => ({ ...s, discounted: i === 2 ? 4 : null, buyerPriced: i === 2 ? 57 : null }))
+    const dlg = await openStats(p)
+    expect(within(dlg).getByTestId('chart-discounted').querySelector('.chart-empty')).toHaveTextContent(
+      /Потрібно щонайменше 2 сканування — зараз: 4/
+    )
+  })
+})

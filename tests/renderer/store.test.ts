@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { waitFor } from '@testing-library/react'
 import { useStore } from '../../src/renderer/src/store'
 import type { ScanOutcome } from '../../src/shared/types'
-import { idleReviews, idleSync, minioDefault, mkChange, mkListing, mkReview, mkScan, mkShop, setupRenderer, type Api } from './helpers'
+import { idleReviews, idleSync, minioDefault, mkChange, mkListing, mkPromotion, mkReview, mkScan, mkShop, setupRenderer, type Api } from './helpers'
 
 let api: Api
 beforeEach(() => {
@@ -148,5 +148,44 @@ describe('store: reviews', () => {
     expect(api.syncReviews).toHaveBeenCalledWith(4)
     // Nothing returned by the invoke may overwrite it.
     expect(useStore.getState().reviewSync[4]).toMatchObject({ running: true, phase: 'backfill' })
+  })
+})
+
+describe('store: buyer prices and promotions', () => {
+  it('load() reads the buyer country; a failing read leaves it unknown', async () => {
+    api.getBuyerCountry.mockResolvedValue('DE')
+    await useStore.getState().load()
+    expect(useStore.getState().buyerCountry).toBe('DE')
+    api.getBuyerCountry.mockRejectedValue(new Error('x'))
+    await useStore.getState().load()
+    expect(useStore.getState().buyerCountry).toBeNull()
+  })
+
+  it('reloadShopData loads the latest ok scan’s promotions; a shop never scanned has none', async () => {
+    const promos = { started: [mkPromotion(1)], ended: [] }
+    api.getScanPromotions.mockResolvedValue(promos)
+    useStore.setState({ shops: [mkShop({ lastOkScan: mkScan({ id: 9 }) })], activeShopId: 1 })
+    await useStore.getState().reloadShopData()
+    expect(api.getScanPromotions).toHaveBeenCalledWith(9)
+    expect(useStore.getState().scanPromotions).toEqual(promos)
+    api.getScanPromotions.mockClear()
+    useStore.setState({ shops: [mkShop({ id: 2 })] })
+    await useStore.getState().selectShop(2)
+    expect(api.getScanPromotions).not.toHaveBeenCalled()
+    expect(useStore.getState().scanPromotions).toEqual({ started: [], ended: [] })
+  })
+
+  it('saveBuyerCountry stores what main saved; an error keeps the old one', async () => {
+    useStore.setState({ buyerCountry: 'UA' })
+    expect(await useStore.getState().saveBuyerCountry('pl')).toEqual({ ok: true })
+    expect(useStore.getState().buyerCountry).toBe('PL')
+    api.setBuyerCountry.mockResolvedValue({ ok: false, error: 'bad' })
+    expect(await useStore.getState().saveBuyerCountry('xx')).toEqual({ ok: false, error: 'bad' })
+    expect(useStore.getState().buyerCountry).toBe('PL')
+  })
+
+  it('setDiscountOnly toggles the filter', () => {
+    useStore.getState().setDiscountOnly(true)
+    expect(useStore.getState().discountOnly).toBe(true)
   })
 })

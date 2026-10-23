@@ -11,25 +11,31 @@ import {
   type Db,
   type ListingInput,
   type ShopInput,
+  continuePromotion,
+  endPromotion,
   failStaleRunningScans,
   finishScanError,
   finishScanOk,
   getScan,
   getListingViews,
+  getOpenPromotion,
   getShop,
   hasOkScan,
   insertChange,
+  insertListingPriceStats,
   insertListingStats,
   insertRunningScan,
   insertShopStats,
   listAllListings,
   markListingRemoved,
+  startPromotion,
   transaction,
   updateShopInfo,
   upsertListing
 } from './db'
 import { EtsyApiError, type EtsyClient } from './etsyApi'
-import { listingStats, mapListing, mapShop, shopStats } from './mapEtsy'
+import { type BuyerPriceRequest, listingStats, mapListing, mapShop, shopStats } from './mapEtsy'
+import { countsAsEnd, countsAsStart, promotionStep } from './promotions'
 
 export interface ChangedListing {
   listing: ListingInput
@@ -195,6 +201,46 @@ export interface ApplyScanInput {
   shopInfo?: Omit<ShopInput, 'addedAt'>
   /** Shop popularity of this scan → shop_stats. */
   shopStats?: ShopStats
+  /** The stored listings before this scan (their buyer prices are the previous observation). */
+  prev?: Listing[]
+  /** Buyer country the scan asked prices for (null = none) and whether Etsy served them. */
+  buyerCountry?: string | null
+  buyerPrices?: 'ok' | 'unavailable' | null
+}
+
+/**
+ * Promotions per listing whose buyer price this scan learned (see
+ * `promotionStep`); returns how many started / ended. Runs before the
+ * upserts: it compares with the stored (previous) buyer price. A returned
+ * listing counts as new (its stored price is from before it vanished), and a
+ * removed listing's running promotion ends as 'removed' (not reported).
+ */
+export function applyPromotions(
+  db: Db,
+  a: Pick<ApplyScanInput, 'shopId' | 'scanId' | 'current' | 'prev' | 'diff' | 'now'>
+): { started: number; ended: number } {
+  const before = new Map((a.prev ?? []).map((p) => [p.listingId, p]))
+  const added = new Set([...a.diff.added, ...a.diff.returned].map((l) => l.listingId))
+  let started = 0
+  let ended = 0
+  for (const l of a.current) {
+    const bp = l.buyerPrice
+    if (!bp) continue
+    const open = getOpenPromotion(db, l.listingId)
+    const step = promotionStep(open, before.get(l.listingId)?.buyerPrice ?? null, bp, {
+      isNew: added.has(l.listingId)
+    })
+    if (open && step.continue) continuePromotion(db, open.id, bp, a.scanId, a.now)
+    if (open && step.end) endPromotion(db, open.id, step.end, a.scanId, a.now)
+    if (step.start) startPromotion(db, a.shopId, l.listingId, bp, step.start, a.scanId, a.now)
+    if (countsAsStart(step)) started++
+    if (countsAsEnd(step)) ended++
+  }
+  for (const r of a.diff.removed) {
+    const open = getOpenPromotion(db, r.listingId)
+    if (open) endPromotion(db, open.id, 'removed', a.scanId, a.now)
+  }
+  return { started, ended }
 }
 
 /**
@@ -205,6 +251,7 @@ export interface ApplyScanInput {
 export function applyScan(db: Db, a: ApplyScanInput): void {
   transaction(db, () => {
     if (a.shopInfo) updateShopInfo(db, a.shopInfo, a.now)
+    const promos = applyPromotions(db, a)
     for (const l of a.current) upsertListing(db, l, a.now)
     for (const r of a.diff.removed) markListingRemoved(db, r.listingId, a.now)
     if (!a.isBaseline) {
@@ -229,8 +276,25 @@ export function applyScan(db: Db, a: ApplyScanInput): void {
         return s.views == null ? { ...s, views: getListingViews(db, l.listingId) } : s
       })
     )
+    // Seller + buyer price per scan: the price/promotion history (buyer price
+    // NULL = this scan didn't learn it; never a content "change").
+    insertListingPriceStats(
+      db,
+      a.scanId,
+      a.current.map((l) => ({
+        listingId: l.listingId,
+        priceAmount: l.priceAmount,
+        priceDivisor: l.priceDivisor,
+        currency: l.currency,
+        buyerPrice: l.buyerPrice ?? null
+      }))
+    )
     if (a.shopStats) insertShopStats(db, a.scanId, a.shopId, a.shopStats)
     finishScanOk(db, a.scanId, a.now, {
+      buyerCountry: a.buyerCountry ?? null,
+      buyerPrices: a.buyerPrices ?? null,
+      promotionsStarted: promos.started,
+      promotionsEnded: promos.ended,
       isBaseline: a.isBaseline,
       truncated: a.truncated,
       total: a.current.length,
@@ -261,6 +325,12 @@ export interface ScannerDeps {
   client: EtsyClient
   now?: () => number
   onProgress?: (p: ScanProgress) => void
+  /**
+   * The buyer country to ask Etsy's buyer-facing prices for (Settings →
+   * "Країна покупця"), read once at the start of every scan's details;
+   * null/absent = no buyer prices.
+   */
+  getBuyerCountry?: () => string | null
 }
 
 export interface Scanner {
@@ -304,15 +374,33 @@ export function createScanner(deps: ScannerDeps): Scanner {
     if (ids.length) {
       progress({ shopId, phase: 'details', done: 0, total: ids.length, label: `Деталі 0/${ids.length}` })
     }
-    const details = await client.getListingsByIds(ids, (done, total) =>
-      progress({ shopId, phase: 'details', done, total, label: `Деталі ${done}/${total}` })
+    // One buyer country for the whole scan, even if Settings change meanwhile.
+    const buyerCountry = deps.getBuyerCountry?.() ?? null
+    const detailOpts = { buyerCountry }
+    const details = await client.getListingsByIds(
+      ids,
+      (done, total) => progress({ shopId, phase: 'details', done, total, label: `Деталі ${done}/${total}` }),
+      detailOpts
     )
 
     // A listing deleted between paging and the details call (404) is still
     // saved from its page data, keeping its stored images/views.
     const includes = client.detailIncludes()
+    const buyer = (): BuyerPriceRequest => ({
+      country: buyerCountry,
+      asked: !!buyerCountry && !client.buyerPriceRefused(buyerCountry),
+      at: now()
+    })
+    // 'ok' only when some details answer actually carried `buyer_price`: Etsy
+    // might accept includes=BuyerPrice and still leave it out, or no batch
+    // answered (every chunk went through single GETs, which the OAS says never
+    // carry it). Such a scan learned no buyer price at all → 'unavailable'
+    // (the per-listing rule still keeps the stored prices: unknown ≠ none).
+    const learned = [...details.values()].some((d) => d.buyer_price !== undefined && 'buyer_price' in d)
+    const buyerPricesOk = !!buyerCountry && !client.buyerPriceRefused(buyerCountry) && (learned || ids.length === 0)
+    const req = buyer()
     const current = active.listings.map((l) =>
-      mapListing(l, details.get(l.listing_id) ?? null, currency, includes)
+      mapListing(l, details.get(l.listing_id) ?? null, currency, includes, req)
     )
 
     const currentIds = new Set(current.map((l) => l.listingId))
@@ -321,12 +409,15 @@ export function createScanner(deps: ScannerDeps): Scanner {
       : prev.filter((p) => p.removedAt == null && !currentIds.has(p.listingId)).map((p) => p.listingId)
     if (missing.length) {
       progress({ shopId, phase: 'verify', done: 0, total: missing.length, label: `Перевірка зниклих 0/${missing.length}` })
-      const still = await client.getListingsByIds(missing, (done, total) =>
-        progress({ shopId, phase: 'verify', done, total, label: `Перевірка зниклих ${done}/${total}` })
+      const still = await client.getListingsByIds(
+        missing,
+        (done, total) =>
+          progress({ shopId, phase: 'verify', done, total, label: `Перевірка зниклих ${done}/${total}` }),
+        detailOpts
       )
       for (const v of still.values()) {
         if (v.state === 'active' && Number(v.shop_id) === shopId) {
-          current.push(mapListing(v, v, currency, client.detailIncludes()))
+          current.push(mapListing(v, v, currency, client.detailIncludes(), buyer()))
         }
       }
     }
@@ -346,7 +437,10 @@ export function createScanner(deps: ScannerDeps): Scanner {
       diff,
       isBaseline,
       truncated: active.truncated,
-      now: at
+      now: at,
+      prev,
+      buyerCountry,
+      buyerPrices: buyerCountry ? (buyerPricesOk ? 'ok' : 'unavailable') : null
     })
     const scan = getScan(db, scanId)
     if (!scan) throw new Error('scan row vanished')

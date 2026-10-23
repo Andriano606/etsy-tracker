@@ -184,7 +184,11 @@ export function ShopView(): JSX.Element | null {
     newReviews,
     reviewSync,
     syncReviews,
-    openStats
+    openStats,
+    scanPromotions,
+    discountOnly,
+    setDiscountOnly,
+    buyerCountry
   } = useStore()
   const shop = shops.find((s) => s.id === activeShopId)
 
@@ -192,7 +196,10 @@ export function ShopView(): JSX.Element | null {
     () => new Set(lastChanges.filter((c) => c.kind === 'added').map((c) => c.listingId)),
     [lastChanges]
   )
-  const visible = useMemo(() => filterListings(listings, search, sort), [listings, search, sort])
+  const visible = useMemo(
+    () => filterListings(listings, search, sort, { discountOnly }),
+    [listings, search, sort, discountOnly]
+  )
 
   if (!shop) return null
   const busy = !!scanning[shop.id]
@@ -269,7 +276,26 @@ export function ShopView(): JSX.Element | null {
           </div>
         )}
 
-        <ScanResults shop={shop} changes={lastChanges} newReviews={newReviews} onOpen={openListing} />
+        {lastOk?.buyerPrices === 'unavailable' && !busy && (
+          <div className="banner" data-testid="buyer-prices-unavailable">
+            Etsy не віддав ціни для покупця (з ПДВ і знижками) під час останнього сканування — де
+            ціна для покупця невідома, показано базові ціни продавця.
+          </div>
+        )}
+        {lastOk && buyerCountry && lastOk.buyerPrices === 'ok' && lastOk.buyerCountry && lastOk.buyerCountry !== buyerCountry && !busy && (
+          <div className="banner" data-testid="buyer-country-pending">
+            Ціни показано для покупця з {lastOk.buyerCountry}; нова країна ({buyerCountry}) застосується
+            з наступного сканування.
+          </div>
+        )}
+
+        <ScanResults
+          shop={shop}
+          changes={lastChanges}
+          newReviews={newReviews}
+          promotions={scanPromotions}
+          onOpen={openListing}
+        />
 
         {listings.length > 0 && (
           <section className="all-listings">
@@ -296,7 +322,16 @@ export function ShopView(): JSX.Element | null {
                 <option value="favorites-growth">Ріст обраного</option>
                 <option value="reviews">Найбільше відгуків</option>
                 <option value="reviews-growth">Ріст відгуків</option>
+                <option value="discount">Найбільша знижка</option>
               </select>
+              <label className="check discount-toggle" title="Лише товари з активною знижкою (за ціною для покупця)">
+                <input
+                  type="checkbox"
+                  checked={discountOnly}
+                  onChange={(e) => setDiscountOnly(e.target.checked)}
+                />{' '}
+                Зі знижкою
+              </label>
             </div>
             {visible.length === 0 ? (
               <div className="hint">Нічого не знайдено.</div>

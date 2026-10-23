@@ -1,6 +1,8 @@
 import type { Listing } from '@shared/types'
 import { formatCount, formatPrice, formatRating, formatReviewCount } from '@shared/format'
+import { buyerPriceIncludes, discountLabel, formatMoney, hasActiveDiscount, shownPrice } from '@shared/price'
 import { imageSrc } from '../imageUrl'
+import { NowPrice, WasPrice } from './PriceParts'
 
 /** ⭐ average (count) of the stored reviews + "+N" new since the previous scan. */
 export function ReviewBadge({ listing }: { listing: Listing }): JSX.Element | null {
@@ -23,6 +25,51 @@ export function ReviewBadge({ listing }: { listing: Listing }): JSX.Element | nu
         </span>
       )}
     </span>
+  )
+}
+
+/** The seller's own price: no VAT, no promotion (ShopListing.price). */
+export const basePriceText = (l: Listing): string => formatPrice(l.priceAmount, l.priceDivisor, l.currency)
+
+/** Tooltip of a buyer price: for which country, what it includes (`buyerPriceIncludes`), and the seller's base price. */
+export function buyerPriceTitle(l: Listing): string {
+  const bp = l.buyerPrice
+  if (!bp) return 'Базова ціна продавця (без ПДВ і без знижок) — ціна для покупця невідома'
+  return `Ціна для покупця з ${bp.country}: ${buyerPriceIncludes(bp, hasActiveDiscount(bp))}. Базова ціна продавця: ${basePriceText(l)}`
+}
+
+/**
+ * The price like the shop page shows it to a buyer in `buyerPrice.country`:
+ * the sale price bold + the original struck through + "−60%" while a
+ * promotion runs; else the VAT-inclusive price; the seller's base price when
+ * no buyer price is known. A small country code says whose price it is.
+ */
+export function PriceTag({ listing }: { listing: Listing }): JSX.Element {
+  const p = shownPrice(listing)
+  const bp = listing.buyerPrice
+  const main = formatPrice(p.amount, p.divisor, p.currency)
+  return (
+    <div className="card-price" data-testid="card-price" data-kind={p.kind} title={buyerPriceTitle(listing)}>
+      {p.kind === 'discounted' ? <NowPrice>{main}</NowPrice> : <span>{main}</span>}
+      {p.kind === 'discounted' && bp?.original && (
+        <WasPrice testId="price-was">{formatMoney(bp.original, bp.currency)}</WasPrice>
+      )}
+      {bp && (
+        // Badge + country code wrap as one unit (a narrow card never leaves
+        // the code or the badge alone on a line); the code stays right-aligned.
+        <span className="price-tags">
+          {p.kind === 'discounted' && (
+            <span className="badge-discount" data-testid="discount-badge">
+              {discountLabel(bp)}
+            </span>
+          )}
+          <span className="price-country" aria-hidden="true">
+            {bp.country}
+          </span>
+          <span className="sr-only"> (ціна для покупця з {bp.country})</span>
+        </span>
+      )}
+    </div>
   )
 }
 
@@ -82,9 +129,7 @@ export function ListingCard({
       </div>
       <div className="card-body">
         <div className="card-title">{listing.title}</div>
-        <div className="card-price">
-          {formatPrice(listing.priceAmount, listing.priceDivisor, listing.currency)}
-        </div>
+        <PriceTag listing={listing} />
         <PopularityBadges listing={listing} />
       </div>
     </button>

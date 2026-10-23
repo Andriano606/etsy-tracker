@@ -4,6 +4,7 @@ import {
   emptyReviewSync,
   finishScanError,
   finishScanOk,
+  insertListingPriceStats,
   insertListingStats,
   insertRunningScan,
   insertShopStats,
@@ -435,5 +436,66 @@ describe('top growth', () => {
     expect(t.reviews[0].series.reduce((a, b) => a! + b!, 0)).toBe(3)
     const all = shopStatsPayload(db, SHOP, 'all', now)!.top
     expect(all.reviews[0]).toMatchObject({ listingId: 2, delta: 4, start: 0, end: 4 })
+  })
+})
+
+describe('listings with a discount per scan (listing_price_stats)', () => {
+  const bp = (hasDiscount: boolean) => ({
+    country: 'UA',
+    currency: 'USD',
+    base: { amount: 300, divisor: 100 },
+    original: { amount: 300, divisor: 100 },
+    discounted: hasDiscount ? { amount: 120, divisor: 100 } : null,
+    discountAmount: hasDiscount ? { amount: 180, divisor: 100 } : null,
+    discountPercentage: hasDiscount ? 60 : null,
+    hasDiscount,
+    discountStart: null,
+    discountEnd: null,
+    shipping: null,
+    isFreeShipping: null
+  })
+  const prices = (db: Db, scanId: number, flags: Array<boolean | null>) =>
+    insertListingPriceStats(
+      db,
+      scanId,
+      flags.map((f, i) => ({ listingId: i + 1, priceAmount: 250, priceDivisor: 100, currency: 'USD', buyerPrice: f == null ? null : bp(f) }))
+    )
+
+  it('counts discounted listings among those with a known buyer price; null when a scan learned none', () => {
+    const db = memDb()
+    seedShop(db)
+    const pre = okScan(db, T0) // before v4: no price rows at all
+    const none = okScan(db, T0 + DAY)
+    prices(db, none, [null, null, null]) // Etsy refused BuyerPrice
+    const s3 = okScan(db, T0 + 2 * DAY)
+    prices(db, s3, [true, false, null])
+    const s4 = okScan(db, T0 + 3 * DAY)
+    prices(db, s4, [true, true, false])
+    const s5 = okScan(db, T0 + 4 * DAY)
+    prices(db, s5, [false, false, false])
+    const p = shopStatsPayload(db, SHOP, 'all', T0 + 5 * DAY)!
+    expect(p.scans.map((s) => [s.scanId, s.discounted, s.buyerPriced])).toEqual([
+      [pre, null, null],
+      [none, null, null],
+      [s3, 1, 2],
+      [s4, 2, 3],
+      [s5, 0, 3]
+    ])
+  })
+
+  it('the anchor carries the count too; another shop’s rows never mix in', () => {
+    const db = memDb()
+    seedShop(db)
+    seedShop(db, { id: 777, shopName: 'Other' })
+    const a = okScan(db, T0)
+    prices(db, a, [true])
+    const other = insertRunningScan(db, 777, T0)
+    finishScanOk(db, other, T0 + 1, totals())
+    prices(db, other, [true, true, true])
+    const b = okScan(db, T0 + 20 * DAY)
+    prices(db, b, [false])
+    const p = shopStatsPayload(db, SHOP, '7d', T0 + 21 * DAY)!
+    expect(p.anchor).toMatchObject({ scanId: a, discounted: 1, buyerPriced: 1 })
+    expect(p.scans.map((s) => [s.scanId, s.discounted])).toEqual([[b, 0]])
   })
 })

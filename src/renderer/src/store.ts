@@ -13,6 +13,7 @@ import type {
   ReviewSyncState,
   ScanChange,
   ScanProgress,
+  ScanPromotions,
   ScanSummary,
   ShopSummary
 } from '@shared/types'
@@ -53,6 +54,10 @@ export type SortMode =
   | 'reviews'
   /** Most new reviews since the previous successful scan first. */
   | 'reviews-growth'
+  /** Biggest active discount (buyer price) first. */
+  | 'discount'
+
+const NO_PROMOTIONS: ScanPromotions = { started: [], ended: [] }
 
 /**
  * Shops with a single "Сканувати повторно" call in flight. scanAll must not
@@ -72,6 +77,8 @@ interface AppState {
   lastChanges: ScanChange[]
   /** Reviews first seen as new by that scan's review sync. */
   newReviews: Review[]
+  /** Promotions that scan saw start / end ("Акції"). */
+  scanPromotions: ScanPromotions
   /** Review sync runs, per shop, pushed by main. */
   reviewSync: Record<number, ReviewSyncState | undefined>
   /** Scan history of the selected shop, newest first. */
@@ -82,6 +89,10 @@ interface AppState {
   error: string | null
   search: string
   sort: SortMode
+  /** "Зі знижкою": only listings with an active discount in the grid. */
+  discountOnly: boolean
+  /** Settings → "Країна покупця" (buyer prices; applies from the next scan). */
+  buyerCountry: string | null
   /** MinIO copy state of the selected shop's images. */
   imageCounts: ImageCounts | null
   /** The background image sync (all shops), pushed by main. */
@@ -111,6 +122,8 @@ interface AppState {
   setError: (e: string | null) => void
   setSearch: (s: string) => void
   setSort: (s: SortMode) => void
+  setDiscountOnly: (v: boolean) => void
+  saveBuyerCountry: (country: string) => Promise<{ ok: boolean; error?: string }>
 
   saveKey: (keystring: string, sharedSecret: string) => Promise<{ ok: boolean; error?: string }>
   clearKey: () => Promise<void>
@@ -140,6 +153,7 @@ export const useStore = create<AppState>((set, get) => ({
   listings: [],
   lastChanges: [],
   newReviews: [],
+  scanPromotions: NO_PROMOTIONS,
   reviewSync: {},
   scans: [],
   scanning: {},
@@ -148,6 +162,8 @@ export const useStore = create<AppState>((set, get) => ({
   error: null,
   search: '',
   sort: 'newest',
+  discountOnly: false,
+  buyerCountry: null,
   imageCounts: null,
   imageSync: null,
   minioStatus: null,
@@ -161,13 +177,14 @@ export const useStore = create<AppState>((set, get) => ({
   confirmRequest: null,
 
   load: async () => {
-    const [keyStatus, shops, quota, minioStatus] = await Promise.all([
+    const [keyStatus, shops, quota, minioStatus, buyerCountry] = await Promise.all([
       window.api.getKeyStatus(),
       window.api.listShops(),
       window.api.getQuota(),
-      window.api.getMinioStatus()
+      window.api.getMinioStatus(),
+      window.api.getBuyerCountry().catch(() => null)
     ])
-    set({ keyStatus, shops, quota, minioStatus, loaded: true })
+    set({ keyStatus, shops, quota, minioStatus, buyerCountry, loaded: true })
     const remembered = loadActiveShop()
     const pick = shops.find((s) => s.id === remembered)?.id ?? shops[0]?.id ?? null
     await get().selectShop(pick)
@@ -195,7 +212,16 @@ export const useStore = create<AppState>((set, get) => ({
 
   selectShop: async (id) => {
     saveActiveShop(id)
-    set({ activeShopId: id, search: '', listings: [], lastChanges: [], newReviews: [], scans: [], imageCounts: null })
+    set({
+      activeShopId: id,
+      search: '',
+      listings: [],
+      lastChanges: [],
+      newReviews: [],
+      scanPromotions: NO_PROMOTIONS,
+      scans: [],
+      imageCounts: null
+    })
     await get().reloadShopData()
   },
 
@@ -204,15 +230,24 @@ export const useStore = create<AppState>((set, get) => ({
     if (id == null) return
     const shop = get().shops.find((s) => s.id === id)
     const okScanId = shop?.lastOkScan?.id
-    const [listings, scans, lastChanges, images, newReviews] = await Promise.all([
+    const [listings, scans, lastChanges, images, newReviews, scanPromotions] = await Promise.all([
       window.api.listListings(id),
       window.api.listScans(id),
       okScanId != null ? window.api.getScanChanges(okScanId) : Promise.resolve([] as ScanChange[]),
       window.api.getImageStatus(id),
-      okScanId != null ? window.api.getNewReviews(okScanId) : Promise.resolve([] as Review[])
+      okScanId != null ? window.api.getNewReviews(okScanId) : Promise.resolve([] as Review[]),
+      okScanId != null ? window.api.getScanPromotions(okScanId) : Promise.resolve(NO_PROMOTIONS)
     ])
     if (get().activeShopId !== id) return
-    set({ listings, scans, lastChanges, newReviews, imageCounts: images.counts, imageSync: images.sync })
+    set({
+      listings,
+      scans,
+      lastChanges,
+      newReviews,
+      scanPromotions,
+      imageCounts: images.counts,
+      imageSync: images.sync
+    })
   },
 
   addShop: async (input) => {
@@ -297,6 +332,13 @@ export const useStore = create<AppState>((set, get) => ({
   setError: (error) => set({ error }),
   setSearch: (search) => set({ search }),
   setSort: (sort) => set({ sort }),
+  setDiscountOnly: (discountOnly) => set({ discountOnly }),
+  saveBuyerCountry: async (country) => {
+    const res = await window.api.setBuyerCountry(country)
+    if (!res.ok) return { ok: false, error: res.error }
+    set({ buyerCountry: res.country })
+    return { ok: true }
+  },
 
   saveKey: async (keystring, sharedSecret) => {
     const res = await window.api.setApiKey(keystring, sharedSecret)

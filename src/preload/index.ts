@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
   AddShopResult,
+  BuyerCountryResult,
   ImageCounts,
   ImageSyncState,
   KeyStatus,
@@ -10,6 +11,7 @@ import type {
   MinioSettingsInput,
   MinioStatus,
   MinioTestResult,
+  Promotion,
   Quota,
   Review,
   ReviewPage,
@@ -17,6 +19,7 @@ import type {
   ScanChange,
   ScanOutcome,
   ScanProgress,
+  ScanPromotions,
   ScanSummary,
   ShopStatsPayload,
   ShopSummary,
@@ -60,6 +63,16 @@ const api = {
   listScans: (shopId: number): Promise<ScanSummary[]> => ipcRenderer.invoke('scans:list', shopId),
   getScanChanges: (scanId: number): Promise<ScanChange[]> =>
     ipcRenderer.invoke('scan:changes', scanId),
+  /** Promotions a scan saw start / end ("Акції"). */
+  getScanPromotions: (scanId: number): Promise<ScanPromotions> =>
+    ipcRenderer.invoke('scan:promotions', scanId),
+  /** One listing's promotions, newest first. */
+  getListingPromotions: (listingId: number): Promise<Promotion[]> =>
+    ipcRenderer.invoke('listing:promotions', listingId),
+  /** Settings → "Країна покупця" (ISO 3166-1 alpha-2; applies from the next scan). */
+  getBuyerCountry: (): Promise<string> => ipcRenderer.invoke('buyerCountry:get'),
+  setBuyerCountry: (country: string): Promise<BuyerCountryResult> =>
+    ipcRenderer.invoke('buyerCountry:set', country),
   /** One listing's stored reviews, newest first, a page at a time. */
   getListingReviews: (listingId: number, offset = 0, limit = 20): Promise<ReviewPage> =>
     ipcRenderer.invoke('reviews:listing', listingId, offset, limit),

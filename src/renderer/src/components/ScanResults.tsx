@@ -1,8 +1,10 @@
-import type { Listing, Review, ScanChange, ShopSummary } from '@shared/types'
-import { formatCount, formatEtsyDate, ratingStars, textExcerpt } from '@shared/format'
+import type { Listing, Promotion, Review, ScanChange, ScanPromotions, ShopSummary } from '@shared/types'
+import { formatCount, formatEtsyDate, formatPromoPeriod, ratingStars, textExcerpt } from '@shared/format'
+import { formatMoney } from '@shared/price'
 import { imageSrc, reviewImageSrc } from '../imageUrl'
 import { ChangeRows, KIND_LABEL, changedSummary } from './ChangeList'
 import { ListingCard } from './ListingCard'
+import { WasPrice } from './PriceParts'
 
 /**
  * "Нові відгуки: N" — reviews first seen as new (never backfilled ones) by this
@@ -67,16 +69,116 @@ export function NewReviews({
   )
 }
 
+function PromotionRow({ p, onOpenListing }: { p: Promotion; onOpenListing: (id: number) => void }): JSX.Element {
+  const pct =
+    p.discountPercentage != null
+      ? `−${p.discountPercentage}%`
+      : p.discountAmount
+        ? `−${formatMoney(p.discountAmount, p.currency ?? '')}`
+        : 'знижка'
+  const period = formatPromoPeriod(p.discountStart, p.discountEnd)
+  return (
+    <li className="promo-item">
+      <button className="review-listing" onClick={() => onOpenListing(p.listingId)} title={p.listingTitle ?? `Товар ${p.listingId}`}>
+        {p.listingImageId != null ? (
+          <img src={imageSrc({ id: p.listingImageId }, '75x75')} alt="" referrerPolicy="no-referrer" />
+        ) : (
+          <span className="no-img">—</span>
+        )}
+        <span className="review-listing-title">{p.listingTitle ?? `Товар ${p.listingId}`}</span>
+      </button>
+      <span className="promo-terms">
+        <span className="badge-discount">{pct}</span>{' '}
+        {formatMoney(p.discounted, p.currency ?? '')}
+        {p.original && <WasPrice>{formatMoney(p.original, p.currency ?? '')}</WasPrice>}
+        {period && <span className="dim"> · {period}</span>}
+        <span className="dim"> · {p.country}</span>
+      </span>
+    </li>
+  )
+}
+
+/** "(показано 200 з 430)" when main capped the list. */
+function shownOf(shown: number, all: number): JSX.Element | null {
+  if (all <= shown) return null
+  return (
+    <span className="dim">
+      {' '}
+      (показано {formatCount(shown)} з {formatCount(all)})
+    </span>
+  )
+}
+
+/**
+ * "Акції: почалися N, закінчилися M" — promotions this scan saw start or end
+ * (never ones only explained by a buyer-country switch, nor ones already
+ * running at the first observation). The lists are capped by main (200 each,
+ * `listScanPromotions`); N/M are the scan's real counts
+ * (`ScanSummary.promotionsStarted/Ended`) when known.
+ */
+export function PromotionsGroup({
+  promotions,
+  startedCount,
+  endedCount,
+  onOpenListing
+}: {
+  promotions?: ScanPromotions
+  startedCount?: number | null
+  endedCount?: number | null
+  onOpenListing: (listingId: number) => void
+}): JSX.Element | null {
+  const started = promotions?.started ?? []
+  const ended = promotions?.ended ?? []
+  const nStarted = Math.max(startedCount ?? 0, started.length)
+  const nEnded = Math.max(endedCount ?? 0, ended.length)
+  if (!nStarted && !nEnded) return null
+  const parts = [
+    nStarted ? `почалися ${formatCount(nStarted)}` : '',
+    nEnded ? `закінчилися ${formatCount(nEnded)}` : ''
+  ].filter(Boolean)
+  return (
+    <details className="results-group promotions" data-testid="scan-promotions">
+      <summary>Акції: {parts.join(', ')}</summary>
+      {started.length > 0 && (
+        <>
+          <h4>
+            Почалися{shownOf(started.length, nStarted)}
+          </h4>
+          <ul className="review-list" data-testid="promotions-started">
+            {started.map((p) => (
+              <PromotionRow key={p.id} p={p} onOpenListing={onOpenListing} />
+            ))}
+          </ul>
+        </>
+      )}
+      {ended.length > 0 && (
+        <>
+          <h4>
+            Закінчилися{shownOf(ended.length, nEnded)}
+          </h4>
+          <ul className="review-list" data-testid="promotions-ended">
+            {ended.map((p) => (
+              <PromotionRow key={p.id} p={p} onOpenListing={onOpenListing} />
+            ))}
+          </ul>
+        </>
+      )}
+    </details>
+  )
+}
+
 /** The latest successful scan's outcome: new listings first, the rest collapsible. */
 export function ScanResults({
   shop,
   changes,
   newReviews = [],
+  promotions,
   onOpen
 }: {
   shop: ShopSummary
   changes: ScanChange[]
   newReviews?: Review[]
+  promotions?: ScanPromotions
   onOpen: (l: Listing) => void
 }): JSX.Element | null {
   const scan = shop.lastOkScan
@@ -150,6 +252,12 @@ export function ScanResults({
           </details>
         )
       })}
+      <PromotionsGroup
+        promotions={promotions}
+        startedCount={scan.promotionsStarted}
+        endedCount={scan.promotionsEnded}
+        onOpenListing={openById}
+      />
       {reviewsGroup}
     </section>
   )

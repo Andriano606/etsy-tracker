@@ -1,0 +1,12 @@
+{
+  "base_price": { "amount": 300, "divisor": 100, "currency_code": "USD" },
+  "shipping_cost": { "amount": 450, "divisor": 100, "currency_code": "USD" },
+  "is_free_shipping": false,
+  "original_price": { "amount": 300, "divisor": 100, "currency_code": "USD" },
+  "discounted_price": { "amount": 120, "divisor": 100, "currency_code": "USD" },
+  "discount_amount": { "amount": 180, "divisor": 100, "currency_code": "USD" },
+  "discount_percentage": 60,
+  "has_discount": true,
+  "discount_start_epoch": 1759276800,
+  "discount_end_epoch": 1761868800
+}

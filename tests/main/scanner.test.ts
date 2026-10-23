@@ -386,7 +386,9 @@ describe('popularity history (listing_stats / shop_stats)', () => {
         quantity: 5,
         reviewCount: null,
         reviewAvg: null,
-        reviewsComplete: null
+        reviewsComplete: null,
+        price: { amount: 1001, divisor: 100, currency: 'UAH' },
+        buyerPrice: null
       }
     ])
     expect(getListing(db, 1)).toMatchObject({ views: 101, numFavorers: 11, favorersDelta: null, viewsDelta: null })

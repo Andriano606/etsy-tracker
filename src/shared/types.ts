@@ -129,6 +129,104 @@ export interface ListingDetails {
   stateAt: number | null
 }
 
+/** An Etsy `Money` without its currency (kept once per price set): value = amount / divisor. */
+export interface MoneyValue {
+  amount: number
+  divisor: number
+}
+
+/**
+ * The buyer-facing price of a listing for one buyer country (OAS
+ * `ListingBuyerPrice`, `includes=BuyerPrice` + `buyer_country` on
+ * /listings/batch): VAT included, UK shipping included, active promotion
+ * applied. The seller's own price (`Listing.priceAmount`) has none of these.
+ */
+export interface BuyerPrice {
+  /** ISO 3166-1 alpha-2 country the price was computed for. */
+  country: string
+  /** currency_code of the price set (original_price, else base_price). */
+  currency: string
+  /** base_price: pre-discount price with VAT, excluding shipping. */
+  base: MoneyValue | null
+  /** original_price: the display price (UK: base + shipping; elsewhere = base). */
+  original: MoneyValue | null
+  /** discounted_price: the sale price; null without an active promotion. */
+  discounted: MoneyValue | null
+  /** discount_amount = original − discounted; null without a promotion. */
+  discountAmount: MoneyValue | null
+  /** e.g. 60 for 60 % off; null without a promotion or for a fixed-amount discount. */
+  discountPercentage: number | null
+  hasDiscount: boolean
+  /** Active promotion's start/end, Etsy epoch seconds. */
+  discountStart: number | null
+  discountEnd: number | null
+  /** shipping_cost to that country (VAT incl.); null = free or unavailable. */
+  shipping: MoneyValue | null
+  isFreeShipping: boolean | null
+  /** When this price was learned (our epoch ms). */
+  fetchedAt?: number | null
+}
+
+/** How a stored promotion was first seen. */
+export type PromotionStartKind =
+  /** A previous scan saw the listing without it (same buyer country) — it started in between. */
+  | 'seen'
+  /** Already running at the listing's first known buyer price (baseline, new or returned listing, first v4 scan, after the price was unknown). */
+  | 'running'
+  /** Appeared together with a change of the buyer country — may be the country, not the seller. */
+  | 'country'
+
+/** Why a stored promotion is over. */
+export type PromotionEndReason =
+  /** A scan saw the listing without a discount (same buyer country). */
+  | 'ended'
+  /** A different promotion replaced it. */
+  | 'replaced'
+  /** Gone together with a change of the buyer country — may be the country, not the seller. */
+  | 'country'
+  /** The listing disappeared from the shop while it ran — when the sale itself ended is unknown. */
+  | 'removed'
+  /**
+   * Over at a scan with no previous observation (the buyer price was unknown
+   * in between, or the listing came back): it ended at some unknown earlier time.
+   */
+  | 'unknown'
+
+/** One promotion (sale / discount) of a listing as tracked across scans (`promotions`). */
+export interface Promotion {
+  id: number
+  listingId: number
+  shopId: number
+  /** Buyer country of its latest observation. */
+  country: string
+  currency: string | null
+  discountPercentage: number | null
+  /** Etsy's discount_start_epoch / discount_end_epoch (seconds). */
+  discountStart: number | null
+  discountEnd: number | null
+  original: MoneyValue | null
+  discounted: MoneyValue | null
+  discountAmount: MoneyValue | null
+  startKind: PromotionStartKind
+  startedScanId: number | null
+  /** Our epoch ms: first / latest scan that saw it. */
+  firstSeenAt: number
+  lastSeenAt: number
+  /** null = still running at the latest observation. */
+  endedScanId: number | null
+  endedAt: number | null
+  endReason: PromotionEndReason | null
+  /** For the scan results: the listing as we store it. */
+  listingTitle?: string | null
+  listingImageId?: number | null
+}
+
+/** Promotions that started / ended with one scan (the "Акції" group). */
+export interface ScanPromotions {
+  started: Promotion[]
+  ended: Promotion[]
+}
+
 /** One listing as stored in the DB and shown in the UI. */
 export interface Listing {
   listingId: number
@@ -176,6 +274,11 @@ export interface Listing {
   reviewsNew?: number | null
   /** The shop's review history is not fully loaded yet: counts are "≥". */
   reviewsPartial?: boolean
+  /**
+   * The buyer-facing price (VAT, promotion) from the latest scan that learned
+   * it; null/absent = unknown (never fetched, or Etsy refused `BuyerPrice`).
+   */
+  buyerPrice?: BuyerPrice | null
 }
 
 export type ScanStatus = 'running' | 'ok' | 'error'
@@ -196,6 +299,13 @@ export interface ScanSummary {
   returned: number
   /** The listing set was capped by Etsy's offset limit, so removals were not detected. */
   truncated: boolean
+  /** Buyer country the scan asked buyer prices for (null = none / before schema v4). */
+  buyerCountry?: string | null
+  /** 'ok' = buyer prices requested and served; 'unavailable' = Etsy refused `BuyerPrice` for that country, or no details answer carried `buyer_price`. */
+  buyerPrices?: 'ok' | 'unavailable' | null
+  /** Promotions this scan saw start / end (see `PromotionStartKind`/`PromotionEndReason`). */
+  promotionsStarted?: number
+  promotionsEnded?: number
 }
 
 export type ChangeKind = 'added' | 'removed' | 'changed' | 'returned'
@@ -477,6 +587,9 @@ export interface MinioSettingsInput {
   bucket?: string
 }
 
+/** Answer of `buyerCountry:set`. */
+export type BuyerCountryResult = { ok: true; country: string } | { ok: false; error: string }
+
 export interface MinioTestResult {
   ok: boolean
   message: string
@@ -510,6 +623,10 @@ export interface ListingStatsPoint {
   reviewAvg?: number | null
   /** false = the shop's history was still being backfilled: reviewCount is "≥". */
   reviewsComplete?: boolean | null
+  /** The seller's base price at that scan (listing_price_stats; absent before schema v4). */
+  price?: (MoneyValue & { currency: string }) | null
+  /** The buyer price that scan learned (null = unknown at that scan). */
+  buyerPrice?: BuyerPrice | null
 }
 
 // ------------------------------------------------------------ statistics view
@@ -540,6 +657,14 @@ export interface StatsScanPoint {
   /** Sums over that scan's listing_stats rows; null when it has none. */
   listingViews: number | null
   listingFavorers: number | null
+  /**
+   * Listings with an active discount at that scan, among those whose buyer
+   * price it learned; null when it learned none (before schema v4, or Etsy
+   * refused BuyerPrice).
+   */
+  discounted?: number | null
+  /** Listings whose buyer price that scan learned (null = none). */
+  buyerPriced?: number | null
 }
 
 /** latest − earlier between two consecutive successful scans of the period (the anchor included). */

@@ -97,3 +97,26 @@ export function textExcerpt(text: string | null | undefined, max = 280): string 
   const sp = cut.lastIndexOf(' ')
   return `${(sp > max * 0.6 ? cut.slice(0, sp) : cut).trimEnd()}…`
 }
+
+/**
+ * A promotion's Etsy period: "з 01.10 до 31.10" (the year is added when
+ * either end is not in the current year); '' when Etsy gave neither epoch.
+ */
+export function formatPromoPeriod(
+  startSec: number | null | undefined,
+  endSec: number | null | undefined,
+  now: number = Date.now()
+): string {
+  const year = new Date(now).getFullYear()
+  const otherYear = [startSec, endSec].some((s) => s != null && new Date(s * 1000).getFullYear() !== year)
+  const day = (sec: number): string =>
+    new Date(sec * 1000).toLocaleDateString('uk-UA', {
+      day: '2-digit',
+      month: '2-digit',
+      ...(otherYear ? { year: 'numeric' } : {})
+    })
+  const parts: string[] = []
+  if (startSec != null) parts.push(`з ${day(startSec)}`)
+  if (endSec != null) parts.push(`до ${day(endSec)}`)
+  return parts.join(' ')
+}

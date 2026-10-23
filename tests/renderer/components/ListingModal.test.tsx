@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { ListingModal } from '../../../src/renderer/src/components/ListingModal'
 import { useStore } from '../../../src/renderer/src/store'
-import { mkListing, mkReview, setupRenderer, type Api } from '../helpers'
+import { mkBuyerPrice, mkListing, mkPromotion, mkReview, setupRenderer, type Api } from '../helpers'
 import { mkDetails } from '../../helpers/db'
 
 let api: Api
@@ -269,5 +269,178 @@ describe('ListingModal: reviews', () => {
     expect(rows[0].lastElementChild!.textContent).toBe('—')
     expect(rows[1].lastElementChild!.textContent).toBe('14 (4,75)')
     expect(rows[2].lastElementChild!.textContent).toBe('≥ 10 (4,5)')
+  })
+})
+
+describe('ListingModal: price block (buyer price vs. seller base price)', () => {
+  const usd = { priceAmount: 250, priceDivisor: 100, currency: 'USD' }
+
+  it('a promotion: sale price, original struck through, −60 %, its dates, the base price and VAT note', () => {
+    useStore.setState({ detailListing: mkListing(1, { ...usd, buyerPrice: mkBuyerPrice({ shipping: { amount: 450, divisor: 100 } }) }) })
+    render(<ListingModal />)
+    const block = screen.getByTestId('price-block')
+    expect(block.querySelector('.price-now')).toHaveTextContent('1,20')
+    expect(block.querySelector('s.price-was')).toHaveTextContent('3,00')
+    expect(block.querySelector('.badge-discount')).toHaveTextContent('−60%')
+    expect(screen.getByTestId('promo-line')).toHaveTextContent('Акція −60% з 01.10 до 31.10')
+    expect(screen.getByTestId('price-note')).toHaveTextContent('Ціна для покупця: Україна (UA), з ПДВ (якщо він є в цій країні).')
+    expect(screen.getByTestId('base-price')).toHaveTextContent(/2,50.*\(без ПДВ і знижок\)/)
+    expect(block).toHaveTextContent('З ПДВ, до знижки')
+    expect(block).toHaveTextContent('Знижка')
+    expect(block).toHaveTextContent(/Доставка \(UA\).*4,50/)
+    expect(block.querySelector('.listing-price')!.textContent!.replace(/\s+/g, ' ')).toBe(
+      'ціна зі знижкою 1,20 USD стара ціна 3,00 USD−60%'
+    )
+  })
+
+  it('no promotion: the VAT-inclusive price, no promo line; UK prices say shipping is included', () => {
+    useStore.setState({ detailListing: mkListing(1, { ...usd, buyerPrice: mkBuyerPrice({ discount: false, country: 'GB', isFreeShipping: true }) }) })
+    render(<ListingModal />)
+    const block = screen.getByTestId('price-block')
+    expect(block.querySelector('.listing-price')).toHaveTextContent('3,00')
+    expect(block.querySelector('.badge-discount')).toBeNull()
+    expect(screen.queryByTestId('promo-line')).toBeNull()
+    expect(screen.getByTestId('price-note')).toHaveTextContent('Велика Британія (GB), з ПДВ (якщо він є в цій країні) і доставкою.')
+    expect(block).toHaveTextContent(/Доставка \(GB\)безкоштовно/)
+  })
+
+  it('buyer price unknown: the base price with a note, no duplicate base row', () => {
+    useStore.setState({ detailListing: mkListing(1, { ...usd, buyerPrice: null }) })
+    render(<ListingModal />)
+    expect(screen.getByTestId('price-block').querySelector('.listing-price')).toHaveTextContent('2,50')
+    expect(screen.getByTestId('price-note')).toHaveTextContent('Ціна для покупця невідома')
+    expect(screen.queryByTestId('base-price')).toBeNull()
+  })
+
+  it('"Ціни та акції" loads the promotions and per-scan prices only when opened', async () => {
+    api.getListingPromotions.mockResolvedValue([
+      mkPromotion(2, { discountPercentage: 25, startKind: 'seen' }),
+      mkPromotion(1, { startKind: 'running', endedAt: 1_759_400_000_000, endReason: 'ended' }),
+      mkPromotion(3, { discountPercentage: null, startKind: 'country', endedAt: 1_759_500_000_000, endReason: 'country' })
+    ])
+    api.getListingStats.mockResolvedValue([
+      { scanId: 1, at: null, views: 1, numFavorers: 1, featuredRank: null, quantity: 1, price: { amount: 250, divisor: 100, currency: 'USD' }, buyerPrice: mkBuyerPrice() },
+      { scanId: 2, at: null, views: 1, numFavorers: 1, featuredRank: null, quantity: 1, price: { amount: 250, divisor: 100, currency: 'USD' }, buyerPrice: null },
+      { scanId: 3, at: null, views: 1, numFavorers: 1, featuredRank: null, quantity: 1 } // before v4
+    ])
+    useStore.setState({ detailListing: mkListing(7, usd) })
+    const { container } = render(<ListingModal />)
+    expect(api.getListingPromotions).not.toHaveBeenCalled()
+    const details = container.querySelector('details.price-details') as HTMLDetailsElement
+    await act(async () => {
+      details.open = true
+      details.dispatchEvent(new Event('toggle'))
+    })
+    expect(api.getListingPromotions).toHaveBeenCalledWith(7)
+    const promos = (await screen.findByTestId('promotions-history')).querySelectorAll('tbody tr')
+    expect(promos).toHaveLength(3)
+    expect(promos[0]).toHaveTextContent('−25%')
+    expect(promos[0]).toHaveTextContent('триває')
+    expect(promos[1]).toHaveTextContent('(уже тривала)')
+    expect(promos[1]).toHaveTextContent('закінчилась')
+    expect(promos[2]).toHaveTextContent(/−1,80/)
+    expect(promos[2]).toHaveTextContent('змінено країну покупця')
+    const prices = screen.getByTestId('price-history').querySelectorAll('tbody tr')
+    expect(prices).toHaveLength(2) // the pre-v4 point has no price
+    expect(prices[0]).toHaveTextContent('#2')
+    expect(prices[0].children[2]).toHaveTextContent('—')
+    expect(prices[1].children[2]).toHaveTextContent(/1,20.*\(UA\)/)
+    expect(prices[1].children[3]).toHaveTextContent('−60%')
+  })
+
+  const openPrices = async (container: HTMLElement): Promise<void> => {
+    const details = container.querySelector('details.price-details') as HTMLDetailsElement
+    await act(async () => {
+      details.open = true
+      details.dispatchEvent(new Event('toggle'))
+    })
+  }
+
+  it('"Ціни та акції": scan dates, a buyer price without a discount, a promotion with neither % nor amount, the new end reasons', async () => {
+    api.getListingPromotions.mockResolvedValue([
+      mkPromotion(1, { discountPercentage: null, discountAmount: null, original: null }),
+      mkPromotion(2, { endedAt: 1_759_400_000_000, endReason: 'removed' }),
+      mkPromotion(3, { endedAt: 1_759_400_000_000, endReason: 'unknown' })
+    ])
+    const at = new Date(2026, 9, 5, 14, 30).getTime()
+    api.getListingStats.mockResolvedValue([
+      {
+        scanId: 4, at, views: 1, numFavorers: 1, featuredRank: null, quantity: 1,
+        price: { amount: 250, divisor: 100, currency: 'USD' },
+        buyerPrice: mkBuyerPrice({ discount: false, country: 'DE', original: { amount: 298, divisor: 100 } })
+      }
+    ])
+    useStore.setState({ detailListing: mkListing(7) })
+    const { container } = render(<ListingModal />)
+    await openPrices(container)
+    const promos = (await screen.findByTestId('promotions-history')).querySelectorAll('tbody tr')
+    expect(promos[0].children[0].textContent).toBe('—')
+    expect(promos[0].querySelector('s.price-was')).toBeNull()
+    expect(promos[1]).toHaveTextContent('товар зник з магазину')
+    expect(promos[2]).toHaveTextContent('закінчилась (коли саме — невідомо)')
+    expect(promos[1].querySelector('s.price-was')).toHaveTextContent('3,00')
+    const row = screen.getByTestId('price-history').querySelector('tbody tr')!
+    expect(row.children[0].textContent).toBe('05.10.2026, 14:30')
+    expect(row.children[2]).toHaveTextContent(/2,98.*\(DE\)/)
+    expect(row.children[3].textContent).toBe('—')
+  })
+
+  it('"Ціни та акції" failing to load says so and retries on "Спробувати ще"', async () => {
+    api.getListingPromotions.mockRejectedValueOnce(new Error('ipc down'))
+    useStore.setState({ detailListing: mkListing(7) })
+    const { container } = render(<ListingModal />)
+    await openPrices(container)
+    expect(await screen.findByTestId('price-history-failed')).toHaveTextContent('Не вдалося завантажити історію цін.')
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Спробувати ще' }))
+    })
+    expect(await screen.findByText('Акцій ще не було помічено.')).toBeInTheDocument()
+    expect(screen.queryByTestId('price-history-failed')).toBeNull()
+    expect(api.getListingPromotions).toHaveBeenCalledTimes(2)
+  })
+
+  it('"Ціни та акції": re-opening after a failure shows "Завантаження…" while it retries, not the old error', async () => {
+    api.getListingPromotions.mockRejectedValueOnce(new Error('ipc down'))
+    useStore.setState({ detailListing: mkListing(7) })
+    const { container } = render(<ListingModal />)
+    await openPrices(container)
+    await screen.findByTestId('price-history-failed')
+    const details = container.querySelector('details.price-details') as HTMLDetailsElement
+    let resolve!: (v: never[]) => void
+    api.getListingPromotions.mockReturnValueOnce(new Promise((r) => (resolve = r)))
+    await act(async () => {
+      details.open = false
+      details.dispatchEvent(new Event('toggle'))
+    })
+    await openPrices(container)
+    expect(screen.queryByTestId('price-history-failed')).toBeNull()
+    expect(details).toHaveTextContent('Завантаження…')
+    await act(async () => resolve([]))
+    expect(await screen.findByText('Акцій ще не було помічено.')).toBeInTheDocument()
+  })
+
+  it('"Ціни та акції" starts over (closed, refetched) when another listing is shown', async () => {
+    useStore.setState({ detailListing: mkListing(7) })
+    const { container } = render(<ListingModal />)
+    await openPrices(container)
+    await screen.findByText('Акцій ще не було помічено.')
+    await act(async () => {
+      useStore.setState({ detailListing: mkListing(8) })
+    })
+    expect(screen.queryByText('Акцій ще не було помічено.')).toBeNull()
+    await openPrices(container)
+    await screen.findByText('Акцій ще не було помічено.')
+    expect(api.getListingPromotions.mock.calls).toEqual([[7], [8]])
+  })
+
+  it('"Ціни та акції" without any promotion says so', async () => {
+    useStore.setState({ detailListing: mkListing(7) })
+    const { container } = render(<ListingModal />)
+    const details = container.querySelector('details.price-details') as HTMLDetailsElement
+    await act(async () => {
+      details.open = true
+      details.dispatchEvent(new Event('toggle'))
+    })
+    expect(await screen.findByText('Акцій ще не було помічено.')).toBeInTheDocument()
   })
 })

@@ -23,7 +23,12 @@ import {
 import { createReviewSyncer } from '../../src/main/reviewSync'
 import { createImageSyncer } from '../../src/main/imageSync'
 import { createScanner } from '../../src/main/scanner'
-import { createKeyStore, createMinioSettingsStore, MINIO_DEFAULTS } from '../../src/main/settings'
+import {
+  createBuyerCountryStore,
+  createKeyStore,
+  createMinioSettingsStore,
+  MINIO_DEFAULTS
+} from '../../src/main/settings'
 import { getListing, getShopSummary, imageCounts, listScans, reviewImageCounts } from '../../src/main/db'
 import { FakeImageStore, fakeCdn } from '../helpers/fakeImageStore'
 import { FakeEtsy, SHOP_ID, mkEtsyReview } from '../helpers/fakeEtsy'
@@ -42,6 +47,7 @@ function ctx(etsy = new FakeEtsy(2)) {
   const store = new FakeImageStore()
   const cdn = fakeCdn()
   const minio = createMinioSettingsStore(file, fakeSafeStorage())
+  const buyerCountry = createBuyerCountryStore(file)
   const images = createImageSyncer({
     db,
     getStore: async () => (minio.status().enabled ? store : null),
@@ -63,7 +69,7 @@ function ctx(etsy = new FakeEtsy(2)) {
     db,
     keyStore,
     client,
-    scanner: createScanner({ db, client }),
+    scanner: createScanner({ db, client, getBuyerCountry: () => buyerCountry.get() }),
     getQuota: () => null,
     getWindow: () =>
       ({ isDestroyed: () => false, send: (ch: string, p: unknown) => sent.push([ch, p]) }) as never,
@@ -71,7 +77,8 @@ function ctx(etsy = new FakeEtsy(2)) {
     images,
     makeStore,
     onMinioChanged,
-    reviews
+    reviews,
+    buyerCountry
   }
   ref = c
   return { c, etsy, sent, store, cdn, makeStore, onMinioChanged }
@@ -442,5 +449,55 @@ describe('stats:shop', () => {
     expect(p.scans[0]).toMatchObject({ scanId: out.scan.id, isBaseline: true })
     expect(p.scans[0].listingViews).toBeGreaterThan(0)
     expect(p.intervals).toEqual([])
+  })
+})
+
+describe('buyer country + promotions IPC', () => {
+  it('buyerCountry:get defaults to UA; set validates, uppercases and saves', async () => {
+    const { c } = ctx()
+    registerIpc(c)
+    expect(await call('buyerCountry:get')).toBe('UA')
+    expect(await call('buyerCountry:set', ' de ')).toEqual({ ok: true, country: 'DE' })
+    expect(await call('buyerCountry:get')).toBe('DE')
+    expect(await call('buyerCountry:set', 'uk')).toEqual({ ok: true, country: 'GB' })
+    for (const bad of ['XX', 'UKR', '', null, 42, { c: 'UA' }]) {
+      const r = (await call('buyerCountry:set', bad)) as { ok: boolean; error?: string }
+      expect(r.ok).toBe(false)
+      expect(r.error).toMatch(/ISO 3166-1/)
+    }
+    expect(await call('buyerCountry:get')).toBe('GB')
+  })
+
+  it('a changed country applies from the next scan', async () => {
+    const { c, etsy } = ctx()
+    c.keyStore.setKey('keystring1', 'secret1')
+    seedShop(c.db, { id: SHOP_ID })
+    registerIpc(c)
+    const country = () =>
+      etsy.requests.filter((u) => u.pathname.endsWith('/listings/batch')).at(-1)!.searchParams.get('buyer_country')
+    const s1 = (await call('scan:shop', SHOP_ID)) as { ok: true; scan: { buyerCountry: string } }
+    expect(country()).toBe('UA')
+    expect(s1.scan.buyerCountry).toBe('UA')
+    await call('buyerCountry:set', 'PL')
+    await call('scan:shop', SHOP_ID)
+    expect(country()).toBe('PL')
+    expect(getListing(c.db, 1)!.buyerPrice).toMatchObject({ country: 'PL' })
+  })
+
+  it('scan:promotions / listing:promotions answer "nothing" to a bad id', async () => {
+    const { c, etsy } = ctx()
+    c.keyStore.setKey('keystring1', 'secret1')
+    seedShop(c.db, { id: SHOP_ID })
+    registerIpc(c)
+    await call('scan:shop', SHOP_ID)
+    etsy.promotions[1] = { percentage: 20, start: 1, end: 2 }
+    const s2 = (await call('scan:shop', SHOP_ID)) as { ok: true; scan: { id: number } }
+    const r = (await call('scan:promotions', s2.scan.id)) as { started: Array<{ listingId: number }> }
+    expect(r.started.map((p) => p.listingId)).toEqual([1])
+    expect(((await call('listing:promotions', 1)) as unknown[]).length).toBe(1)
+    for (const bad of [0, -1, 1.5, 'x', null, Number.MAX_VALUE]) {
+      expect(await call('scan:promotions', bad)).toEqual({ started: [], ended: [] })
+      expect(await call('listing:promotions', bad)).toEqual([])
+    }
   })
 })

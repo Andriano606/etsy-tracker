@@ -10,7 +10,7 @@ import { createImageSyncer } from './imageSync'
 import { onReviewSyncDone, registerIpc, startImageSync, type IpcContext } from './ipc'
 import { createReviewSyncer } from './reviewSync'
 import { createScanner } from './scanner'
-import { type MinioConfig, createKeyStore, createMinioSettingsStore } from './settings'
+import { type MinioConfig, createBuyerCountryStore, createKeyStore, createMinioSettingsStore } from './settings'
 
 // One fixed app name for dev and the packaged app alike: Linux safeStorage names
 // its keyring secret after it ("<name> Safe Storage") and X11 uses it as WM_CLASS
@@ -92,6 +92,7 @@ if (!app.requestSingleInstanceLock()) {
     const db = openDb(join(userData, 'etsy-tracker.db'))
     const keyStore = createKeyStore(join(userData, 'settings.json'), safeStorage)
     const minio = createMinioSettingsStore(join(userData, 'settings.json'), safeStorage)
+    const buyerCountry = createBuyerCountryStore(join(userData, 'settings.json'))
 
     let quota: Quota | null = null
     const getWindow = (): Electron.WebContents | null => mainWindow?.webContents ?? null
@@ -106,7 +107,12 @@ if (!app.requestSingleInstanceLock()) {
         send('quota:changed', q)
       }
     })
-    const scanner = createScanner({ db, client, onProgress: (p) => send('scan:progress', p) })
+    const scanner = createScanner({
+      db,
+      client,
+      onProgress: (p) => send('scan:progress', p),
+      getBuyerCountry: () => buyerCountry.get()
+    })
 
     // One MinIO client per distinct config; rebuilt after Settings → MinIO is saved.
     const makeStore = (cfg: MinioConfig): Promise<ImageStore> => createMinioImageStore(cfg)
@@ -176,7 +182,8 @@ if (!app.requestSingleInstanceLock()) {
       onMinioChanged: () => {
         cached = null
       },
-      reviews
+      reviews,
+      buyerCountry
     }
     ctxRef = ctx
     registerIpc(ctx)

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { filterListings } from '../../src/renderer/src/listingFilter'
+import * as helpers from './helpers'
 import { mkListing } from './helpers'
 
 const ls = [
@@ -59,5 +60,60 @@ describe('review sorts', () => {
   })
   it('Ріст відгуків: most new reviews since the previous scan first', () => {
     expect(ids(filterListings(rv, '', 'reviews-growth'))).toEqual([4, 2, 1, 3])
+  })
+})
+
+describe('filterListings: buyer prices and discounts', () => {
+  const { mkBuyerPrice } = helpers
+  // #1: seller 30.00, but 20.00 for the buyer with a 60 % sale (shown: sale price)
+  // #2: seller 10.00, no buyer price (shown: base 10.00)
+  // #3: seller 20.00, 24.00 with VAT, no sale (shown: 24.00)
+  // #4: seller 50.00, 25 % sale → 45.00
+  const bl = [
+    mkListing(1, {
+      priceAmount: 3000,
+      buyerPrice: mkBuyerPrice({
+        original: { amount: 3600, divisor: 100 },
+        discounted: { amount: 1440, divisor: 100 },
+        discountPercentage: 60
+      })
+    }),
+    mkListing(2, { priceAmount: 1000 }),
+    mkListing(3, { priceAmount: 2000, buyerPrice: mkBuyerPrice({ discount: false, original: { amount: 2400, divisor: 100 } }) }),
+    mkListing(4, {
+      priceAmount: 5000,
+      buyerPrice: mkBuyerPrice({
+        original: { amount: 6000, divisor: 100 },
+        discounted: { amount: 4500, divisor: 100 },
+        discountPercentage: 25
+      })
+    })
+  ]
+
+  it('price sorts use the price the card shows (sale > VAT-inclusive > base)', () => {
+    expect(ids(filterListings(bl, '', 'price-asc'))).toEqual([2, 1, 3, 4])
+    expect(ids(filterListings(bl, '', 'price-desc'))).toEqual([4, 3, 1, 2])
+  })
+
+  it('"Найбільша знижка": biggest discount first, no discount / unknown last', () => {
+    expect(ids(filterListings(bl, '', 'discount'))).toEqual([1, 4, 3, 2])
+  })
+
+  it('a fixed-amount discount sorts by its derived percentage', () => {
+    const fixed = mkListing(9, {
+      buyerPrice: mkBuyerPrice({
+        discountPercentage: null,
+        original: { amount: 1000, divisor: 100 },
+        discounted: { amount: 500, divisor: 100 },
+        discountAmount: { amount: 500, divisor: 100 }
+      })
+    })
+    expect(ids(filterListings([...bl, fixed], '', 'discount'))).toEqual([1, 9, 4, 3, 2])
+  })
+
+  it('"Зі знижкою" keeps only listings with an active discount, combined with search', () => {
+    expect(ids(filterListings(bl, '', 'newest', { discountOnly: true })).sort()).toEqual([1, 4])
+    expect(ids(filterListings(bl, 'Listing 4', 'newest', { discountOnly: true }))).toEqual([4])
+    expect(ids(filterListings(bl, '', 'newest', { discountOnly: false }))).toHaveLength(4)
   })
 })

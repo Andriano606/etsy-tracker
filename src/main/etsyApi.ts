@@ -186,24 +186,64 @@ export interface EtsyPersonalization {
   }>
 }
 
+/**
+ * OAS `ListingBuyerPrice` (includes=BuyerPrice + buyer_country): "the
+ * buyer-facing price for a listing, including VAT, inclusive shipping (UK),
+ * and active promotions". Every Money carries its own currency_code.
+ */
+export interface EtsyListingBuyerPrice {
+  /** Pre-discount price with VAT applied, excluding shipping. */
+  base_price?: EtsyMoney | null
+  /** Shipping to the buyer's country (VAT incl.); null = free or unavailable. */
+  shipping_cost?: EtsyMoney | null
+  is_free_shipping?: boolean | null
+  /** The display price (UK: base + shipping; others: base only). */
+  original_price?: EtsyMoney | null
+  /** The sale price; null without an active promotion. */
+  discounted_price?: EtsyMoney | null
+  /** original_price − discounted_price; null without an active promotion. */
+  discount_amount?: EtsyMoney | null
+  /** int64, e.g. 20 for 20 % off; null without a promotion or for a fixed-amount one. */
+  discount_percentage?: number | null
+  has_discount?: boolean
+  /** int64 timestamps of the active promotion; null without one. */
+  discount_start_epoch?: number | null
+  discount_end_epoch?: number | null
+  [k: string]: unknown
+}
+
 /** OAS `ShopListingWithAssociations` (/listings/batch, /listings/{id}). */
 export interface EtsyListingWithAssociations extends EtsyListing {
   images?: EtsyListingImage[]
   videos?: EtsyListingVideo[]
   personalization?: EtsyPersonalization | null
   skus?: string[]
+  /** "Requires buyer_country parameter … Currently only supported on the /listings/batch endpoint." */
+  buyer_price?: EtsyListingBuyerPrice | null
 }
 
 /**
  * Associations requested from /listings/batch and /listings/{id} (the OAS enum
  * is Images, Shop, User, Translations, Videos, Personalization, BuyerPrice).
- * Shop/User duplicate what we read anyway, Translations multiply the payload,
- * BuyerPrice is a buyer-specific computation — so they are not requested. If
- * Etsy refuses this set for an API-key-only app (401/403) while plain
- * `Images` works, the client falls back to `Images` for the rest of its life.
+ * Shop/User duplicate what we read anyway, Translations multiply the payload —
+ * so they are not requested. `BuyerPrice` is added on top (with
+ * `buyer_country`) when the caller passes a buyer country — see
+ * `DetailOptions`. If Etsy refuses this set for an API-key-only app (401/403)
+ * while plain `Images` works, the client falls back to `Images` for the rest
+ * of its life.
  */
 export const DETAIL_INCLUDES = ['Images', 'Videos', 'Personalization'] as const
 export const FALLBACK_INCLUDES = ['Images'] as const
+export const BUYER_PRICE_INCLUDE = 'BuyerPrice'
+
+/** Options of the details calls (`getListing`, `getListingsByIds`). */
+export interface DetailOptions {
+  /**
+   * ISO 3166-1 alpha-2: ask for `includes=BuyerPrice` + `buyer_country` (the
+   * buyer-facing price: VAT, promotions). Omitted/null = no buyer prices.
+   */
+  buyerCountry?: string | null
+}
 
 /**
  * OAS `TransactionReview` (an item of GET /shops/{shop_id}/reviews). The OAS
@@ -381,10 +421,17 @@ export interface EtsyClient {
     shopId: number,
     onPage?: (page: number, pages: number) => void
   ): Promise<ActiveListingsResult>
-  /** The associations currently requested for listing details. */
+  /** The associations currently requested for listing details (without BuyerPrice, see buyerPriceRefused). */
   detailIncludes(): readonly string[]
+  /**
+   * Etsy refused `includes=BuyerPrice` for this buyer country (400/401/403
+   * while the same call without it worked, or Images+BuyerPrice failed while
+   * Images alone worked): buyer prices for that country are not requested any
+   * more for the rest of the client's life. Another country is tried afresh.
+   */
+  buyerPriceRefused(country: string | null | undefined): boolean
   /** One listing with its images/videos/personalization; null when Etsy answers 404. */
-  getListing(listingId: number): Promise<EtsyListingWithAssociations | null>
+  getListing(listingId: number, opts?: DetailOptions): Promise<EtsyListingWithAssociations | null>
   /**
    * Listings (with images) by id, 100 per batch request. Ids Etsy no longer
    * knows are simply absent from the result: a batch answered 404/400 is split
@@ -392,7 +439,8 @@ export interface EtsyClient {
    */
   getListingsByIds(
     ids: number[],
-    onChunk?: (done: number, total: number) => void
+    onChunk?: (done: number, total: number) => void,
+    opts?: DetailOptions
   ): Promise<Map<number, EtsyListingWithAssociations>>
   /**
    * One page of GET /shops/{shop_id}/reviews (getReviewsByShop): limit ≤ 100,
@@ -544,33 +592,114 @@ export function createEtsyClient(opts: EtsyClientOptions): EtsyClient {
   }
 
   let includes: readonly string[] = DETAIL_INCLUDES
+  /**
+   * BuyerPrice per buyer country: absent = unknown until a batch with it
+   * succeeded ('ok') or Etsy refused it ('refused' — not requested again for
+   * that country by this client). Per country, so a country Etsy rejects
+   * doesn't switch buyer prices off for the next one the user picks.
+   */
+  const buyerPrice = new Map<string, 'ok' | 'refused'>()
 
   /**
-   * Run `fn` with the current includes; if Etsy refuses them as unauthorized
-   * and a smaller set works, keep using the smaller set from now on.
+   * Run `fn` with the current includes (+ BuyerPrice when a buyer country is
+   * given and it isn't refused for it). Step-down on errors, each step tried once:
+   * 1. a 400/401/403 while BuyerPrice is in the set and not yet proven for
+   *    this country on /listings/batch (or on GET /listings/{id}, where the
+   *    OAS says it isn't supported) → the same set without BuyerPrice; success
+   *    = BuyerPrice is refused for that country (batch only — a single GET
+   *    never decides it);
+   * 2. a 401/403 → `Images` only, for good: first with BuyerPrice (if it is
+   *    asked), then — only while BuyerPrice is unproven — without it, which
+   *    refuses BuyerPrice only when that one works and Images+BuyerPrice didn't.
+   *    So a refused Videos/Personalization never costs the buyer prices.
+   * Anything else, or every step failing, throws the original error — so a
+   * 400/404 for an unknown id still reaches the bisecting caller.
    */
-  async function withIncludes<T>(fn: (inc: readonly string[]) => Promise<T>): Promise<T> {
+  async function withIncludes<T>(
+    fn: (inc: readonly string[], buyerCountry: string | null) => Promise<T>,
+    country: string | null,
+    endpoint: 'batch' | 'single'
+  ): Promise<T> {
+    const state = country ? buyerPrice.get(country) : undefined
+    const bp = !!country && state !== 'refused'
+    const withBp = (base: readonly string[], on: boolean): readonly string[] =>
+      on ? [...base, BUYER_PRICE_INCLUDE] : base
+    const proveBp = (): void => {
+      if (country && endpoint === 'batch') buyerPrice.set(country, 'ok')
+    }
+    const refuseBp = (): void => {
+      if (country && endpoint === 'batch') buyerPrice.set(country, 'refused')
+    }
     try {
-      return await fn(includes)
-    } catch (e) {
-      if (!(e instanceof EtsyApiError) || e.kind !== 'auth' || includes === FALLBACK_INCLUDES) throw e
-      let out: T
-      try {
-        out = await fn(FALLBACK_INCLUDES)
-      } catch {
-        throw e
-      }
-      includes = FALLBACK_INCLUDES
+      const out = await fn(withBp(includes, bp), bp ? country : null)
+      if (bp) proveBp()
       return out
+    } catch (e) {
+      if (!(e instanceof EtsyApiError)) throw e
+      const bpSuspect =
+        bp &&
+        (e.kind === 'auth' || e.kind === 'bad_request') &&
+        (endpoint === 'single' || state !== 'ok')
+      const steps: Array<{ inc: readonly string[]; bp: boolean; commit: () => void }> = []
+      if (bpSuspect) steps.push({ inc: includes, bp: false, commit: refuseBp })
+      if (e.kind === 'auth' && includes !== FALLBACK_INCLUDES) {
+        const fallback = (): void => {
+          includes = FALLBACK_INCLUDES
+        }
+        if (bp) {
+          steps.push({
+            inc: withBp(FALLBACK_INCLUDES, true),
+            bp: true,
+            commit: () => {
+              fallback()
+              proveBp()
+            }
+          })
+        }
+        if (!bp || bpSuspect) {
+          steps.push({
+            inc: FALLBACK_INCLUDES,
+            bp: false,
+            commit: () => {
+              fallback()
+              if (bpSuspect) refuseBp()
+            }
+          })
+        }
+      }
+      for (const step of steps) {
+        let out: T
+        try {
+          out = await fn(step.inc, step.bp ? country : null)
+        } catch (e2) {
+          if (e2 instanceof EtsyApiError && e2.kind === 'auth') continue
+          break
+        }
+        step.commit()
+        return out
+      }
+      throw e
     }
   }
 
-  async function getListing(listingId: number): Promise<EtsyListingWithAssociations | null> {
+  const detailParams = (inc: readonly string[], country: string | null): Params => ({
+    includes: [...inc],
+    buyer_country: country ?? undefined
+  })
+
+  async function getListing(
+    listingId: number,
+    opts: DetailOptions = {}
+  ): Promise<EtsyListingWithAssociations | null> {
     try {
-      return await withIncludes((inc) =>
-        request<EtsyListingWithAssociations>(`/v3/application/listings/${listingId}`, {
-          includes: [...inc]
-        })
+      return await withIncludes(
+        (inc, country) =>
+          request<EtsyListingWithAssociations>(
+            `/v3/application/listings/${listingId}`,
+            detailParams(inc, country)
+          ),
+        opts.buyerCountry ?? null,
+        'single'
       )
     } catch (e) {
       if (e instanceof EtsyApiError && e.kind === 'not_found') return null
@@ -584,24 +713,27 @@ export function createEtsyClient(opts: EtsyClientOptions): EtsyClient {
    * id costs ~2·log2(100) extra requests, and only a single-id 404 counts as
    * gone. Other errors (and a 400 that the single GET also rejects) still throw.
    */
-  async function batch(ids: number[]): Promise<EtsyListingWithAssociations[]> {
+  async function batch(ids: number[], opts: DetailOptions): Promise<EtsyListingWithAssociations[]> {
     try {
-      return await withIncludes(async (inc) =>
-        expectPaged(
-          await request<Paged<EtsyListingWithAssociations>>('/v3/application/listings/batch', {
-            listing_ids: ids,
-            includes: [...inc]
-          })
-        ).results
+      return await withIncludes(
+        async (inc, country) =>
+          expectPaged(
+            await request<Paged<EtsyListingWithAssociations>>('/v3/application/listings/batch', {
+              listing_ids: ids,
+              ...detailParams(inc, country)
+            })
+          ).results,
+        opts.buyerCountry ?? null,
+        'batch'
       )
     } catch (e) {
       if (!(e instanceof EtsyApiError) || (e.kind !== 'not_found' && e.kind !== 'bad_request')) throw e
       if (ids.length === 1) {
-        const one = await getListing(ids[0])
+        const one = await getListing(ids[0], opts)
         return one ? [one] : []
       }
       const mid = Math.ceil(ids.length / 2)
-      return [...(await batch(ids.slice(0, mid))), ...(await batch(ids.slice(mid)))]
+      return [...(await batch(ids.slice(0, mid), opts)), ...(await batch(ids.slice(mid), opts))]
     }
   }
 
@@ -677,13 +809,14 @@ export function createEtsyClient(opts: EtsyClientOptions): EtsyClient {
     },
 
     detailIncludes: () => includes,
+    buyerPriceRefused: (country) => !!country && buyerPrice.get(country) === 'refused',
 
-    async getListingsByIds(ids, onChunk) {
+    async getListingsByIds(ids, onChunk, opts = {}) {
       const out = new Map<number, EtsyListingWithAssociations>()
       const unique = [...new Set(ids)]
       for (let i = 0; i < unique.length; i += BATCH_LIMIT) {
         const chunk = unique.slice(i, i + BATCH_LIMIT)
-        for (const l of await batch(chunk)) out.set(l.listing_id, l)
+        for (const l of await batch(chunk, opts)) out.set(l.listing_id, l)
         onChunk?.(Math.min(i + chunk.length, unique.length), unique.length)
       }
       return out

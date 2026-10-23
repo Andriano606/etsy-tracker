@@ -3,8 +3,10 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
+  BUYER_COUNTRY_ERROR,
   MINIO_DEFAULTS,
   composeApiKey,
+  createBuyerCountryStore,
   createKeyStore,
   createMinioSettingsStore,
   maskKeystring,
@@ -229,5 +231,40 @@ describe('MinIO settings', () => {
     expect(validateBucketName(' etsy-tracker ')).toBe('etsy-tracker')
     expect(() => validateBucketName('ab')).toThrow()
     expect(() => validateBucketName('a..b')).toThrow()
+  })
+})
+
+describe('buyer country store (settings.json, not a secret)', () => {
+  it('defaults to UA while nothing (or something corrupt) is saved', () => {
+    expect(createBuyerCountryStore(file).get()).toBe('UA')
+    writeFileSync(join(dir, 'x.json'), JSON.stringify({ buyerCountry: 'zz' }))
+    expect(createBuyerCountryStore(join(dir, 'x.json')).get()).toBe('UA')
+    writeFileSync(join(dir, 'y.json'), '{not json')
+    expect(createBuyerCountryStore(join(dir, 'y.json')).get()).toBe('UA')
+  })
+
+  it('validates ISO 3166-1 alpha-2, uppercases, maps UK to GB, and saves in plain text', () => {
+    const s = createBuyerCountryStore(file)
+    expect(s.set(' us ')).toBe('US')
+    expect(s.get()).toBe('US')
+    expect(s.set('uk')).toBe('GB')
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ buyerCountry: 'GB' })
+    expect(statSync(file).mode & 0o777).toBe(0o600)
+    for (const bad of ['', 'U', 'USA', 'XX', 'U1', 42, null, undefined]) {
+      expect(() => s.set(bad)).toThrow(BUYER_COUNTRY_ERROR)
+    }
+    expect(s.get()).toBe('GB')
+  })
+
+  it('keeps the API key and MinIO sections of the same file', () => {
+    const keys = createKeyStore(file, fakeSafeStorage())
+    keys.setKey(KEY, SECRET)
+    createMinioSettingsStore(file, fakeSafeStorage()).set({ bucket: 'my-bucket' })
+    createBuyerCountryStore(file).set('DE')
+    expect(keys.getKey()).toBe(`${KEY}:${SECRET}`)
+    expect(createMinioSettingsStore(file, fakeSafeStorage()).status().bucket).toBe('my-bucket')
+    // …and saving a secret keeps the country.
+    keys.setKey(KEY, 'anothersecret')
+    expect(createBuyerCountryStore(file).get()).toBe('DE')
   })
 })

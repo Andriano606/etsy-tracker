@@ -518,3 +518,264 @@ describe('client.getShopReviews errors', () => {
     expect((await err(etsy.client().getShopReviews(SHOP_ID, { offset: 12100 }))).kind).toBe('bad_request')
   })
 })
+
+describe('buyer prices (includes=BuyerPrice + buyer_country)', () => {
+  const batches = (etsy: FakeEtsy) => etsy.requests.filter((u) => u.pathname.endsWith('/listings/batch'))
+
+  it('asks /listings/batch for BuyerPrice with the buyer country — no extra requests', async () => {
+    const etsy = new FakeEtsy(150)
+    etsy.listings[0].price = { amount: 250, divisor: 100, currency_code: 'USD' }
+    etsy.promotions[1] = { percentage: 60, start: 1_759_276_800, end: 1_761_868_800 }
+    const c = etsy.client()
+    const map = await c.getListingsByIds(etsy.listings.map((l) => l.listing_id), undefined, { buyerCountry: 'UA' })
+    expect(batches(etsy)).toHaveLength(2)
+    for (const b of batches(etsy)) {
+      expect(b.searchParams.get('includes')).toBe('Images,Videos,Personalization,BuyerPrice')
+      expect(b.searchParams.get('buyer_country')).toBe('UA')
+    }
+    // OAS ListingBuyerPrice: 2.50 USD + 20 % VAT = 3.00, −60 % = 1.20.
+    expect(map.get(1)!.buyer_price).toEqual({
+      base_price: { amount: 300, divisor: 100, currency_code: 'USD' },
+      shipping_cost: null,
+      is_free_shipping: false,
+      original_price: { amount: 300, divisor: 100, currency_code: 'USD' },
+      discounted_price: { amount: 120, divisor: 100, currency_code: 'USD' },
+      discount_amount: { amount: 180, divisor: 100, currency_code: 'USD' },
+      discount_percentage: 60,
+      has_discount: true,
+      discount_start_epoch: 1_759_276_800,
+      discount_end_epoch: 1_761_868_800
+    })
+    expect(map.get(2)!.buyer_price).toMatchObject({ has_discount: false, discounted_price: null, discount_percentage: null })
+    expect(c.buyerPriceRefused('UA')).toBe(false)
+    expect(c.detailIncludes()).toEqual(['Images', 'Videos', 'Personalization'])
+  })
+
+  it('without a buyer country neither BuyerPrice nor buyer_country is sent', async () => {
+    const etsy = new FakeEtsy(2)
+    const map = await etsy.client().getListingsByIds([1, 2], undefined, { buyerCountry: null })
+    expect(batches(etsy)[0].searchParams.get('includes')).toBe('Images,Videos,Personalization')
+    expect(batches(etsy)[0].searchParams.has('buyer_country')).toBe(false)
+    expect('buyer_price' in map.get(1)!).toBe(false)
+  })
+
+  it('GET /listings/{id} passes BuyerPrice + buyer_country too', async () => {
+    const etsy = new FakeEtsy(2)
+    etsy.singleBuyerPrice = true
+    const one = await etsy.client().getListing(2, { buyerCountry: 'DE' })
+    expect(etsy.requests[0].searchParams.get('includes')).toBe('Images,Videos,Personalization,BuyerPrice')
+    expect(etsy.requests[0].searchParams.get('buyer_country')).toBe('DE')
+    expect(one!.buyer_price).toMatchObject({ original_price: { amount: Math.round(1002 * 1.19) } })
+  })
+
+  for (const status of [403, 401, 400]) {
+    it(`Etsy refusing BuyerPrice (${status}) drops just that include, for good, and records it`, async () => {
+      const etsy = new FakeEtsy(250, { refuseIncludes: ['BuyerPrice'], refuseStatus: status })
+      const c = etsy.client()
+      const map = await c.getListingsByIds(etsy.listings.map((l) => l.listing_id), undefined, { buyerCountry: 'UA' })
+      expect(map.size).toBe(250)
+      expect(map.get(1)!.images).toHaveLength(2)
+      expect(map.get(1)!.videos).toEqual([])
+      expect('buyer_price' in map.get(1)!).toBe(false)
+      expect(batches(etsy).map((u) => u.searchParams.get('includes'))).toEqual([
+        'Images,Videos,Personalization,BuyerPrice',
+        'Images,Videos,Personalization',
+        'Images,Videos,Personalization',
+        'Images,Videos,Personalization'
+      ])
+      expect(batches(etsy).slice(1).every((u) => !u.searchParams.has('buyer_country'))).toBe(true)
+      expect(c.buyerPriceRefused('UA')).toBe(true)
+      expect(c.detailIncludes()).toEqual(['Images', 'Videos', 'Personalization'])
+      // Never asked again by this client (getListing included).
+      await c.getListing(3, { buyerCountry: 'UA' })
+      expect(etsy.requests.at(-1)!.searchParams.get('includes')).toBe('Images,Videos,Personalization')
+    })
+  }
+
+  it('BuyerPrice and Videos both refused: ends on Images only, buyer prices recorded as unavailable', async () => {
+    const etsy = new FakeEtsy(3, { refuseIncludes: ['BuyerPrice', 'Videos'] })
+    const c = etsy.client()
+    const map = await c.getListingsByIds([1, 2, 3], undefined, { buyerCountry: 'UA' })
+    expect(map.size).toBe(3)
+    expect(batches(etsy).map((u) => u.searchParams.get('includes'))).toEqual([
+      'Images,Videos,Personalization,BuyerPrice',
+      'Images,Videos,Personalization',
+      'Images,BuyerPrice',
+      'Images'
+    ])
+    expect(c.detailIncludes()).toEqual(['Images'])
+    expect(c.buyerPriceRefused('UA')).toBe(true)
+  })
+
+  it('a refused Videos (BuyerPrice not yet proven) falls back to Images+BuyerPrice — buyer prices kept', async () => {
+    const etsy = new FakeEtsy(150, { refuseIncludes: ['Videos'] })
+    etsy.promotions[1] = { percentage: 60, start: 100, end: 200 }
+    const c = etsy.client()
+    const map = await c.getListingsByIds(etsy.listings.map((l) => l.listing_id), undefined, { buyerCountry: 'UA' })
+    expect(map.size).toBe(150)
+    expect(batches(etsy).map((u) => u.searchParams.get('includes'))).toEqual([
+      'Images,Videos,Personalization,BuyerPrice',
+      'Images,Videos,Personalization',
+      'Images,BuyerPrice',
+      'Images,BuyerPrice'
+    ])
+    expect(batches(etsy).slice(2).every((u) => u.searchParams.get('buyer_country') === 'UA')).toBe(true)
+    expect(map.get(1)!.buyer_price).toMatchObject({ has_discount: true, discount_percentage: 60 })
+    expect(map.get(150)!.buyer_price).toMatchObject({ has_discount: false })
+    expect(c.buyerPriceRefused('UA')).toBe(false)
+    expect(c.detailIncludes()).toEqual(['Images'])
+    // Proven by that batch: a later 400 (unknown id) bisects at once.
+    etsy.requests.length = 0
+    etsy.intercept = (url) =>
+      url.pathname.endsWith('/listings/batch') && (url.searchParams.get('listing_ids') ?? '').includes('3')
+        ? { status: 400, body: { error: 'listing_ids contains an invalid id' } }
+        : null
+    await c.getListingsByIds([2, 3], undefined, { buyerCountry: 'UA' })
+    expect(etsy.requests.every((u) => u.searchParams.get('includes') === 'Images,BuyerPrice')).toBe(true)
+  })
+
+  it('a single GET whose Videos is refused falls back to Images+BuyerPrice too, deciding nothing about batches', async () => {
+    const etsy = new FakeEtsy(2, { refuseIncludes: ['Videos'] })
+    etsy.singleBuyerPrice = true
+    const c = etsy.client()
+    const one = await c.getListing(1, { buyerCountry: 'UA' })
+    expect(one!.buyer_price).toMatchObject({ has_discount: false })
+    expect(etsy.requests.map((u) => u.searchParams.get('includes'))).toEqual([
+      'Images,Videos,Personalization,BuyerPrice',
+      'Images,Videos,Personalization',
+      'Images,BuyerPrice'
+    ])
+    expect(c.detailIncludes()).toEqual(['Images'])
+    expect(c.buyerPriceRefused('UA')).toBe(false)
+  })
+
+  it('a single GET refusing BuyerPrice and Videos ends on Images only, still refusing nothing', async () => {
+    const etsy = new FakeEtsy(2, { refuseIncludes: ['Videos', 'BuyerPrice'] })
+    const c = etsy.client()
+    expect((await c.getListing(1, { buyerCountry: 'UA' }))!.listing_id).toBe(1)
+    expect(etsy.requests.map((u) => u.searchParams.get('includes'))).toEqual([
+      'Images,Videos,Personalization,BuyerPrice',
+      'Images,Videos,Personalization',
+      'Images,BuyerPrice',
+      'Images'
+    ])
+    expect(c.detailIncludes()).toEqual(['Images'])
+    expect(c.buyerPriceRefused('UA')).toBe(false)
+  })
+
+  it('a refusal is per buyer country: the next country is asked afresh', async () => {
+    const etsy = new FakeEtsy(2, {
+      intercept: (url) =>
+        url.searchParams.get('buyer_country') === 'AQ' ? { status: 400, body: { error: 'Invalid buyer_country' } } : null
+    })
+    const c = etsy.client()
+    const aq = await c.getListingsByIds([1, 2], undefined, { buyerCountry: 'AQ' })
+    expect(aq.size).toBe(2)
+    expect(c.buyerPriceRefused('AQ')).toBe(true)
+    expect(c.buyerPriceRefused('UA')).toBe(false)
+    expect(c.buyerPriceRefused(null)).toBe(false)
+    const ua = await c.getListingsByIds([1, 2], undefined, { buyerCountry: 'UA' })
+    expect(etsy.requests.at(-1)!.searchParams.get('includes')).toBe('Images,Videos,Personalization,BuyerPrice')
+    expect(etsy.requests.at(-1)!.searchParams.get('buyer_country')).toBe('UA')
+    expect(ua.get(1)!.buyer_price).toMatchObject({ original_price: { amount: Math.round(1001 * 1.2) } })
+    expect(c.buyerPriceRefused('UA')).toBe(false)
+    // AQ stays refused for this client: asked without BuyerPrice, one request.
+    etsy.requests.length = 0
+    await c.getListingsByIds([1], undefined, { buyerCountry: 'AQ' })
+    expect(etsy.requests.map((u) => u.searchParams.get('includes'))).toEqual(['Images,Videos,Personalization'])
+    expect(etsy.requests[0].searchParams.has('buyer_country')).toBe(false)
+  })
+
+  it('BuyerPrice not yet proven + a 400 for an unknown id: one retry without it, then bisects — nothing refused', async () => {
+    const etsy = new FakeEtsy(4)
+    etsy.intercept = (url) =>
+      url.pathname.endsWith('/listings/batch') && (url.searchParams.get('listing_ids') ?? '').split(',').includes('4')
+        ? { status: 400, body: { error: 'listing_ids contains an invalid id' } }
+        : null
+    etsy.listings.splice(3, 1) // #4 is unknown to Etsy
+    const c = etsy.client()
+    const map = await c.getListingsByIds([1, 2, 3, 4], undefined, { buyerCountry: 'UA' })
+    expect([...map.keys()].sort()).toEqual([1, 2, 3])
+    expect(etsy.requests.map((u) => [u.pathname.replace('/v3/application', ''), u.searchParams.get('listing_ids'), u.searchParams.get('includes')])).toEqual([
+      ['/listings/batch', '1,2,3,4', 'Images,Videos,Personalization,BuyerPrice'],
+      // the one extra try without BuyerPrice — it fails too, so the original 400 bisects
+      ['/listings/batch', '1,2,3,4', 'Images,Videos,Personalization'],
+      ['/listings/batch', '1,2', 'Images,Videos,Personalization,BuyerPrice'],
+      // [1,2] proved BuyerPrice: from here a 400 bisects without the extra try
+      ['/listings/batch', '3,4', 'Images,Videos,Personalization,BuyerPrice'],
+      ['/listings/batch', '3', 'Images,Videos,Personalization,BuyerPrice'],
+      ['/listings/batch', '4', 'Images,Videos,Personalization,BuyerPrice'],
+      ['/listings/4', null, 'Images,Videos,Personalization,BuyerPrice']
+    ])
+    expect(map.get(1)!.buyer_price).toMatchObject({ has_discount: false })
+    expect(c.buyerPriceRefused('UA')).toBe(false)
+  })
+
+  it('once BuyerPrice worked, Images-only fallback keeps it', async () => {
+    const etsy = new FakeEtsy(3)
+    const c = etsy.client()
+    await c.getListingsByIds([1], undefined, { buyerCountry: 'UA' })
+    etsy.refuseIncludes = ['Videos']
+    const map = await c.getListingsByIds([2], undefined, { buyerCountry: 'UA' })
+    expect(batches(etsy).map((u) => u.searchParams.get('includes'))).toEqual([
+      'Images,Videos,Personalization,BuyerPrice',
+      'Images,Videos,Personalization,BuyerPrice',
+      'Images,BuyerPrice'
+    ])
+    expect(map.get(2)!.buyer_price).toMatchObject({ has_discount: false })
+    expect(c.buyerPriceRefused('UA')).toBe(false)
+  })
+
+  it('once BuyerPrice worked, a 400 (an unknown id) bisects without retrying without BuyerPrice', async () => {
+    const etsy = new FakeEtsy(4)
+    const c = etsy.client()
+    await c.getListingsByIds([1], undefined, { buyerCountry: 'UA' })
+    etsy.requests.length = 0
+    etsy.intercept = (url) =>
+      url.pathname.endsWith('/listings/batch') && (url.searchParams.get('listing_ids') ?? '').includes('4')
+        ? { status: 400, body: { error: 'listing_ids contains an invalid id' } }
+        : null
+    const map = await c.getListingsByIds([1, 2, 3, 4], undefined, { buyerCountry: 'UA' })
+    expect(map.size).toBe(4) // #4 came from the single GET
+    expect(etsy.requests.every((u) => u.searchParams.get('includes')!.endsWith('BuyerPrice'))).toBe(true)
+    expect(etsy.requests.every((u) => u.searchParams.get('buyer_country') === 'UA')).toBe(true)
+    expect(c.buyerPriceRefused('UA')).toBe(false)
+  })
+
+  it('a single GET answering 400 to BuyerPrice is retried without it, without refusing it for batches', async () => {
+    const etsy = new FakeEtsy(2, {
+      intercept: (url) =>
+        /\/listings\/\d+$/.test(url.pathname) && url.searchParams.get('includes')!.includes('BuyerPrice')
+          ? { status: 400, body: { error: 'BuyerPrice is only supported on /listings/batch' } }
+          : null
+    })
+    const c = etsy.client()
+    const one = await c.getListing(1, { buyerCountry: 'UA' })
+    expect(one!.listing_id).toBe(1)
+    expect(etsy.requests.map((u) => u.searchParams.get('includes'))).toEqual([
+      'Images,Videos,Personalization,BuyerPrice',
+      'Images,Videos,Personalization'
+    ])
+    expect(c.buyerPriceRefused('UA')).toBe(false)
+    await c.getListingsByIds([2], undefined, { buyerCountry: 'UA' })
+    expect(etsy.requests.at(-1)!.searchParams.get('includes')).toBe('Images,Videos,Personalization,BuyerPrice')
+  })
+
+  it('a key rejected outright still fails with the auth error and refuses nothing', async () => {
+    const etsy = new FakeEtsy(3, { intercept: () => ({ status: 403, body: { error: 'bad key' } }) })
+    const c = etsy.client()
+    expect((await err(c.getListingsByIds([1, 2], undefined, { buyerCountry: 'UA' }))).kind).toBe('auth')
+    expect(c.buyerPriceRefused('UA')).toBe(false)
+    expect(c.detailIncludes()).toEqual(['Images', 'Videos', 'Personalization'])
+  })
+
+  it('a batch 404 bisects down to single GETs that still carry buyer_country', async () => {
+    const etsy = new FakeEtsy(4, { batchUnknown: '404' })
+    const ids = etsy.listings.map((l) => l.listing_id)
+    etsy.listings.splice(1, 1) // #2 deleted
+    const map = await etsy.client().getListingsByIds(ids, undefined, { buyerCountry: 'PL' })
+    expect(map.size).toBe(3)
+    expect(etsy.requests.every((u) => u.searchParams.get('buyer_country') === 'PL')).toBe(true)
+    expect(etsy.count('/v3/application/listings/2')).toBe(1)
+  })
+})

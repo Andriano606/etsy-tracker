@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { KeyTestResult } from '@shared/types'
 import { useStore } from '../store'
+import { BuyerCountrySection } from './BuyerCountrySection'
 import { KeyHelp } from './KeyHelp'
 import { MinioSection } from './MinioSection'
 import { useEscape } from './useEscape'
@@ -166,6 +167,8 @@ export function SettingsModal(): JSX.Element | null {
             )}
           </form>
         </section>
+
+        <BuyerCountrySection />
 
         <MinioSection />
 

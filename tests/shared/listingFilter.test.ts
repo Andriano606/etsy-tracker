@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { filterListings } from '../../src/renderer/src/listingFilter'
-import * as helpers from './helpers'
-import { mkListing } from './helpers'
+import { filterListings } from '../../src/shared/listingFilter'
+import * as helpers from '../renderer/helpers'
+import { mkListing } from '../renderer/helpers'
 
 const ls = [
   mkListing(1, { title: 'Blue Mug', priceAmount: 3000, etsyCreatedAt: 10 }),
@@ -22,6 +22,10 @@ describe('filterListings', () => {
     expect(ids(filterListings(ls, 'mug', 'newest'))).toEqual([1])
     expect(ids(filterListings(ls, 'kitch', 'newest'))).toEqual([2])
     expect(ids(filterListings(ls, '  ', 'newest'))).toHaveLength(3)
+  })
+  it('searches descriptions only when asked (the MCP product search)', () => {
+    expect(ids(filterListings(ls, 'description 3', 'newest'))).toEqual([])
+    expect(ids(filterListings(ls, 'DESCRIPTION 3', 'newest', { searchDescription: true }))).toEqual([3])
   })
   it('does not mutate the input', () => {
     const copy = [...ls]

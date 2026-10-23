@@ -8,8 +8,10 @@ import {
   composeApiKey,
   createBuyerCountryStore,
   createKeyStore,
+  createMcpSettingsStore,
   createMinioSettingsStore,
   maskKeystring,
+  newMcpToken,
   normalizeMinioEndpoint,
   validateBucketName
 } from '../../src/main/settings'
@@ -266,5 +268,84 @@ describe('buyer country store (settings.json, not a secret)', () => {
     // …and saving a secret keeps the country.
     keys.setKey(KEY, 'anothersecret')
     expect(createBuyerCountryStore(file).get()).toBe('DE')
+  })
+})
+
+describe('MCP server settings', () => {
+  it('defaults: off, port 9102, no token yet', () => {
+    expect(createMcpSettingsStore(file, fakeSafeStorage()).get()).toEqual({
+      enabled: false,
+      port: 9102,
+      token: null,
+      tokenEncrypted: false
+    })
+  })
+
+  it('saves on/off and a validated port (a string from the input is fine)', () => {
+    const s = createMcpSettingsStore(file, fakeSafeStorage())
+    expect(s.set({ enabled: true, port: ' 9200 ' })).toMatchObject({ enabled: true, port: 9200 })
+    expect(s.set({ enabled: false })).toMatchObject({ enabled: false, port: 9200 })
+    for (const bad of [80, 70000, 9100.5, 'abc', '', -1]) {
+      expect(() => s.set({ port: bad })).toThrow('Порт — ціле число від 1024 до 65535.')
+    }
+    expect(s.get().port).toBe(9200)
+    expect(statSync(file).mode & 0o777).toBe(0o600)
+  })
+
+  it('a corrupt saved port reads as the default', () => {
+    writeFileSync(join(dir, 'x.json'), JSON.stringify({ mcp: { port: 'lol', enabled: true } }))
+    expect(createMcpSettingsStore(join(dir, 'x.json'), fakeSafeStorage()).get()).toMatchObject({
+      enabled: true,
+      port: 9102
+    })
+  })
+
+  it('ensureToken makes one token, sealed with safeStorage, and keeps it', () => {
+    const s = createMcpSettingsStore(file, fakeSafeStorage())
+    const t = s.ensureToken()
+    expect(t).toMatch(/^[A-Za-z0-9_-]{43}$/)
+    expect(s.ensureToken()).toBe(t)
+    expect(s.get()).toMatchObject({ token: t, tokenEncrypted: true })
+    const raw = readFileSync(file, 'utf8')
+    expect(raw).not.toContain(t)
+    expect(JSON.parse(raw).mcp.token.encrypted).toBe(true)
+  })
+
+  it('regenerateToken replaces it', () => {
+    const s = createMcpSettingsStore(file, fakeSafeStorage())
+    const t = s.ensureToken()
+    const t2 = s.regenerateToken()
+    expect(t2).not.toBe(t)
+    expect(s.get().token).toBe(t2)
+  })
+
+  it('without a keyring the token is stored plain (and reported as not encrypted)', () => {
+    const s = createMcpSettingsStore(file, fakeSafeStorage(false))
+    const t = s.ensureToken()
+    expect(s.get()).toMatchObject({ token: t, tokenEncrypted: false })
+    expect(createMcpSettingsStore(file, fakeSafeStorage(true, 'basic_text')).get().tokenEncrypted).toBe(false)
+  })
+
+  it('a token that cannot be decrypted any more is replaced by ensureToken', () => {
+    writeFileSync(file.replace('sub/', ''), JSON.stringify({ mcp: { enabled: true, token: { data: 'garbage', encrypted: true } } }))
+    const s = createMcpSettingsStore(file.replace('sub/', ''), fakeSafeStorage())
+    expect(s.get().token).toBeNull()
+    const t = s.ensureToken()
+    expect(s.get()).toMatchObject({ token: t, enabled: true })
+  })
+
+  it('keeps the other sections of settings.json', () => {
+    const keys = createKeyStore(file, fakeSafeStorage())
+    keys.setKey(KEY, SECRET)
+    createBuyerCountryStore(file).set('DE')
+    const s = createMcpSettingsStore(file, fakeSafeStorage())
+    s.set({ enabled: true })
+    s.ensureToken()
+    expect(keys.getKey()).toBe(`${KEY}:${SECRET}`)
+    expect(createBuyerCountryStore(file).get()).toBe('DE')
+  })
+
+  it('newMcpToken is random', () => {
+    expect(newMcpToken()).not.toBe(newMcpToken())
   })
 })

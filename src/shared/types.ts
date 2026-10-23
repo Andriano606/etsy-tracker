@@ -773,3 +773,30 @@ export interface ShopStatsPayload {
   }
   top: StatsTop
 }
+
+/** The local MCP server (Settings → "MCP"): its settings plus whether it runs. */
+export interface McpStatus {
+  enabled: boolean
+  port: number
+  /** http://127.0.0.1:{port}/mcp */
+  url: string
+  /** The bearer token clients send; null until the server was first enabled. */
+  token: string | null
+  /** The token is protected by a real OS keyring in settings.json. */
+  tokenEncrypted: boolean
+  /** Listening right now. */
+  running: boolean
+  /** Why it is not running although enabled (port busy, …), else null. */
+  error: string | null
+  /** Authorized requests since the app started. */
+  requests: number
+  /** Epoch ms of the latest authorized request. */
+  lastRequestAt: number | null
+  /** `clientInfo.name` of the latest client that initialized a session (e.g. "claude-code"). */
+  lastClient: string | null
+}
+
+export interface McpSettingsInput {
+  enabled?: boolean
+  port?: number | string
+}

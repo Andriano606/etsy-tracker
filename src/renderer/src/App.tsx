@@ -3,6 +3,7 @@ import { useStore } from './store'
 import { Sidebar } from './components/Sidebar'
 import { ShopView } from './components/ShopView'
 import { SettingsModal, TRADEMARK_NOTICE } from './components/SettingsModal'
+import { McpModal } from './components/McpModal'
 import { AddShopModal } from './components/AddShopModal'
 import { ListingModal } from './components/ListingModal'
 import { HistoryModal } from './components/ScanHistory'
@@ -63,6 +64,7 @@ export function App(): JSX.Element {
         <footer className="legal-footer">{TRADEMARK_NOTICE}</footer>
       </main>
       <SettingsModal />
+      <McpModal />
       <AddShopModal />
       {/* A listing can be opened from the statistics or the history — render it on top. */}
       <StatsModal />

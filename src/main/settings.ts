@@ -4,10 +4,12 @@
 // renderer only ever sees `KeyStatus` (a masked keystring) and `MinioStatus`
 // (no secret at all). safeStorage is injected so tests run without Electron.
 
+import { randomBytes } from 'crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
 import { dirname } from 'path'
-import type { KeyStatus, MinioSettingsInput, MinioStatus } from '../shared/types'
+import type { KeyStatus, McpSettingsInput, MinioSettingsInput, MinioStatus } from '../shared/types'
 import { DEFAULT_BUYER_COUNTRY, normalizeCountry } from '../shared/countries'
+import { MCP_DEFAULT_PORT, validateMcpPort } from '../shared/mcpConfig'
 
 export interface SafeStorageLike {
   isEncryptionAvailable(): boolean
@@ -37,6 +39,14 @@ interface SettingsFile {
   minio?: StoredMinio
   /** ISO 3166-1 alpha-2 buyer country for Etsy's buyer-facing prices (not a secret). */
   buyerCountry?: string
+  mcp?: StoredMcp
+}
+
+interface StoredMcp {
+  enabled?: boolean
+  port?: number
+  /** The bearer token MCP clients send, sealed like the API key. */
+  token?: StoredKey
 }
 
 /** Read settings.json; a missing or corrupt file reads as empty. */
@@ -303,6 +313,78 @@ export function createBuyerCountryStore(filePath: string): BuyerCountryStore {
       data.buyerCountry = c
       writeSettings(filePath, data)
       return c
+    }
+  }
+}
+
+// ------------------------------------------------------------------- MCP server
+
+/** What main needs to run the MCP server. The token is shown in the MCP modal (clients need it). */
+export interface McpConfig {
+  enabled: boolean
+  port: number
+  /** null = never generated, or the stored one can't be decrypted. */
+  token: string | null
+  /** The stored token is protected by a real OS keyring. */
+  tokenEncrypted: boolean
+}
+
+export interface McpSettingsStore {
+  get(): McpConfig
+  /** Validate + save; throws a Ukrainian message. */
+  set(input: McpSettingsInput): McpConfig
+  /** The token, generating (and saving) one when there is none or it can't be read. */
+  ensureToken(): string
+  /** A new token: every connected client has to be configured again. */
+  regenerateToken(): string
+}
+
+/** 32 random bytes, base64url: safe inside a shell's double quotes and an HTTP header. */
+export function newMcpToken(): string {
+  return randomBytes(32).toString('base64url')
+}
+
+export function createMcpSettingsStore(filePath: string, safe: SafeStorageLike): McpSettingsStore {
+  function get(): McpConfig {
+    const m = readSettings(filePath).mcp ?? {}
+    let port = MCP_DEFAULT_PORT
+    try {
+      port = validateMcpPort(m.port ?? MCP_DEFAULT_PORT)
+    } catch {
+      // A corrupt saved port reads as the default.
+    }
+    const token = unseal(safe, m.token)
+    return {
+      enabled: m.enabled ?? false,
+      port,
+      token,
+      tokenEncrypted: !!token && !!m.token?.encrypted && realEncryption(safe)
+    }
+  }
+
+  function saveToken(token: string): string {
+    const data = readSettings(filePath)
+    data.mcp = { ...(data.mcp ?? {}), token: seal(safe, token) }
+    writeSettings(filePath, data)
+    return token
+  }
+
+  return {
+    get,
+    set(input) {
+      const data = readSettings(filePath)
+      const m: StoredMcp = { ...(data.mcp ?? {}) }
+      if (input.port !== undefined) m.port = validateMcpPort(input.port)
+      if (input.enabled !== undefined) m.enabled = !!input.enabled
+      data.mcp = m
+      writeSettings(filePath, data)
+      return get()
+    },
+    ensureToken() {
+      return get().token ?? saveToken(newMcpToken())
+    },
+    regenerateToken() {
+      return saveToken(newMcpToken())
     }
   }
 }

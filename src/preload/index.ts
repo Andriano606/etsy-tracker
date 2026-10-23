@@ -8,6 +8,8 @@ import type {
   KeyTestResult,
   Listing,
   ListingStatsPoint,
+  McpSettingsInput,
+  McpStatus,
   MinioSettingsInput,
   MinioStatus,
   MinioTestResult,
@@ -109,6 +111,15 @@ const api = {
     ipcRenderer.invoke('images:sync', shopId),
   onImageSync: (cb: (s: ImageSyncState) => void): (() => void) => subscribe('images:progress', cb),
   onQuota: (cb: (q: Quota) => void): (() => void) => subscribe('quota:changed', cb),
+
+  /** The MCP modal: the local MCP server's settings and state (incl. the token clients need). */
+  getMcpStatus: (): Promise<McpStatus> => ipcRenderer.invoke('mcp:status'),
+  /** Save and apply (start / stop / move to the new port). */
+  setMcp: (input: McpSettingsInput): Promise<{ ok: true; status: McpStatus } | { ok: false; error: string }> =>
+    ipcRenderer.invoke('mcp:set', input),
+  regenerateMcpToken: (): Promise<McpStatus> => ipcRenderer.invoke('mcp:regenerateToken'),
+  /** Copy text to the system clipboard; false if refused. */
+  copyText: (text: string): Promise<boolean> => ipcRenderer.invoke('clipboard:write', text),
 
   /** Opens https etsy.com URLs in the system browser; false if refused. */
   openExternal: (url: string): Promise<boolean> => ipcRenderer.invoke('shell:openExternal', url)

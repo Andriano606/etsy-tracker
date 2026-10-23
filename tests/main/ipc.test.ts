@@ -1,14 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { handlers, openExternal } = vi.hoisted(() => ({
+const { handlers, openExternal, writeText } = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
-  openExternal: vi.fn(async () => {})
+  openExternal: vi.fn(async () => {}),
+  writeText: vi.fn()
 }))
 vi.mock('electron', () => ({
   ipcMain: {
     handle: (ch: string, fn: (...args: unknown[]) => unknown) => handlers.set(ch, fn)
   },
-  shell: { openExternal }
+  shell: { openExternal },
+  clipboard: { writeText }
 }))
 
 import {
@@ -26,15 +28,21 @@ import { createScanner } from '../../src/main/scanner'
 import {
   createBuyerCountryStore,
   createKeyStore,
+  createMcpSettingsStore,
   createMinioSettingsStore,
   MINIO_DEFAULTS
 } from '../../src/main/settings'
+import { createMcpService } from '../../src/main/mcpServer'
+import { CLIPBOARD_MAX } from '../../src/main/ipc'
 import { getListing, getShopSummary, imageCounts, listScans, reviewImageCounts } from '../../src/main/db'
 import { FakeImageStore, fakeCdn } from '../helpers/fakeImageStore'
 import { FakeEtsy, SHOP_ID, mkEtsyReview } from '../helpers/fakeEtsy'
 import { memDb, seedShop } from '../helpers/db'
 import { fakeSafeStorage } from '../helpers/safeStorage'
 import { mkdtempSync } from 'fs'
+import { createServer } from 'http'
+import type { AddressInfo } from 'net'
+import type { McpStatus } from '../../src/shared/types'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -48,6 +56,12 @@ function ctx(etsy = new FakeEtsy(2)) {
   const cdn = fakeCdn()
   const minio = createMinioSettingsStore(file, fakeSafeStorage())
   const buyerCountry = createBuyerCountryStore(file)
+  const mcpSettings = createMcpSettingsStore(file, fakeSafeStorage())
+  const mcp = createMcpService({
+    getConfig: () => mcpSettings.get(),
+    ensureToken: () => mcpSettings.ensureToken(),
+    handle: async () => null
+  })
   const images = createImageSyncer({
     db,
     getStore: async () => (minio.status().enabled ? store : null),
@@ -78,7 +92,9 @@ function ctx(etsy = new FakeEtsy(2)) {
     makeStore,
     onMinioChanged,
     reviews,
-    buyerCountry
+    buyerCountry,
+    mcpSettings,
+    mcp
   }
   ref = c
   return { c, etsy, sent, store, cdn, makeStore, onMinioChanged }
@@ -89,6 +105,7 @@ const call = (ch: string, ...args: unknown[]) => handlers.get(ch)!({}, ...args)
 beforeEach(() => {
   handlers.clear()
   openExternal.mockClear()
+  writeText.mockClear()
 })
 
 describe('testKey', () => {
@@ -499,5 +516,73 @@ describe('buyer country + promotions IPC', () => {
       expect(await call('scan:promotions', bad)).toEqual({ started: [], ended: [] })
       expect(await call('listing:promotions', bad)).toEqual([])
     }
+  })
+})
+
+describe('MCP server and clipboard', () => {
+  async function freePort(): Promise<number> {
+    const s = createServer()
+    await new Promise<void>((r) => s.listen(0, '127.0.0.1', r))
+    const port = (s.address() as AddressInfo).port
+    await new Promise((r) => s.close(r))
+    return port
+  }
+
+  it('mcp:status: off until enabled, no token', async () => {
+    const { c } = ctx()
+    registerIpc(c)
+    expect(await call('mcp:status')).toMatchObject({ enabled: false, running: false, token: null, port: 9102 })
+  })
+
+  it('mcp:set enables it on the port (token made), serves requests, and disabling stops it', async () => {
+    const { c } = ctx()
+    registerIpc(c)
+    const port = await freePort()
+    const on = (await call('mcp:set', { enabled: true, port: String(port) })) as { ok: true; status: McpStatus }
+    try {
+      expect(on.ok).toBe(true)
+      expect(on.status).toMatchObject({ enabled: true, running: true, port, error: null })
+      expect(on.status.token).toMatch(/^[A-Za-z0-9_-]{43}$/)
+      const res = await fetch(`http://127.0.0.1:${port}/mcp`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${on.status.token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })
+      })
+      expect(res.status).toBe(202)
+      expect(((await call('mcp:status')) as McpStatus).requests).toBe(1)
+    } finally {
+      const off = (await call('mcp:set', { enabled: false })) as { ok: true; status: McpStatus }
+      expect(off.status).toMatchObject({ enabled: false, running: false })
+    }
+  })
+
+  it('mcp:set refuses a bad port with the Ukrainian message and changes nothing', async () => {
+    const { c } = ctx()
+    registerIpc(c)
+    expect(await call('mcp:set', { enabled: true, port: 80 })).toEqual({
+      ok: false,
+      error: 'Порт — ціле число від 1024 до 65535.'
+    })
+    expect(await call('mcp:status')).toMatchObject({ enabled: false, running: false })
+  })
+
+  it('mcp:regenerateToken gives a new token', async () => {
+    const { c } = ctx()
+    registerIpc(c)
+    const first = c.mcpSettings.ensureToken()
+    const st = (await call('mcp:regenerateToken')) as McpStatus
+    expect(st.token).toBeTruthy()
+    expect(st.token).not.toBe(first)
+  })
+
+  it('clipboard:write copies text; refuses non-strings, empty and huge text', async () => {
+    const { c } = ctx()
+    registerIpc(c)
+    expect(await call('clipboard:write', 'claude mcp add …')).toBe(true)
+    expect(writeText).toHaveBeenCalledWith('claude mcp add …')
+    for (const bad of [42, null, '', 'x'.repeat(CLIPBOARD_MAX + 1)]) {
+      expect(await call('clipboard:write', bad)).toBe(false)
+    }
+    expect(writeText).toHaveBeenCalledTimes(1)
   })
 })

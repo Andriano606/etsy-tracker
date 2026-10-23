@@ -1,7 +1,7 @@
 // Wires the pure per-concern modules (db, settings, etsyApi, scanner, shops) to
 // IPC channels. All Etsy traffic happens here in main — never in the renderer.
 
-import { ipcMain, shell } from 'electron'
+import { clipboard, ipcMain, shell } from 'electron'
 import type { WebContents } from 'electron'
 import type {
   BuyerCountryResult,
@@ -9,6 +9,8 @@ import type {
   ImageSyncState,
   KeyStatus,
   KeyTestResult,
+  McpSettingsInput,
+  McpStatus,
   MinioSettingsInput,
   MinioStatus,
   MinioTestResult,
@@ -43,11 +45,13 @@ import {
 import { EtsyApiError, type EtsyClient } from './etsyApi'
 import { type ImageStore, describeStoreError } from './imageStore'
 import type { ImageSyncer } from './imageSync'
+import type { McpService } from './mcpServer'
 import type { ReviewSyncer } from './reviewSync'
 import type { Scanner } from './scanner'
 import {
   type BuyerCountryStore,
   type KeyStore,
+  type McpSettingsStore,
   type MinioConfig,
   type MinioSettingsStore,
   MINIO_DEFAULTS,
@@ -77,7 +81,14 @@ export interface IpcContext {
   reviews: ReviewSyncer
   /** Settings → "Країна покупця" (buyer prices; read by the scanner at each scan). */
   buyerCountry: BuyerCountryStore
+  /** The MCP modal: the local MCP server's settings (port, on/off, token)… */
+  mcpSettings: McpSettingsStore
+  /** …and the server itself (started/stopped to match them). */
+  mcp: McpService
 }
+
+/** Longest text `clipboard:write` copies (the MCP configs are < 1 KB). */
+export const CLIPBOARD_MAX = 20_000
 
 export interface ImageStatus {
   counts: ImageCounts
@@ -328,6 +339,33 @@ export function registerIpc(ctx: IpcContext): void {
   ipcMain.handle('images:sync', (_e, shopId?: number | null): ImageSyncState => {
     startImageSync(ctx, shopId ?? null, true)
     return ctx.images.state()
+  })
+
+  // The MCP modal. Saving applies at once: the server starts, stops or moves
+  // to the new port; a port in use comes back as `status.error`.
+  ipcMain.handle('mcp:status', (): McpStatus => ctx.mcp.status())
+  ipcMain.handle(
+    'mcp:set',
+    async (_e, input: McpSettingsInput): Promise<{ ok: true; status: McpStatus } | { ok: false; error: string }> => {
+      try {
+        ctx.mcpSettings.set(input ?? {})
+      } catch (e) {
+        return { ok: false, error: (e as Error).message }
+      }
+      return { ok: true, status: await ctx.mcp.apply() }
+    }
+  )
+  // Clients configured with the old token stop working at once (it is read per request).
+  ipcMain.handle('mcp:regenerateToken', (): McpStatus => {
+    ctx.mcpSettings.regenerateToken()
+    return ctx.mcp.status()
+  })
+  // "Копіювати" buttons: Electron's clipboard (navigator.clipboard needs a focused,
+  // permitted document; this always works).
+  ipcMain.handle('clipboard:write', (_e, text: unknown): boolean => {
+    if (typeof text !== 'string' || !text || text.length > CLIPBOARD_MAX) return false
+    clipboard.writeText(text)
+    return true
   })
 
   ipcMain.handle('shell:openExternal', async (_e, url: string): Promise<boolean> => {

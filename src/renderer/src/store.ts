@@ -5,6 +5,7 @@ import type {
   KeyStatus,
   KeyTestResult,
   Listing,
+  McpStatus,
   MinioSettingsInput,
   MinioStatus,
   MinioTestResult,
@@ -17,6 +18,9 @@ import type {
   ScanSummary,
   ShopSummary
 } from '@shared/types'
+import type { SortMode } from '@shared/listingFilter'
+
+export type { SortMode }
 
 /** localStorage key for the last-selected shop. */
 const UI_KEY = 'etsyTracker.ui'
@@ -39,23 +43,6 @@ function saveActiveShop(id: number | null): void {
     // Non-critical.
   }
 }
-
-export type SortMode =
-  | 'newest'
-  | 'price-asc'
-  | 'price-desc'
-  /** Most favorited first. */
-  | 'favorites'
-  /** Most viewed first. */
-  | 'views'
-  /** Biggest favorers growth since the previous successful scan first. */
-  | 'favorites-growth'
-  /** Most reviews (stored) first. */
-  | 'reviews'
-  /** Most new reviews since the previous successful scan first. */
-  | 'reviews-growth'
-  /** Biggest active discount (buyer price) first. */
-  | 'discount'
 
 const NO_PROMOTIONS: ScanPromotions = { started: [], ended: [] }
 
@@ -98,8 +85,11 @@ interface AppState {
   /** The background image sync (all shops), pushed by main. */
   imageSync: ImageSyncState | null
   minioStatus: MinioStatus | null
+  /** The local MCP server (the MCP modal; the sidebar button's dot). */
+  mcpStatus: McpStatus | null
 
   showSettings: boolean
+  showMcp: boolean
   showAddShop: boolean
   detailListing: Listing | null
   historyScan: ScanSummary | null
@@ -137,6 +127,8 @@ interface AppState {
   testMinio: (input?: MinioSettingsInput) => Promise<MinioTestResult>
 
   setShowSettings: (v: boolean) => void
+  setShowMcp: (v: boolean) => void
+  setMcpStatus: (s: McpStatus) => void
   setShowAddShop: (v: boolean) => void
   openListing: (l: Listing | null) => void
   openHistoryScan: (scan: ScanSummary | null) => Promise<void>
@@ -167,8 +159,10 @@ export const useStore = create<AppState>((set, get) => ({
   imageCounts: null,
   imageSync: null,
   minioStatus: null,
+  mcpStatus: null,
 
   showSettings: false,
+  showMcp: false,
   showAddShop: false,
   detailListing: null,
   historyScan: null,
@@ -177,14 +171,15 @@ export const useStore = create<AppState>((set, get) => ({
   confirmRequest: null,
 
   load: async () => {
-    const [keyStatus, shops, quota, minioStatus, buyerCountry] = await Promise.all([
+    const [keyStatus, shops, quota, minioStatus, buyerCountry, mcpStatus] = await Promise.all([
       window.api.getKeyStatus(),
       window.api.listShops(),
       window.api.getQuota(),
       window.api.getMinioStatus(),
-      window.api.getBuyerCountry().catch(() => null)
+      window.api.getBuyerCountry().catch(() => null),
+      window.api.getMcpStatus().catch(() => null)
     ])
-    set({ keyStatus, shops, quota, minioStatus, buyerCountry, loaded: true })
+    set({ keyStatus, shops, quota, minioStatus, buyerCountry, mcpStatus, loaded: true })
     const remembered = loadActiveShop()
     const pick = shops.find((s) => s.id === remembered)?.id ?? shops[0]?.id ?? null
     await get().selectShop(pick)
@@ -394,6 +389,8 @@ export const useStore = create<AppState>((set, get) => ({
   testMinio: (input) => window.api.testMinio(input),
 
   setShowSettings: (showSettings) => set({ showSettings }),
+  setShowMcp: (showMcp) => set({ showMcp }),
+  setMcpStatus: (mcpStatus) => set({ mcpStatus }),
   setShowAddShop: (showAddShop) => set({ showAddShop }),
   openListing: (detailListing) => set({ detailListing }),
   openHistoryScan: async (scan) => {

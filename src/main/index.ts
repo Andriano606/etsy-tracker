@@ -8,9 +8,18 @@ import { IMAGE_SCHEME, createImageProtocolHandler } from './imageProtocol'
 import { type ImageStore, ImageStoreError, createMinioImageStore } from './imageStore'
 import { createImageSyncer } from './imageSync'
 import { onReviewSyncDone, registerIpc, startImageSync, type IpcContext } from './ipc'
+import { handleMcpBody } from './mcpProtocol'
+import { type McpService, createMcpService } from './mcpServer'
+import { createMcpTools, mcpServerInfo } from './mcpTools'
 import { createReviewSyncer } from './reviewSync'
 import { createScanner } from './scanner'
-import { type MinioConfig, createBuyerCountryStore, createKeyStore, createMinioSettingsStore } from './settings'
+import {
+  type MinioConfig,
+  createBuyerCountryStore,
+  createKeyStore,
+  createMcpSettingsStore,
+  createMinioSettingsStore
+} from './settings'
 
 // One fixed app name for dev and the packaged app alike: Linux safeStorage names
 // its keyring secret after it ("<name> Safe Storage") and X11 uses it as WM_CLASS
@@ -93,6 +102,7 @@ if (!app.requestSingleInstanceLock()) {
     const keyStore = createKeyStore(join(userData, 'settings.json'), safeStorage)
     const minio = createMinioSettingsStore(join(userData, 'settings.json'), safeStorage)
     const buyerCountry = createBuyerCountryStore(join(userData, 'settings.json'))
+    const mcpSettings = createMcpSettingsStore(join(userData, 'settings.json'), safeStorage)
 
     let quota: Quota | null = null
     const getWindow = (): Electron.WebContents | null => mainWindow?.webContents ?? null
@@ -139,22 +149,44 @@ if (!app.requestSingleInstanceLock()) {
       fetch: cdnFetch,
       onState: (s) => send('images:progress', s)
     })
-    protocol.handle(
-      IMAGE_SCHEME,
-      createImageProtocolHandler({
-        db,
-        getStore,
-        fetch: cdnFetch,
-        onMissing: (row) => {
-          markImageMissing(db, row)
-          void images.sync({ shopId: row.shop_id }).catch(() => undefined)
-        },
-        onReviewMissing: (row) => {
-          markReviewImageMissing(db, row.id)
-          void images.sync({ shopId: row.shop_id }).catch(() => undefined)
+    const imageHandler = createImageProtocolHandler({
+      db,
+      getStore,
+      fetch: cdnFetch,
+      onMissing: (row) => {
+        markImageMissing(db, row)
+        void images.sync({ shopId: row.shop_id }).catch(() => undefined)
+      },
+      onReviewMissing: (row) => {
+        markReviewImageMissing(db, row.id)
+        void images.sync({ shopId: row.shop_id }).catch(() => undefined)
+      }
+    })
+    protocol.handle(IMAGE_SCHEME, imageHandler)
+
+    // The local MCP server (off until enabled in the MCP modal): read-only
+    // tools over the same db; photos through the same handler as the window.
+    const mcpTools = createMcpTools({
+      db,
+      readImage: async (url) => {
+        const res = await imageHandler({ url } as Request)
+        if (!res.ok) return null
+        return {
+          data: Buffer.from(await res.arrayBuffer()),
+          mimeType: res.headers.get('content-type') ?? 'image/jpeg'
         }
-      })
-    )
+      }
+    })
+    const mcp: McpService = createMcpService({
+      getConfig: () => mcpSettings.get(),
+      ensureToken: () => mcpSettings.ensureToken(),
+      handle: (body) =>
+        handleMcpBody(
+          { info: mcpServerInfo(app.getVersion()), tools: mcpTools, onInitialize: (c) => mcp.noteClient(c) },
+          body
+        )
+    })
+    void mcp.apply()
 
     // Reviews of the whole shop, after each ok scan (ipc.ts) or on demand;
     // resumable and capped per run (reviewSync.ts).
@@ -183,7 +215,9 @@ if (!app.requestSingleInstanceLock()) {
         cached = null
       },
       reviews,
-      buyerCountry
+      buyerCountry,
+      mcpSettings,
+      mcp
     }
     ctxRef = ctx
     registerIpc(ctx)
@@ -196,6 +230,7 @@ if (!app.requestSingleInstanceLock()) {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
     })
     app.on('will-quit', () => {
+      void mcp.stop()
       try {
         db.close()
       } catch {

@@ -1,10 +1,30 @@
-import type { Listing } from '@shared/types'
-import { discountPercent, hasActiveDiscount, shownPriceValue } from '@shared/price'
-import type { SortMode } from './store'
+// Shared by the renderer's grid and the MCP server's product search (main), so
+// relative imports only (main has no @shared alias).
+import type { Listing } from './types'
+import { discountPercent, hasActiveDiscount, shownPriceValue } from './price'
+
+export type SortMode =
+  | 'newest'
+  | 'price-asc'
+  | 'price-desc'
+  /** Most favorited first. */
+  | 'favorites'
+  /** Most viewed first. */
+  | 'views'
+  /** Biggest favorers growth since the previous successful scan first. */
+  | 'favorites-growth'
+  /** Most reviews (stored) first. */
+  | 'reviews'
+  /** Most new reviews since the previous successful scan first. */
+  | 'reviews-growth'
+  /** Biggest active discount (buyer price) first. */
+  | 'discount'
 
 export interface FilterOptions {
   /** "Зі знижкою": only listings whose buyer price has an active discount. */
   discountOnly?: boolean
+  /** Search the description too (the MCP product search; the grid searches title/tags). */
+  searchDescription?: boolean
 }
 
 /**
@@ -22,7 +42,10 @@ export function filterListings(
   const q = search.trim().toLowerCase()
   let hit = q
     ? listings.filter(
-        (l) => l.title.toLowerCase().includes(q) || l.tags.some((t) => t.toLowerCase().includes(q))
+        (l) =>
+          l.title.toLowerCase().includes(q) ||
+          l.tags.some((t) => t.toLowerCase().includes(q)) ||
+          (!!opts.searchDescription && l.description.toLowerCase().includes(q))
       )
     : [...listings]
   if (opts.discountOnly) hit = hit.filter((l) => hasActiveDiscount(l.buyerPrice))

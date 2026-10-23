@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { waitFor } from '@testing-library/react'
 import { useStore } from '../../src/renderer/src/store'
 import type { ScanOutcome } from '../../src/shared/types'
-import { idleReviews, idleSync, minioDefault, mkChange, mkListing, mkPromotion, mkReview, mkScan, mkShop, setupRenderer, type Api } from './helpers'
+import { idleReviews, idleSync, mcpOff, mcpOn, minioDefault, mkChange, mkListing, mkPromotion, mkReview, mkScan, mkShop, setupRenderer, type Api } from './helpers'
 
 let api: Api
 beforeEach(() => {
@@ -84,6 +84,21 @@ describe('store', () => {
 })
 
 describe('store: images and MinIO', () => {
+  it('load() also reads the MCP server status (for the sidebar button); a failing read leaves it unknown', async () => {
+    api.getMcpStatus.mockResolvedValue(mcpOn())
+    await useStore.getState().load()
+    expect(useStore.getState().mcpStatus).toEqual(mcpOn())
+    api.getMcpStatus.mockRejectedValue(new Error('boom'))
+    await useStore.getState().load()
+    expect(useStore.getState()).toMatchObject({ mcpStatus: null, loaded: true })
+  })
+
+  it('setShowMcp / setMcpStatus', () => {
+    useStore.getState().setShowMcp(true)
+    useStore.getState().setMcpStatus(mcpOff)
+    expect(useStore.getState()).toMatchObject({ showMcp: true, mcpStatus: mcpOff })
+  })
+
   it('load() also reads the MinIO status; reloadShopData reads the image counts', async () => {
     api.listShops.mockResolvedValue([mkShop()])
     api.getImageStatus.mockResolvedValue({ counts: { total: 4, stored: 1, pending: 3, error: 0 }, sync: idleSync })

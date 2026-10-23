@@ -9,6 +9,8 @@ import type {
   KeyTestResult,
   Listing,
   ListingStatsPoint,
+  McpSettingsInput,
+  McpStatus,
   MinioSettingsInput,
   MinioStatus,
   MinioTestResult,
@@ -38,6 +40,30 @@ export const minioDefault: MinioStatus = {
   secretSource: 'default',
   encrypted: false
 }
+
+/** The MCP server as main reports it before it was ever enabled (no token yet). */
+export const mcpOff: McpStatus = {
+  enabled: false,
+  port: 9102,
+  url: 'http://127.0.0.1:9102/mcp',
+  token: null,
+  tokenEncrypted: false,
+  running: false,
+  error: null,
+  requests: 0,
+  lastRequestAt: null,
+  lastClient: null
+}
+
+/** Enabled and listening, with a token. */
+export const mcpOn = (over: Partial<McpStatus> = {}): McpStatus => ({
+  ...mcpOff,
+  enabled: true,
+  running: true,
+  token: 'tok_abc-123',
+  tokenEncrypted: true,
+  ...over
+})
 
 export const idleSync: ImageSyncState = {
   running: false,
@@ -291,6 +317,21 @@ export function makeApi() {
     getShopStats: vi.fn(
       async (shopId: number, range: StatsRange): Promise<ShopStatsPayload | null> => emptyStats(shopId, range)
     ),
+    getMcpStatus: vi.fn(async (): Promise<McpStatus> => mcpOff),
+    setMcp: vi.fn(
+      async (input: McpSettingsInput): Promise<{ ok: true; status: McpStatus } | { ok: false; error: string }> => {
+        const port = Number(input.port ?? 9102)
+        const enabled = !!input.enabled
+        return {
+          ok: true,
+          status: enabled
+            ? mcpOn({ port, url: `http://127.0.0.1:${port}/mcp` })
+            : { ...mcpOff, port, url: `http://127.0.0.1:${port}/mcp` }
+        }
+      }
+    ),
+    regenerateMcpToken: vi.fn(async (): Promise<McpStatus> => mcpOn({ token: 'tok_new-456' })),
+    copyText: vi.fn(async (_text: string): Promise<boolean> => true),
     openExternal: vi.fn(async () => true)
   }
 }
@@ -321,7 +362,9 @@ export function resetStore(): void {
     imageCounts: null,
     imageSync: null,
     minioStatus: null,
+    mcpStatus: null,
     showSettings: false,
+    showMcp: false,
     showAddShop: false,
     detailListing: null,
     historyScan: null,

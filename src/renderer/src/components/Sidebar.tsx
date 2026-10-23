@@ -21,6 +21,8 @@ export function Sidebar(): JSX.Element {
     selectShop,
     setShowAddShop,
     setShowSettings,
+    setShowMcp,
+    mcpStatus,
     scanAll
   } = useStore()
   const anyScanning = Object.values(scanning).some(Boolean)
@@ -29,6 +31,16 @@ export function Sidebar(): JSX.Element {
     <aside className="sidebar">
       <div className="sidebar-header">
         <h1>Etsy Tracker</h1>
+        <button
+          className="icon-btn mcp-btn"
+          title={mcpStatus?.running ? 'MCP-сервер для Claude: працює' : 'MCP-сервер для Claude'}
+          aria-label="MCP-сервер для Claude"
+          onClick={() => setShowMcp(true)}
+        >
+          MCP
+          {mcpStatus?.running && <span className="dot-ok" />}
+          {mcpStatus?.enabled && mcpStatus.error && <span className="dot-warn" />}
+        </button>
         <button
           className="icon-btn"
           title="Налаштування"

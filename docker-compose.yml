@@ -1,0 +1,45 @@
+# Local image store for Etsy Tracker (listing photos are copied here from
+# Etsy's CDN after every scan). Start: `docker compose up -d`.
+#
+#   S3 API   http://127.0.0.1:9100   (Settings → "Сховище зображень (MinIO)")
+#   Console  http://127.0.0.1:9101   (log in with MINIO_ROOT_USER / MINIO_ROOT_PASSWORD)
+#
+# Ports are bound to 127.0.0.1 only (9000/9001 are often taken on dev machines).
+# The defaults below match the app's built-in MinIO settings, so it works with
+# no configuration; override them in .env (see .env.example) and then enter the
+# same values in the app's Settings. The app creates the bucket itself.
+#
+# Security: the default root password is public (it is in this file and in the
+# app). Set your own MINIO_ROOT_PASSWORD in .env and enter it in the app's
+# Settings. Browser pages may not call the S3 API cross-origin: CORS allows
+# only the console's origin (MinIO's default would answer any origin).
+#
+# Image: pinned to the last official MinIO community release. MinIO Inc.
+# stopped publishing community images on Docker Hub in late 2025 (pulling
+# minio/minio now fails with "access denied"), so a machine without this image
+# cached must set MINIO_IMAGE in .env — see .env.example.
+name: etsy-tracker
+
+services:
+  minio:
+    image: ${MINIO_IMAGE:-minio/minio:RELEASE.2025-09-07T16-13-09Z}
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-etsytracker}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-etsytracker-minio-secret}
+      MINIO_API_CORS_ALLOW_ORIGIN: ${MINIO_CORS_ALLOW_ORIGIN:-http://127.0.0.1:9101}
+    ports:
+      - "127.0.0.1:${MINIO_API_PORT:-9100}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9101}:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  minio-data:

@@ -11,7 +11,17 @@ export function filterListings(listings: Listing[], search: string, sort: SortMo
       )
     : [...listings]
   const price = (l: Listing): number => priceValue(l.priceAmount, l.priceDivisor)
+  // Unknown popularity (null) sorts last; ties fall back to the newest listing.
+  const num = (v: number | null | undefined): number => (v == null ? -Infinity : v)
+  const byNum = (f: (l: Listing) => number | null | undefined) => (a: Listing, b: Listing) =>
+    num(f(b)) - num(f(a)) || b.listingId - a.listingId
   switch (sort) {
+    case 'favorites':
+      return hit.sort(byNum((l) => l.numFavorers))
+    case 'views':
+      return hit.sort(byNum((l) => l.views))
+    case 'favorites-growth':
+      return hit.sort(byNum((l) => l.favorersDelta))
     case 'price-asc':
       return hit.sort((a, b) => price(a) - price(b) || b.listingId - a.listingId)
     case 'price-desc':

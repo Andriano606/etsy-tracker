@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   STALE_AFTER_MS,
   formatAgo,
+  formatCount,
+  formatDelta,
   formatPrice,
   isStale,
   priceValue
@@ -39,5 +41,19 @@ describe('formatAgo / isStale', () => {
     expect(isStale(null, now)).toBe(true)
     expect(isStale(now - STALE_AFTER_MS + 1000, now)).toBe(false)
     expect(isStale(now - STALE_AFTER_MS - 1000, now)).toBe(true)
+  })
+})
+
+describe('formatCount / formatDelta', () => {
+  it('groups thousands; unknown is a dash', () => {
+    expect(formatCount(12345).replace(/\s/g, ' ')).toBe('12 345')
+    expect(formatCount(null)).toBe('—')
+  })
+  it('signs the delta; 0 and unknown render nothing', () => {
+    expect(formatDelta(12)).toBe('+12')
+    expect(formatDelta(-3)).toBe('−3')
+    expect(formatDelta(-0.05, 2)).toBe('−0,05')
+    expect(formatDelta(0)).toBe('')
+    expect(formatDelta(null)).toBe('')
   })
 })

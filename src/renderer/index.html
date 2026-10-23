@@ -3,11 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!-- Images only from Etsy's CDN (listing photos and shop icons live on
-         i.etsystatic.com); all API traffic goes through main, so no connect-src. -->
+    <!-- Images: listing photos via main's etsyimg:// protocol (MinIO copy or
+         Etsy CDN, resolved in main), shop icons straight from Etsy's CDN
+         (i.etsystatic.com). All API traffic goes through main, so no connect-src. -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:; img-src 'self' data: https://i.etsystatic.com https://*.etsystatic.com"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:; img-src 'self' data: etsyimg: https://i.etsystatic.com https://*.etsystatic.com"
     />
     <title>Etsy Tracker</title>
   </head>

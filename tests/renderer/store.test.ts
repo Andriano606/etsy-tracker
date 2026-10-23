@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { waitFor } from '@testing-library/react'
 import { useStore } from '../../src/renderer/src/store'
 import type { ScanOutcome } from '../../src/shared/types'
-import { mkChange, mkListing, mkScan, mkShop, setupRenderer, type Api } from './helpers'
+import { idleSync, minioDefault, mkChange, mkListing, mkScan, mkShop, setupRenderer, type Api } from './helpers'
 
 let api: Api
 beforeEach(() => {
@@ -80,5 +80,39 @@ describe('store', () => {
     await p
     expect(useStore.getState().error).toBe('Зачекайте')
     expect(useStore.getState().shops).toHaveLength(1)
+  })
+})
+
+describe('store: images and MinIO', () => {
+  it('load() also reads the MinIO status; reloadShopData reads the image counts', async () => {
+    api.listShops.mockResolvedValue([mkShop()])
+    api.getImageStatus.mockResolvedValue({ counts: { total: 4, stored: 1, pending: 3, error: 0 }, sync: idleSync })
+    await useStore.getState().load()
+    expect(useStore.getState().minioStatus).toEqual(minioDefault)
+    expect(api.getImageStatus).toHaveBeenCalledWith(1)
+    expect(useStore.getState().imageCounts).toEqual({ total: 4, stored: 1, pending: 3, error: 0 })
+  })
+
+  it('an image-sync event updates the state and, at the end, refreshes the open shop’s counts', async () => {
+    useStore.setState({ activeShopId: 1 })
+    api.getImageStatus.mockResolvedValue({ counts: { total: 4, stored: 4, pending: 0, error: 0 }, sync: idleSync })
+    useStore.getState().setImageSync({ ...idleSync, running: true, total: 4 })
+    useStore.getState().setImageSync({ ...idleSync, done: 4, total: 4 })
+    expect(useStore.getState().imageSync).toMatchObject({ running: false, done: 4 })
+    await waitFor(() => expect(useStore.getState().imageCounts?.stored).toBe(4))
+  })
+
+  it('syncImages asks main for the open shop', async () => {
+    useStore.setState({ activeShopId: 7 })
+    await useStore.getState().syncImages()
+    expect(api.syncImages).toHaveBeenCalledWith(7)
+    expect(useStore.getState().imageSync?.running).toBe(true)
+  })
+
+  it('saveMinio keeps the returned status; errors are passed back', async () => {
+    expect(await useStore.getState().saveMinio({ bucket: 'b-1' })).toEqual({ ok: true })
+    expect(useStore.getState().minioStatus?.secretSource).toBe('stored')
+    api.setMinio.mockResolvedValue({ ok: false, error: 'Назва бакета…' })
+    expect(await useStore.getState().saveMinio({ bucket: 'X' })).toEqual({ ok: false, error: 'Назва бакета…' })
   })
 })

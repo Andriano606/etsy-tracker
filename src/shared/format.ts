@@ -56,3 +56,16 @@ export const STALE_AFTER_MS = 6 * 60 * 60 * 1000
 export function isStale(lastScanAt: number | null | undefined, now: number = Date.now()): boolean {
   return lastScanAt == null || now - lastScanAt > STALE_AFTER_MS
 }
+
+/** 12345 → "12 345" (uk-UA grouping). */
+export function formatCount(n: number | null | undefined): string {
+  if (n == null) return '—'
+  return n.toLocaleString('uk-UA')
+}
+
+/** A change vs. the previous scan: "+12", "−3", "" for 0/unknown. */
+export function formatDelta(n: number | null | undefined, digits = 0): string {
+  if (n == null || n === 0 || !Number.isFinite(n)) return ''
+  const abs = Math.abs(n).toLocaleString('uk-UA', { maximumFractionDigits: digits })
+  return n > 0 ? `+${abs}` : `−${abs}`
+}

@@ -3,20 +3,45 @@
 
 import { ipcMain, shell } from 'electron'
 import type { WebContents } from 'electron'
-import type { KeyStatus, KeyTestResult, Quota, ScanOutcome } from '../shared/types'
+import type {
+  ImageCounts,
+  ImageSyncState,
+  KeyStatus,
+  KeyTestResult,
+  MinioSettingsInput,
+  MinioStatus,
+  MinioTestResult,
+  Quota,
+  ScanOutcome
+} from '../shared/types'
 import { isAllowedExternalUrl } from '../shared/externalUrl'
 import {
   type Db,
   deleteShop,
   getListing,
+  getListingRaw,
+  imageCounts,
   listActiveListings,
+  listListingStats,
   listScanChanges,
   listScans,
-  listShopSummaries
+  listShopObjectKeys,
+  listShopSummaries,
+  resetStoredImages
 } from './db'
 import { EtsyApiError, type EtsyClient } from './etsyApi'
+import { type ImageStore, describeStoreError } from './imageStore'
+import type { ImageSyncer } from './imageSync'
 import type { Scanner } from './scanner'
-import { composeApiKey, type KeyStore } from './settings'
+import {
+  type KeyStore,
+  type MinioConfig,
+  type MinioSettingsStore,
+  MINIO_DEFAULTS,
+  composeApiKey,
+  normalizeMinioEndpoint,
+  validateBucketName
+} from './settings'
 import { addShop } from './shops'
 
 export interface IpcContext {
@@ -26,6 +51,19 @@ export interface IpcContext {
   scanner: Scanner
   getQuota: () => Quota | null
   getWindow: () => WebContents | null
+  /** MinIO settings (secret stays in main). */
+  minio: MinioSettingsStore
+  /** The background image copier (Etsy CDN → MinIO). */
+  images: ImageSyncer
+  /** Build a store for a config — used by "Перевірити з'єднання". */
+  makeStore: (cfg: MinioConfig) => Promise<ImageStore>
+  /** MinIO settings were saved: drop the cached store. */
+  onMinioChanged: () => void
+}
+
+export interface ImageStatus {
+  counts: ImageCounts
+  sync: ImageSyncState
 }
 
 export function sendToRenderer(ctx: IpcContext, channel: string, payload: unknown): void {
@@ -65,11 +103,51 @@ export async function scanAll(ctx: IpcContext): Promise<ScanOutcome[]> {
     out.push(await ctx.scanner.scanShop(s.id))
     sendToRenderer(ctx, 'scan:state', { shopId: s.id, running: false })
     notifyShopsChanged(ctx)
-    // A bad key fails every shop the same way — stop instead of repeating it.
     const last = out[out.length - 1]
+    if (last.ok) startImageSync(ctx, s.id)
+    // A bad key fails every shop the same way — stop instead of repeating it.
     if (!last.ok && /API-ключ/.test(last.error)) break
   }
   return out
+}
+
+/**
+ * After a successful scan: copy its new/changed images to MinIO in the
+ * background. Never awaited by the scan and never able to fail it.
+ */
+export function startImageSync(ctx: Pick<IpcContext, 'images'>, shopId: number | null, force = false): void {
+  ctx.images?.sync({ shopId, force }).catch(() => undefined)
+}
+
+/** Typed (unsaved) settings over the stored ones; throws a Ukrainian message on bad input. */
+export function mergeMinioConfig(stored: MinioConfig | null, input: MinioSettingsInput = {}): MinioConfig {
+  const secretKey = input.secretKey?.trim() || stored?.secretKey
+  if (!secretKey) {
+    throw new Error('Збережений Secret key не вдалося розшифрувати — введіть його ще раз.')
+  }
+  return {
+    enabled: input.enabled ?? stored?.enabled ?? true,
+    endpoint: normalizeMinioEndpoint(input.endpoint ?? stored?.endpoint ?? MINIO_DEFAULTS.endpoint),
+    accessKey: input.accessKey?.trim() || stored?.accessKey || MINIO_DEFAULTS.accessKey,
+    secretKey,
+    bucket: validateBucketName(input.bucket ?? stored?.bucket ?? MINIO_DEFAULTS.bucket)
+  }
+}
+
+/** Connect with the given (or stored) settings: signed request + bucket creation. */
+export async function testMinio(
+  ctx: Pick<IpcContext, 'minio' | 'makeStore'>,
+  input?: MinioSettingsInput
+): Promise<MinioTestResult> {
+  try {
+    const cfg = mergeMinioConfig(ctx.minio.getConfig(), input)
+    const store = await ctx.makeStore(cfg)
+    await store.ping()
+    await store.ensureBucket()
+    return { ok: true, message: `З’єднання є: ${cfg.endpoint}, бакет «${cfg.bucket}» готовий.` }
+  } catch (e) {
+    return { ok: false, message: describeStoreError(e) }
+  }
 }
 
 export function registerIpc(ctx: IpcContext): void {
@@ -101,20 +179,26 @@ export function registerIpc(ctx: IpcContext): void {
     if (scanner.isScanning(shopId)) {
       return { ok: false, error: 'Зачекайте, доки сканування цього магазину завершиться.' }
     }
+    const keys = listShopObjectKeys(db, shopId)
     deleteShop(db, shopId)
+    void ctx.images.removeObjects(keys)
     notifyShopsChanged(ctx)
     return { ok: true }
   })
 
   ipcMain.handle('listings:list', (_e, shopId: number) => listActiveListings(db, shopId))
   ipcMain.handle('listing:get', (_e, listingId: number) => getListing(db, listingId))
+  ipcMain.handle('listing:raw', (_e, listingId: number) => getListingRaw(db, listingId))
+  ipcMain.handle('listing:stats', (_e, listingId: number) => listListingStats(db, listingId))
   ipcMain.handle('scans:list', (_e, shopId: number) => listScans(db, shopId))
   ipcMain.handle('scan:changes', (_e, scanId: number) => listScanChanges(db, scanId))
 
   ipcMain.handle('scan:shop', async (_e, shopId: number) => {
     sendToRenderer(ctx, 'scan:state', { shopId, running: true })
     try {
-      return await scanner.scanShop(shopId)
+      const res = await scanner.scanShop(shopId)
+      if (res.ok) startImageSync(ctx, shopId)
+      return res
     } finally {
       sendToRenderer(ctx, 'scan:state', { shopId, running: false })
       notifyShopsChanged(ctx)
@@ -123,6 +207,41 @@ export function registerIpc(ctx: IpcContext): void {
   ipcMain.handle('scan:all', () => scanAll(ctx))
 
   ipcMain.handle('quota:get', () => ctx.getQuota())
+
+  ipcMain.handle('minio:status', (): MinioStatus => ctx.minio.status())
+  ipcMain.handle(
+    'minio:set',
+    (_e, input: MinioSettingsInput): { ok: true; status: MinioStatus } | { ok: false; error: string } => {
+      try {
+        const before = ctx.minio.status()
+        const status = ctx.minio.set(input ?? {})
+        ctx.onMinioChanged()
+        // Another server or bucket holds none of our copies: queue them all again.
+        if (before.endpoint !== status.endpoint || before.bucket !== status.bucket) {
+          resetStoredImages(db)
+        }
+        // Always run: a disabled store finishes at once with `disabled`, which
+        // also clears a stale MinIO error in the renderer.
+        startImageSync(ctx, null)
+        return { ok: true, status }
+      } catch (e) {
+        return { ok: false, error: (e as Error).message }
+      }
+    }
+  )
+  ipcMain.handle('minio:test', (_e, input?: MinioSettingsInput) => testMinio(ctx, input))
+
+  ipcMain.handle(
+    'images:status',
+    (_e, shopId?: number | null): ImageStatus => ({
+      counts: imageCounts(db, shopId ?? null),
+      sync: ctx.images.state()
+    })
+  )
+  ipcMain.handle('images:sync', (_e, shopId?: number | null): ImageSyncState => {
+    startImageSync(ctx, shopId ?? null, true)
+    return ctx.images.state()
+  })
 
   ipcMain.handle('shell:openExternal', async (_e, url: string): Promise<boolean> => {
     if (!isAllowedExternalUrl(url)) return false

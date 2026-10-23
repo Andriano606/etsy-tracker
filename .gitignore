@@ -6,3 +6,6 @@ dist/
 
 # TypeScript incremental build cache
 *.tsbuildinfo
+
+# Local docker-compose overrides (MinIO credentials)
+.env

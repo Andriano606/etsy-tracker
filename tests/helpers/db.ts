@@ -1,4 +1,4 @@
-import type { Listing, Shop } from '../../src/shared/types'
+import type { Listing, ListingDetails, Shop } from '../../src/shared/types'
 import { type Db, type ListingInput, insertShop, openDb } from '../../src/main/db'
 
 /** A fresh, migrated, real SQLite database in memory. */
@@ -38,12 +38,58 @@ export const mkInput = (id: number, over: Partial<ListingInput> = {}): ListingIn
   etsyCreatedAt: 1_700_000_000 + id,
   etsyUpdatedAt: 1_700_000_000 + id,
   images: [],
+  state: 'active',
+  views: null,
+  numFavorers: null,
+  featuredRank: null,
+  details: mkDetails(),
+  detailsFetched: true,
+  ...over
+})
+
+/** Every ListingDetails field empty — a listing read with schema v2. */
+export const mkDetails = (over: Partial<ListingDetails> = {}): ListingDetails => ({
+  userId: null,
+  shopSectionId: null,
+  taxonomyId: null,
+  listingType: 'physical',
+  whoMade: 'i_did',
+  whenMade: 'made_to_order',
+  isSupply: false,
+  materials: [],
+  styles: [],
+  skus: [],
+  processingMin: null,
+  processingMax: null,
+  isCustomizable: false,
+  isPersonalizable: false,
+  personalization: null,
+  hasVariations: false,
+  isPrivate: false,
+  isTaxable: true,
+  nonTaxable: false,
+  shouldAutoRenew: true,
+  fileData: null,
+  language: 'en-US',
+  shippingProfileId: null,
+  returnPolicyId: null,
+  readinessStateId: null,
+  itemWeight: null,
+  itemWeightUnit: null,
+  itemLength: null,
+  itemWidth: null,
+  itemHeight: null,
+  itemDimensionsUnit: null,
+  originalCreatedAt: null,
+  endingAt: null,
+  stateAt: null,
   ...over
 })
 
 export const mkListing = (id: number, over: Partial<Listing> = {}): Listing => ({
   ...mkInput(id),
   images: [],
+  videos: [],
   firstSeenAt: 0,
   lastSeenAt: 0,
   removedAt: null,

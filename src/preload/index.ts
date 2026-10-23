@@ -1,9 +1,15 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
   AddShopResult,
+  ImageCounts,
+  ImageSyncState,
   KeyStatus,
   KeyTestResult,
   Listing,
+  ListingStatsPoint,
+  MinioSettingsInput,
+  MinioStatus,
+  MinioTestResult,
   Quota,
   ScanChange,
   ScanOutcome,
@@ -40,6 +46,12 @@ const api = {
   listListings: (shopId: number): Promise<Listing[]> => ipcRenderer.invoke('listings:list', shopId),
   getListing: (listingId: number): Promise<Listing | null> =>
     ipcRenderer.invoke('listing:get', listingId),
+  /** The latest full Etsy API object stored for the listing (JSON text). */
+  getListingRaw: (listingId: number): Promise<string | null> =>
+    ipcRenderer.invoke('listing:raw', listingId),
+  /** One listing's popularity per successful scan, oldest first. */
+  getListingStats: (listingId: number): Promise<ListingStatsPoint[]> =>
+    ipcRenderer.invoke('listing:stats', listingId),
   listScans: (shopId: number): Promise<ScanSummary[]> => ipcRenderer.invoke('scans:list', shopId),
   getScanChanges: (scanId: number): Promise<ScanChange[]> =>
     ipcRenderer.invoke('scan:changes', scanId),
@@ -51,6 +63,21 @@ const api = {
     subscribe('scan:state', cb),
 
   getQuota: (): Promise<Quota | null> => ipcRenderer.invoke('quota:get'),
+
+  getMinioStatus: (): Promise<MinioStatus> => ipcRenderer.invoke('minio:status'),
+  setMinio: (
+    input: MinioSettingsInput
+  ): Promise<{ ok: true; status: MinioStatus } | { ok: false; error: string }> =>
+    ipcRenderer.invoke('minio:set', input),
+  /** Connect with the typed (unsaved) values over the stored ones. */
+  testMinio: (input?: MinioSettingsInput): Promise<MinioTestResult> =>
+    ipcRenderer.invoke('minio:test', input),
+  getImageStatus: (shopId?: number | null): Promise<{ counts: ImageCounts; sync: ImageSyncState }> =>
+    ipcRenderer.invoke('images:status', shopId),
+  /** Start copying pending/failed images to MinIO (all shops when omitted). */
+  syncImages: (shopId?: number | null): Promise<ImageSyncState> =>
+    ipcRenderer.invoke('images:sync', shopId),
+  onImageSync: (cb: (s: ImageSyncState) => void): (() => void) => subscribe('images:progress', cb),
   onQuota: (cb: (q: Quota) => void): (() => void) => subscribe('quota:changed', cb),
 
   /** Opens https etsy.com URLs in the system browser; false if refused. */

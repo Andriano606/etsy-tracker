@@ -5,7 +5,7 @@ import { ShopView } from '../../../src/renderer/src/components/ShopView'
 import { ConfirmModal } from '../../../src/renderer/src/components/ConfirmModal'
 import { HistoryModal } from '../../../src/renderer/src/components/ScanHistory'
 import { useStore } from '../../../src/renderer/src/store'
-import { mkChange, mkListing, mkScan, mkShop, setupRenderer, withKey, type Api } from '../helpers'
+import { idleSync, mkChange, mkListing, mkScan, mkShop, setupRenderer, withKey, type Api } from '../helpers'
 
 let api: Api
 beforeEach(() => {
@@ -69,7 +69,8 @@ describe('ShopView', () => {
     expect(screen.getByText('Нових товарів немає.')).toBeInTheDocument()
     expect(screen.getByText('Зникли: 1')).toBeInTheDocument()
     expect(screen.getByText('Gone mug')).toBeInTheDocument()
-    expect(screen.getByText('Змінились (ціна/назва): 1')).toBeInTheDocument()
+    expect(screen.getByText(/^Змінились: 1/)).toBeInTheDocument()
+    expect(screen.getByTestId('changed-summary')).toHaveTextContent('(ціна)')
     expect(screen.getByText(/10,00/)).toBeInTheDocument()
     expect(screen.getByText(/15,00/)).toBeInTheDocument()
   })
@@ -209,5 +210,104 @@ describe('HistoryModal', () => {
     expect(screen.getByText('Came back')).toBeInTheDocument()
     expect(screen.getAllByRole('heading', { level: 3 }).map((h) => h.textContent)).toHaveLength(2)
     expect(screen.queryByText('NEW')).toBeNull()
+  })
+})
+
+describe('ShopView: popularity, image sync, what changed', () => {
+  it('cards show ❤ favorers with +N growth, 👁 views and ★ featured rank', () => {
+    show({
+      shops: [mkShop({ lastOkScan: mkScan() })],
+      listings: [
+        mkListing(1, { numFavorers: 87, favorersDelta: 5, views: 1342, featuredRank: 2 }),
+        mkListing(2, { numFavorers: 3, favorersDelta: 0, views: null, featuredRank: -1 })
+      ]
+    })
+    const [b, a] = screen.getAllByTestId('card-stats') // newest (#2) first
+    expect(a.textContent!.replace(/\s/g, ' ')).toBe('❤ 87 +5👁 1 342★ 2')
+    expect(b.textContent).toBe('❤ 3')
+  })
+
+  it('sorts by favorers, views and favorers growth', () => {
+    show({
+      shops: [mkShop({ lastOkScan: mkScan() })],
+      listings: [
+        mkListing(1, { title: 'A', numFavorers: 1, views: 300, favorersDelta: 9 }),
+        mkListing(2, { title: 'B', numFavorers: 50, views: 10, favorersDelta: 1 }),
+        mkListing(3, { title: 'C', numFavorers: 20, views: 200, favorersDelta: 4 })
+      ]
+    })
+    const titles = () => screen.getAllByTestId('listing-card').map((c) => c.querySelector('.card-title')!.textContent)
+    const sort = screen.getByLabelText('Сортування')
+    expect(screen.getByRole('option', { name: 'Найпопулярніші (обране)' })).toBeInTheDocument()
+    fireEvent.change(sort, { target: { value: 'favorites' } })
+    expect(titles()).toEqual(['B', 'C', 'A'])
+    fireEvent.change(sort, { target: { value: 'views' } })
+    expect(titles()).toEqual(['A', 'C', 'B'])
+    fireEvent.change(sort, { target: { value: 'favorites-growth' } })
+    expect(titles()).toEqual(['A', 'C', 'B'])
+  })
+
+  it('the header shows shop stats with deltas', () => {
+    show({
+      shops: [
+        mkShop({
+          lastOkScan: mkScan(),
+          stats: { numFavorers: 1530, transactionSoldCount: 2410, reviewCount: 512, reviewAverage: 4.9, listingActiveCount: 3 },
+          statsDelta: { numFavorers: 10, transactionSoldCount: 3, reviewCount: 0, reviewAverage: -0.05, listingActiveCount: 0 }
+        })
+      ]
+    })
+    const t = screen.getByTestId('shop-stats').textContent!.replace(/\s/g, ' ')
+    expect(t).toContain('Продано: 2 410 +3')
+    expect(t).toContain('★ 4,9 −0,05 (512 відгуків)')
+    expect(t).toContain('❤ 1 530 +10')
+  })
+
+  it('no stats yet → no stats line', () => {
+    show({ shops: [mkShop({ lastOkScan: mkScan(), stats: null })] })
+    expect(screen.queryByTestId('shop-stats')).toBeNull()
+  })
+
+  it('image sync status: "Фото: stored/total", errors, progress, and a manual retry', async () => {
+    show({
+      shops: [mkShop({ lastOkScan: mkScan() })],
+      imageCounts: { total: 430, stored: 120, pending: 308, error: 2 },
+      imageSync: { ...idleSync, lastError: 'MinIO недоступний (ECONNREFUSED). Запустіть: docker compose up -d' }
+    })
+    const line = screen.getByTestId('image-sync')
+    expect(line).toHaveTextContent('Фото: 120/430')
+    expect(line).toHaveTextContent('помилок: 2')
+    expect(line).toHaveTextContent(/MinIO недоступний/)
+    await act(async () => {
+      fireEvent.click(screen.getByText('Синхронізувати фото'))
+    })
+    expect(api.syncImages).toHaveBeenCalledWith(1)
+    act(() => {
+      useStore.setState({ imageSync: { ...idleSync, running: true, done: 12, total: 310 } })
+    })
+    expect(screen.getByTestId('image-sync')).toHaveTextContent('синхронізація 12/310')
+    expect(screen.queryByText('Синхронізувати фото')).toBeNull()
+  })
+
+  it('"Змінились" says what changed, per group and per listing', () => {
+    const a = mkListing(5, { title: 'Mug' })
+    const b = mkListing(6, { title: 'Plate' })
+    show({
+      shops: [mkShop({ lastOkScan: mkScan({ changed: 2 }) })],
+      listings: [a, b],
+      lastChanges: [
+        mkChange(1, 'changed', a, {
+          oldValue: { priceAmount: 1000, priceDivisor: 100, currency: 'UAH', description: 'old', images: [1, 2] },
+          newValue: { priceAmount: 1500, priceDivisor: 100, currency: 'UAH', description: 'new', images: [3, 1, 2] }
+        }),
+        mkChange(2, 'changed', b, { oldValue: { tags: ['a'] }, newValue: { tags: ['a', 'b'] } })
+      ]
+    })
+    expect(screen.getByTestId('changed-summary')).toHaveTextContent('(ціна, опис, фото, теги)')
+    const rows = screen.getAllByTestId('change-fields')
+    expect(rows[0]).toHaveTextContent('Змінилось: ціна, опис, фото')
+    expect(rows[1]).toHaveTextContent('Змінилось: теги')
+    expect(screen.getByText(/Фото: 2 → 3 \(нових 1\)/)).toBeInTheDocument()
+    expect(screen.getByText('Теги: +b')).toBeInTheDocument()
   })
 })

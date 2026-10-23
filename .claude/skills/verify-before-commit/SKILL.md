@@ -50,16 +50,21 @@ a test asserting it. If coverage is **missing or incomplete**:
     (`fakeFetch`, `queuedFetch`); keep `tests/fixtures/*.json` shaped exactly
     like Etsy's responses
   - use a **real in-memory `node:sqlite` DB** (`tests/helpers/db.ts`:
-    `memDb`, `seedShop`, `mkInput`, `mkListing`) — don't mock the database
+    `memDb`, `seedShop`, `mkInput`, `mkListing`, `mkDetails`) — don't mock the database
+  - **never hit MinIO or Etsy's CDN** in tests — use `tests/helpers/fakeImageStore.ts`
+    (`FakeImageStore` with `down` / `failPutsAfter`, `fakeCdn`, `cdnBytes`); the real
+    MinIO client (`createMinioImageStore`) is checked live against
+    `docker compose up -d` with a scratch script outside the repo
   - mock Electron's safeStorage with `tests/helpers/safeStorage.ts`
     (`fakeSafeStorage(available, backend)`) and `electron` itself via
     `vi.mock` + `vi.hoisted` (see `tests/main/ipc.test.ts`)
   - a schema change = a **new** entry in `MIGRATIONS` (never edit a shipped one)
-    plus a test in `tests/main/db.test.ts`
+    plus a test in `tests/main/db.test.ts` that starts from a real database at the
+    previous version (`migrate(db, MIGRATIONS.slice(0, n))`, insert data, migrate, assert)
   - renderer tests use `// @vitest-environment jsdom` and
     `tests/renderer/helpers.ts` (`setupRenderer`, `makeApi`, `mkShop`,
-    `mkScan`, `mkListing`, `mkChange`); a new `window.api` method needs a stub
-    in `makeApi()`; wrap clicks that trigger async store updates in
+    `mkScan`, `mkListing`, `mkChange`, `minioDefault`, `idleSync`); a new
+    `window.api` method needs a stub in `makeApi()`; wrap clicks that trigger async store updates in
     `act(async () => …)`
 - Cover the happy path **and** the error/edge branches (the existing suite tests
   both — e.g. bad key (401/403), 404 shop, 429 exhaustion, failure mid-scan
@@ -104,4 +109,4 @@ the required `Co-Authored-By` trailer.)
 - **Never** disable, `.skip`, or delete a failing test just to pass the gate.
 - New behavior without a test is not done — add the test or flag it explicitly.
 - Never commit a real Etsy API key (keystring or shared secret) — not in code,
-  fixtures, or test files.
+  fixtures, or test files. Never commit `.env` (MinIO credentials).

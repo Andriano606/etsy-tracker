@@ -1,21 +1,27 @@
-// Scan one shop: read every active listing from Etsy, fetch details (images) for
-// what is new or modified, diff against the stored snapshot and write it all in
-// ONE transaction. All network I/O happens before the transaction, so a failure
-// anywhere (network, 429 exhaustion, API error mid-pagination) leaves the stored
-// listings untouched — only the scan row is marked 'error'.
+// Scan one shop: read every active listing from Etsy, fetch details (views,
+// images, videos, personalization) for all of them, diff against the stored
+// snapshot and write it all in ONE transaction. All Etsy API I/O happens before
+// the transaction, so a failure anywhere (network, 429 exhaustion, API error
+// mid-pagination) leaves the stored listings untouched — only the scan row is
+// marked 'error'. Copying images to MinIO is NOT part of a scan: it runs after
+// the commit (imageSync.ts) and can never fail or roll back a scan.
 
-import type { Listing, ScanOutcome, ScanProgress, Shop, TrackedFields } from '../shared/types'
+import type { Listing, ScanOutcome, ScanProgress, ShopStats, TrackedFields } from '../shared/types'
 import {
   type Db,
   type ListingInput,
+  type ShopInput,
   failStaleRunningScans,
   finishScanError,
   finishScanOk,
   getScan,
+  getListingViews,
   getShop,
   hasOkScan,
   insertChange,
+  insertListingStats,
   insertRunningScan,
+  insertShopStats,
   listAllListings,
   markListingRemoved,
   transaction,
@@ -23,9 +29,7 @@ import {
   upsertListing
 } from './db'
 import { EtsyApiError, type EtsyClient } from './etsyApi'
-import { mapListing, mapShop } from './mapEtsy'
-
-// ----------------------------------------------------------------- pure diff
+import { listingStats, mapListing, mapShop, shopStats } from './mapEtsy'
 
 export interface ChangedListing {
   listing: ListingInput
@@ -38,23 +42,59 @@ export interface DiffResult {
   added: ListingInput[]
   /** Stored as removed, active again. */
   returned: ListingInput[]
-  /** Active before and now, with a different title or price. */
+  /** Active before and now, with different content (see `trackedDiff`). */
   changed: ChangedListing[]
   /** Active before, not active now (empty when removal detection is off). */
   removed: Listing[]
 }
 
-/** Title/price differences between the stored and the fresh listing; null if none. */
+/** Longest description kept in a change row (old and new each). */
+export const DESCRIPTION_EXCERPT = 1000
+
+export function excerpt(text: string, max = DESCRIPTION_EXCERPT): string {
+  return text.length <= max ? text : `${text.slice(0, max)}…`
+}
+
+const sorted = (a: readonly string[]): string[] => [...a].sort()
+const sameList = <T>(a: readonly T[], b: readonly T[]): boolean =>
+  a.length === b.length && a.every((x, i) => x === b[i])
+
+/** Weight + dimensions + units as one comparable string; null when none is set. */
+export function dimensionsOf(d: Listing['details']): string | null {
+  if (!d) return null
+  const dims = [d.itemLength, d.itemWidth, d.itemHeight]
+  const parts: string[] = []
+  if (d.itemWeight != null) parts.push(`${d.itemWeight} ${d.itemWeightUnit ?? ''}`.trim())
+  if (dims.some((x) => x != null)) {
+    parts.push(`${dims.map((x) => x ?? '?').join('×')} ${d.itemDimensionsUnit ?? ''}`.trim())
+  }
+  return parts.length ? parts.join(', ') : null
+}
+
+/**
+ * Content differences between the stored and the fresh listing; null if none.
+ *
+ * Always compared: title, price (by value), description, tags (as a set).
+ * Images (listing_image_ids in rank order): when this scan fetched them and
+ * the stored row had them. The other content fields (materials, styles,
+ * who/when made, category, section, type, processing time, personalization
+ * flags/questions, variations, weight/dimensions, videos) only when the stored
+ * row was already written with schema v2 (`details` present) — a v1 row has
+ * none of them, so the first v2 rescan must not flag every listing.
+ * Never a change: views, favorers, featured rank (popularity) and quantity
+ * (stock) — those are recorded per scan in listing_stats.
+ */
 export function trackedDiff(
   prev: Listing,
   next: ListingInput
 ): { old: TrackedFields; new: TrackedFields } | null {
   const o: TrackedFields = {}
   const n: TrackedFields = {}
-  if (prev.title !== next.title) {
-    o.title = prev.title
-    n.title = next.title
+  const set = <K extends keyof TrackedFields>(k: K, a: TrackedFields[K], b: TrackedFields[K]): void => {
+    o[k] = a
+    n[k] = b
   }
+  if (prev.title !== next.title) set('title', prev.title, next.title)
   const priceChanged =
     prev.priceAmount * next.priceDivisor !== next.priceAmount * prev.priceDivisor ||
     prev.currency !== next.currency
@@ -65,6 +105,55 @@ export function trackedDiff(
     n.priceAmount = next.priceAmount
     n.priceDivisor = next.priceDivisor
     n.currency = next.currency
+  }
+  if (prev.description !== next.description) {
+    set('description', excerpt(prev.description), excerpt(next.description))
+  }
+  if (!sameList(sorted(prev.tags), sorted(next.tags))) set('tags', prev.tags, next.tags)
+
+  const pd = prev.details ?? null
+  if (next.images && (pd || prev.images.length > 0)) {
+    const a = prev.images.map((i) => i.id)
+    const b = next.images.map((i) => i.id)
+    if (!sameList(a, b)) set('images', a, b)
+  }
+
+  const nd = next.details ?? null
+  if (pd && nd) {
+    if (!sameList(sorted(pd.materials), sorted(nd.materials))) set('materials', pd.materials, nd.materials)
+    if (!sameList(sorted(pd.styles), sorted(nd.styles))) set('styles', pd.styles, nd.styles)
+    const scalars = [
+      'whoMade',
+      'whenMade',
+      'taxonomyId',
+      'shopSectionId',
+      'listingType',
+      'isPersonalizable',
+      'isCustomizable',
+      'hasVariations'
+    ] as const
+    for (const k of scalars) {
+      if ((pd[k] ?? null) !== (nd[k] ?? null)) set(k, pd[k] as never, nd[k] as never)
+    }
+    if (pd.processingMin !== nd.processingMin || pd.processingMax !== nd.processingMax) {
+      set('processingMin', pd.processingMin, nd.processingMin)
+      set('processingMax', pd.processingMax, nd.processingMax)
+    }
+    const da = dimensionsOf(pd)
+    const db = dimensionsOf(nd)
+    if (da !== db) set('dimensions', da, db)
+    // Stored null is ambiguous (not fetched vs. none) — compare only a known
+    // previous value against a fresh details answer.
+    const pa = pd.personalization
+    const personalizationFetched = next.personalizationFetched ?? next.detailsFetched
+    if (personalizationFetched && pa != null && JSON.stringify(pa) !== JSON.stringify(nd.personalization ?? null)) {
+      set('personalization', pa, nd.personalization ?? null)
+    }
+    if (next.videos && prev.videos) {
+      const va = prev.videos.map((v) => v.id).sort((x, y) => x - y)
+      const vb = next.videos.map((v) => v.id).sort((x, y) => x - y)
+      if (!sameList(va, vb)) set('videos', va, vb)
+    }
   }
   return Object.keys(n).length ? { old: o, new: n } : null
 }
@@ -94,8 +183,6 @@ export function diffListings(
   return out
 }
 
-// --------------------------------------------------------------- apply (tx)
-
 export interface ApplyScanInput {
   shopId: number
   scanId: number
@@ -105,13 +192,19 @@ export interface ApplyScanInput {
   truncated: boolean
   now: number
   /** Fresh Etsy-side shop fields, written in the same transaction. */
-  shopInfo?: Omit<Shop, 'addedAt'>
+  shopInfo?: Omit<ShopInput, 'addedAt'>
+  /** Shop popularity of this scan → shop_stats. */
+  shopStats?: ShopStats
 }
 
-/** Write a finished scan: upserts, removals, change rows and the scan totals — atomically. */
+/**
+ * Write a finished scan atomically: shop info, upserts (with images/videos),
+ * removals, change rows, listing_stats/shop_stats (baseline included) and the
+ * scan totals.
+ */
 export function applyScan(db: Db, a: ApplyScanInput): void {
   transaction(db, () => {
-    if (a.shopInfo) updateShopInfo(db, a.shopInfo)
+    if (a.shopInfo) updateShopInfo(db, a.shopInfo, a.now)
     for (const l of a.current) upsertListing(db, l, a.now)
     for (const r of a.diff.removed) markListingRemoved(db, r.listingId, a.now)
     if (!a.isBaseline) {
@@ -126,6 +219,17 @@ export function applyScan(db: Db, a: ApplyScanInput): void {
         insertChange(db, a.scanId, r.listingId, 'removed', null, null)
       }
     }
+    // Views unknown this scan (no details answer, or a distrusted 0): the
+    // listing row kept its last value — carry it so the history stays continuous.
+    insertListingStats(
+      db,
+      a.scanId,
+      a.current.map((l) => {
+        const s = listingStats(l)
+        return s.views == null ? { ...s, views: getListingViews(db, l.listingId) } : s
+      })
+    )
+    if (a.shopStats) insertShopStats(db, a.scanId, a.shopId, a.shopStats)
     finishScanOk(db, a.scanId, a.now, {
       isBaseline: a.isBaseline,
       truncated: a.truncated,
@@ -138,7 +242,19 @@ export function applyScan(db: Db, a: ApplyScanInput): void {
   })
 }
 
-// ------------------------------------------------------------------- scanner
+/**
+ * Etsy's `views` is a lifetime count tabulated once a day; the OAS says a 0
+ * may also mean "not yet tabulated, not active during the last tabulation or
+ * an error fetching the value". A 0 for a listing that already had views is
+ * therefore treated as unknown (null → the stored value is kept, no negative
+ * delta, no bogus listing_stats point).
+ */
+export function distrustZeroViews(prev: Listing[], current: ListingInput[]): void {
+  const before = new Map(prev.map((p) => [p.listingId, p.views]))
+  for (const l of current) {
+    if (l.views === 0 && (before.get(l.listingId) ?? 0) > 0) l.views = null
+  }
+}
 
 export interface ScannerDeps {
   db: Db
@@ -180,34 +296,25 @@ export function createScanner(deps: ScannerDeps): Scanner {
     )
 
     const prev = listAllListings(db, shopId)
-    const prevById = new Map(prev.map((l) => [l.listingId, l]))
 
-    // Details (images) only for what is new, returning, modified, or image-less.
-    // A listing deleted since paging is just absent from `details` (kept with
-    // its stored images, or none) — getListingsByIds tolerates batch 404s.
-    const needDetails = active.listings
-      .filter((l) => {
-        const p = prevById.get(l.listing_id)
-        if (!p || p.removedAt != null || p.images.length === 0) return true
-        const updated = l.updated_timestamp ?? l.last_modified_timestamp ?? null
-        return updated !== p.etsyUpdatedAt
-      })
-      .map((l) => l.listing_id)
-    if (needDetails.length) {
-      progress({ shopId, phase: 'details', done: 0, total: needDetails.length, label: `Деталі 0/${needDetails.length}` })
+    // Details for EVERY active listing: views exist only in the
+    // with-associations schema, and images/videos/personalization come from
+    // here too — ≈1 request per 100 listings on every scan.
+    const ids = active.listings.map((l) => l.listing_id)
+    if (ids.length) {
+      progress({ shopId, phase: 'details', done: 0, total: ids.length, label: `Деталі 0/${ids.length}` })
     }
-    const details = await client.getListingsByIds(needDetails, (done, total) =>
+    const details = await client.getListingsByIds(ids, (done, total) =>
       progress({ shopId, phase: 'details', done, total, label: `Деталі ${done}/${total}` })
     )
 
-    const current = active.listings.map((l) => {
-      const d = details.get(l.listing_id)
-      return mapListing(l, d ? (d.images ?? []) : null, currency)
-    })
+    // A listing deleted between paging and the details call (404) is still
+    // saved from its page data, keeping its stored images/views.
+    const includes = client.detailIncludes()
+    const current = active.listings.map((l) =>
+      mapListing(l, details.get(l.listing_id) ?? null, currency, includes)
+    )
 
-    // Listings that look gone may only have shifted between pages while we read.
-    // Re-check them through the batch endpoint before calling them removed. Ids
-    // Etsy answers 404 for (deleted) are absent from the result → removed.
     const currentIds = new Set(current.map((l) => l.listingId))
     const missing = active.truncated
       ? []
@@ -219,10 +326,12 @@ export function createScanner(deps: ScannerDeps): Scanner {
       )
       for (const v of still.values()) {
         if (v.state === 'active' && Number(v.shop_id) === shopId) {
-          current.push(mapListing(v, v.images ?? [], currency))
+          current.push(mapListing(v, v, currency, client.detailIncludes()))
         }
       }
     }
+
+    distrustZeroViews(prev, current)
 
     progress({ shopId, phase: 'saving', done: 0, total: 1, label: 'Збереження…' })
     const isBaseline = !hasOkScan(db, shopId)
@@ -230,6 +339,7 @@ export function createScanner(deps: ScannerDeps): Scanner {
     const at = now()
     applyScan(db, {
       shopInfo: { ...mapShop(etsyShop, shop.addedAt), id: shopId },
+      shopStats: shopStats(etsyShop),
       shopId,
       scanId,
       current,

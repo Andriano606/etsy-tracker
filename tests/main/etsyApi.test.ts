@@ -360,7 +360,7 @@ describe('getAllActiveListings', () => {
 })
 
 describe('getListingsByIds', () => {
-  it('chunks ids by 100 and asks for Images', async () => {
+  it('chunks ids by 100 and asks for Images, Videos and Personalization', async () => {
     const etsy = new FakeEtsy(230)
     const onChunk = vi.fn()
     const ids = etsy.listings.map((l) => l.listing_id)
@@ -370,9 +370,11 @@ describe('getListingsByIds', () => {
     expect(batches).toHaveLength(3)
     for (const b of batches) {
       expect(b.searchParams.get('listing_ids')!.split(',').length).toBeLessThanOrEqual(BATCH_LIMIT)
-      expect(b.searchParams.get('includes')).toBe('Images')
+      expect(b.searchParams.get('includes')).toBe('Images,Videos,Personalization')
     }
     expect(map.get(1)?.images).toHaveLength(2)
+    expect(map.get(1)?.videos).toEqual([])
+    expect(map.get(1)?.views).toBe(101)
     expect(onChunk.mock.calls).toEqual([
       [100, 230],
       [200, 230],
@@ -418,8 +420,36 @@ describe('getListing', () => {
     const etsy = new FakeEtsy(2)
     const c = etsy.client()
     expect((await c.getListing(2))?.images).toHaveLength(2)
-    expect(etsy.requests[0].searchParams.get('includes')).toBe('Images')
+    expect(etsy.requests[0].searchParams.get('includes')).toBe('Images,Videos,Personalization')
     expect(await c.getListing(999)).toBeNull()
+  })
+})
+
+describe('detail includes fallback', () => {
+  it('when Etsy refuses Videos/Personalization (403) but Images works, falls back to Images for good', async () => {
+    const etsy = new FakeEtsy(150, { refuseIncludes: ['Videos', 'Personalization'] })
+    const c = etsy.client()
+    const map = await c.getListingsByIds(etsy.listings.map((l) => l.listing_id))
+    expect(map.size).toBe(150)
+    expect(map.get(1)?.images).toHaveLength(2)
+    expect(map.get(1)?.videos).toBeUndefined()
+    expect(c.detailIncludes()).toEqual(['Images'])
+    const batches = etsy.requests.filter((u) => u.pathname.endsWith('/listings/batch'))
+    // refused once, then Images-only for that chunk and every later one
+    expect(batches.map((u) => u.searchParams.get('includes'))).toEqual([
+      'Images,Videos,Personalization',
+      'Images',
+      'Images'
+    ])
+    expect((await c.getListing(3))?.images).toHaveLength(2)
+    expect(etsy.requests.at(-1)!.searchParams.get('includes')).toBe('Images')
+  })
+
+  it('a key that is rejected outright still fails with the auth error', async () => {
+    const etsy = new FakeEtsy(3, { intercept: () => ({ status: 403, body: { error: 'bad key' } }) })
+    const c = etsy.client()
+    expect((await err(c.getListingsByIds([1, 2]))).kind).toBe('auth')
+    expect(c.detailIncludes()).toEqual(['Images', 'Videos', 'Personalization'])
   })
 })
 

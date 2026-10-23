@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { KeyTestResult } from '@shared/types'
 import { useStore } from '../store'
 import { KeyHelp } from './KeyHelp'
+import { MinioSection } from './MinioSection'
 import { useEscape } from './useEscape'
 
 export const UNREADABLE_KEY_MESSAGE =
@@ -165,6 +166,8 @@ export function SettingsModal(): JSX.Element | null {
             )}
           </form>
         </section>
+
+        <MinioSection />
 
         <section className="settings-section">
           <h3>Як отримати ключ</h3>

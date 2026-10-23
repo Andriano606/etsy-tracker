@@ -1,8 +1,13 @@
 import { create } from 'zustand'
 import type {
+  ImageCounts,
+  ImageSyncState,
   KeyStatus,
   KeyTestResult,
   Listing,
+  MinioSettingsInput,
+  MinioStatus,
+  MinioTestResult,
   Quota,
   ScanChange,
   ScanProgress,
@@ -32,7 +37,16 @@ function saveActiveShop(id: number | null): void {
   }
 }
 
-export type SortMode = 'newest' | 'price-asc' | 'price-desc'
+export type SortMode =
+  | 'newest'
+  | 'price-asc'
+  | 'price-desc'
+  /** Most favorited first. */
+  | 'favorites'
+  /** Most viewed first. */
+  | 'views'
+  /** Biggest favorers growth since the previous successful scan first. */
+  | 'favorites-growth'
 
 /**
  * Shops with a single "Сканувати повторно" call in flight. scanAll must not
@@ -58,6 +72,11 @@ interface AppState {
   error: string | null
   search: string
   sort: SortMode
+  /** MinIO copy state of the selected shop's images. */
+  imageCounts: ImageCounts | null
+  /** The background image sync (all shops), pushed by main. */
+  imageSync: ImageSyncState | null
+  minioStatus: MinioStatus | null
 
   showSettings: boolean
   showAddShop: boolean
@@ -85,6 +104,11 @@ interface AppState {
   clearKey: () => Promise<void>
   testKey: (keystring?: string, sharedSecret?: string) => Promise<KeyTestResult>
 
+  setImageSync: (s: ImageSyncState) => void
+  syncImages: () => Promise<void>
+  saveMinio: (input: MinioSettingsInput) => Promise<{ ok: boolean; error?: string }>
+  testMinio: (input?: MinioSettingsInput) => Promise<MinioTestResult>
+
   setShowSettings: (v: boolean) => void
   setShowAddShop: (v: boolean) => void
   openListing: (l: Listing | null) => void
@@ -107,6 +131,9 @@ export const useStore = create<AppState>((set, get) => ({
   error: null,
   search: '',
   sort: 'newest',
+  imageCounts: null,
+  imageSync: null,
+  minioStatus: null,
 
   showSettings: false,
   showAddShop: false,
@@ -116,12 +143,13 @@ export const useStore = create<AppState>((set, get) => ({
   confirmRequest: null,
 
   load: async () => {
-    const [keyStatus, shops, quota] = await Promise.all([
+    const [keyStatus, shops, quota, minioStatus] = await Promise.all([
       window.api.getKeyStatus(),
       window.api.listShops(),
-      window.api.getQuota()
+      window.api.getQuota(),
+      window.api.getMinioStatus()
     ])
-    set({ keyStatus, shops, quota, loaded: true })
+    set({ keyStatus, shops, quota, minioStatus, loaded: true })
     const remembered = loadActiveShop()
     const pick = shops.find((s) => s.id === remembered)?.id ?? shops[0]?.id ?? null
     await get().selectShop(pick)
@@ -149,7 +177,7 @@ export const useStore = create<AppState>((set, get) => ({
 
   selectShop: async (id) => {
     saveActiveShop(id)
-    set({ activeShopId: id, search: '', listings: [], lastChanges: [], scans: [] })
+    set({ activeShopId: id, search: '', listings: [], lastChanges: [], scans: [], imageCounts: null })
     await get().reloadShopData()
   },
 
@@ -158,13 +186,14 @@ export const useStore = create<AppState>((set, get) => ({
     if (id == null) return
     const shop = get().shops.find((s) => s.id === id)
     const okScanId = shop?.lastOkScan?.id
-    const [listings, scans, lastChanges] = await Promise.all([
+    const [listings, scans, lastChanges, images] = await Promise.all([
       window.api.listListings(id),
       window.api.listScans(id),
-      okScanId != null ? window.api.getScanChanges(okScanId) : Promise.resolve([] as ScanChange[])
+      okScanId != null ? window.api.getScanChanges(okScanId) : Promise.resolve([] as ScanChange[]),
+      window.api.getImageStatus(id)
     ])
     if (get().activeShopId !== id) return
-    set({ listings, scans, lastChanges })
+    set({ listings, scans, lastChanges, imageCounts: images.counts, imageSync: images.sync })
   },
 
   addShop: async (input) => {
@@ -262,6 +291,29 @@ export const useStore = create<AppState>((set, get) => ({
     set({ keyStatus: await window.api.clearApiKey() })
   },
   testKey: (keystring, sharedSecret) => window.api.testApiKey(keystring, sharedSecret),
+
+  setImageSync: (imageSync) => {
+    const wasRunning = get().imageSync?.running
+    set({ imageSync })
+    // Refresh the open shop's counts while copying (throttled by main) and at the end.
+    const id = get().activeShopId
+    if (id != null && (wasRunning || !imageSync.running)) {
+      void window.api.getImageStatus(id).then((r) => {
+        if (get().activeShopId === id) set({ imageCounts: r.counts })
+      })
+    }
+  },
+  syncImages: async () => {
+    const imageSync = await window.api.syncImages(get().activeShopId)
+    set({ imageSync })
+  },
+  saveMinio: async (input) => {
+    const res = await window.api.setMinio(input)
+    if (!res.ok) return { ok: false, error: res.error }
+    set({ minioStatus: res.status })
+    return { ok: true }
+  },
+  testMinio: (input) => window.api.testMinio(input),
 
   setShowSettings: (showSettings) => set({ showSettings }),
   setShowAddShop: (showAddShop) => set({ showAddShop }),

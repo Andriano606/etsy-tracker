@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
-import { formatAgo, formatDateTime, isStale } from '@shared/format'
+import type { ImageCounts, ImageSyncState, ShopSummary } from '@shared/types'
+import { formatAgo, formatCount, formatDateTime, formatDelta, isStale } from '@shared/format'
 import { useStore, type SortMode } from '../store'
 import { filterListings } from '../listingFilter'
 import { ExternalLink } from './ExternalLink'
@@ -8,6 +9,88 @@ import { ScanHistory } from './ScanHistory'
 import { ScanResults } from './ScanResults'
 import { UNREADABLE_KEY_MESSAGE } from './SettingsModal'
 import { ShopIcon } from './ShopIcon'
+
+/** Sold / rating / favorers of the shop with growth since the previous scan. */
+export function ShopStatsLine({ shop }: { shop: ShopSummary }): JSX.Element | null {
+  const s = shop.stats
+  if (!s) return null
+  const d = shop.statsDelta
+  const delta = (v: number | null | undefined, digits = 0): JSX.Element | null => {
+    const t = formatDelta(v, digits)
+    return t ? <span className={`delta ${v! > 0 ? 'up' : 'down'}`}> {t}</span> : null
+  }
+  const parts: JSX.Element[] = []
+  if (s.transactionSoldCount != null) {
+    parts.push(
+      <span key="sold" title="Продано (transaction_sold_count)">
+        Продано: {formatCount(s.transactionSoldCount)}
+        {delta(d?.transactionSoldCount)}
+      </span>
+    )
+  }
+  if (s.reviewAverage != null || s.reviewCount != null) {
+    parts.push(
+      <span key="reviews" title="Середня оцінка та кількість відгуків">
+        ★ {s.reviewAverage != null ? s.reviewAverage.toLocaleString('uk-UA', { maximumFractionDigits: 2 }) : '—'}
+        {delta(d?.reviewAverage, 2)} ({formatCount(s.reviewCount)} відгуків{delta(d?.reviewCount)})
+      </span>
+    )
+  }
+  if (s.numFavorers != null) {
+    parts.push(
+      <span key="fav" title="Додали магазин в обране">
+        ❤ {formatCount(s.numFavorers)}
+        {delta(d?.numFavorers)}
+      </span>
+    )
+  }
+  if (!parts.length) return null
+  return (
+    <div className="shop-stats" data-testid="shop-stats">
+      {parts}
+    </div>
+  )
+}
+
+/** "Фото: 120/430 · помилок: 2" + the MinIO sync state and a manual retry. */
+export function ImageSyncLine({
+  counts,
+  sync,
+  onSync
+}: {
+  counts: ImageCounts | null
+  sync: ImageSyncState | null
+  onSync: () => void
+}): JSX.Element | null {
+  if (!counts || counts.total === 0) return null
+  const running = !!sync?.running
+  return (
+    <div className="image-sync" data-testid="image-sync">
+      <span title="Скільки фото активних товарів скопійовано в MinIO">
+        Фото: {formatCount(counts.stored)}/{formatCount(counts.total)}
+      </span>
+      {counts.error > 0 && <span className="err"> · помилок: {formatCount(counts.error)}</span>}
+      {running && (
+        <span className="scan-progress">
+          {' '}
+          · синхронізація {sync!.done}/{sync!.total}
+        </span>
+      )}
+      {!running && sync?.disabled && <span className="dim"> · MinIO вимкнено в Налаштуваннях</span>}
+      {!running && sync?.lastError && (
+        <span className="err" title={sync.lastError}>
+          {' '}
+          · {sync.lastError}
+        </span>
+      )}
+      {!running && !sync?.disabled && counts.stored < counts.total && (
+        <button className="btn subtle small" onClick={onSync}>
+          Синхронізувати фото
+        </button>
+      )}
+    </div>
+  )
+}
 
 export function ShopView(): JSX.Element | null {
   const {
@@ -21,11 +104,14 @@ export function ShopView(): JSX.Element | null {
     search,
     sort,
     keyStatus,
+    imageCounts,
+    imageSync,
     setSearch,
     setSort,
     scanShop,
     removeShop,
-    openListing
+    openListing,
+    syncImages
   } = useStore()
   const shop = shops.find((s) => s.id === activeShopId)
 
@@ -58,6 +144,8 @@ export function ShopView(): JSX.Element | null {
               ? `Скановано ${formatDateTime(lastOk.finishedAt)} (${formatAgo(lastOk.finishedAt)}) · активних товарів: ${shop.activeCount}`
               : 'Ще не скановано'}
           </div>
+          <ShopStatsLine shop={shop} />
+          <ImageSyncLine counts={imageCounts} sync={imageSync} onSync={() => void syncImages()} />
         </div>
         <div className="shop-actions">
           <button
@@ -121,6 +209,9 @@ export function ShopView(): JSX.Element | null {
                 <option value="newest">Новіші</option>
                 <option value="price-asc">Ціна ↑</option>
                 <option value="price-desc">Ціна ↓</option>
+                <option value="favorites">Найпопулярніші (обране)</option>
+                <option value="views">Перегляди</option>
+                <option value="favorites-growth">Ріст обраного</option>
               </select>
             </div>
             {visible.length === 0 ? (

@@ -38,7 +38,40 @@ export function mkEtsyImage(
   }
 }
 
-/** A ShopListing shaped like the fixture, with its images attached (served by /batch only). */
+/**
+ * Keys of ShopListingWithAssociations that the /listings/active page items do
+ * not have. Verified live (2026-10): pages DO carry `views`, `skus` and
+ * `production_partners` (with the same values as /listings/batch), only the
+ * associations are missing.
+ */
+export const ASSOCIATION_KEYS = [
+  'shipping_profile',
+  'user',
+  'shop',
+  'images',
+  'videos',
+  'inventory',
+  'translations',
+  'personalization',
+  'buyer_price'
+] as const
+
+/** includes value → the key it attaches. */
+const INCLUDE_KEY: Record<string, string> = {
+  Images: 'images',
+  Videos: 'videos',
+  Personalization: 'personalization',
+  Shop: 'shop',
+  User: 'user',
+  Translations: 'translations',
+  BuyerPrice: 'buyer_price'
+}
+
+/**
+ * A ShopListingWithAssociations shaped like the fixture: two images (served
+ * with includes=Images), no videos, no personalization, views/favorers derived
+ * from the id. Pages strip every association key.
+ */
 export function mkEtsyListing(
   id: number,
   over: Partial<EtsyListingWithAssociations> = {}
@@ -55,7 +88,13 @@ export function mkEtsyListing(
     updated_timestamp: 1_700_000_000 + id,
     last_modified_timestamp: 1_700_000_000 + id,
     price: { amount: 1000 + id, divisor: 100, currency_code: 'UAH' },
+    num_favorers: 10 + id,
+    featured_rank: -1,
     images: [mkEtsyImage(id, 2), mkEtsyImage(id, 1)],
+    videos: [],
+    personalization: null,
+    skus: [],
+    views: 100 + id,
     ...over
   }
 }
@@ -69,6 +108,8 @@ export interface FakeEtsyOptions {
    * batch with 404 — the spec documents a 404 for this endpoint.
    */
   batchUnknown?: 'skip' | '404'
+  /** includes values answered with 403 (an association an API-key-only app may not read). */
+  refuseIncludes?: string[]
 }
 
 export class FakeEtsy {
@@ -78,6 +119,7 @@ export class FakeEtsy {
   requests: URL[] = []
   intercept: FakeEtsyOptions['intercept']
   batchUnknown: NonNullable<FakeEtsyOptions['batchUnknown']>
+  refuseIncludes: string[]
 
   readonly fetch = fakeFetch((url) => this.handle(url))
 
@@ -85,6 +127,7 @@ export class FakeEtsy {
     for (let i = 1; i <= count; i++) this.listings.push(mkEtsyListing(i))
     this.intercept = opts.intercept
     this.batchUnknown = opts.batchUnknown ?? 'skip'
+    this.refuseIncludes = opts.refuseIncludes ?? []
   }
 
   client(over: Partial<EtsyClientOptions> = {}): EtsyClient {
@@ -106,10 +149,27 @@ export class FakeEtsy {
     return this.listings.filter((l) => l.state === 'active')
   }
 
+  /** As a ShopListing: /listings/active has no `includes` and no `views`. */
   private strip(l: EtsyListingWithAssociations): EtsyListingWithAssociations {
-    // /listings/active has no `includes` — it never returns images.
-    const { images: _drop, ...rest } = l
-    return rest as EtsyListingWithAssociations
+    const out: Record<string, unknown> = { ...l }
+    for (const k of ASSOCIATION_KEYS) delete out[k]
+    return out as EtsyListingWithAssociations
+  }
+
+  /** As a ShopListingWithAssociations with only the requested associations attached. */
+  private withIncludes(l: EtsyListingWithAssociations, includes: string[]): EtsyListingWithAssociations {
+    const out: Record<string, unknown> = { ...l }
+    for (const [inc, key] of Object.entries(INCLUDE_KEY)) {
+      if (!includes.includes(inc)) delete out[key]
+    }
+    return out as EtsyListingWithAssociations
+  }
+
+  private refused(url: URL): FakeReply | null {
+    const inc = (url.searchParams.get('includes') ?? '').split(',').filter(Boolean)
+    return inc.some((i) => this.refuseIncludes.includes(i))
+      ? { status: 403, body: { error: 'This include requires OAuth' } }
+      : null
   }
 
   private handle(url: URL): FakeReply {
@@ -141,21 +201,25 @@ export class FakeEtsy {
     if (p === '/v3/application/listings/batch') {
       const ids = (url.searchParams.get('listing_ids') ?? '').split(',').filter(Boolean).map(Number)
       if (ids.length > 100) return { status: 400, body: { error: 'Limit 100 ids maximum per query' } }
-      const withImages = (url.searchParams.get('includes') ?? '').split(',').includes('Images')
+      const includes = (url.searchParams.get('includes') ?? '').split(',').filter(Boolean)
+      const refused = this.refused(url)
+      if (refused) return refused
       if (this.batchUnknown === '404' && ids.some((id) => !this.listings.some((l) => l.listing_id === id))) {
         return { status: 404, body: { error: 'Could not find listings' } }
       }
       const found = this.listings
         .filter((l) => ids.includes(l.listing_id))
-        .map((l) => (withImages ? l : this.strip(l)))
+        .map((l) => this.withIncludes(l, includes))
       return { body: { count: found.length, results: found } }
     }
     const oneM = p.match(/^\/v3\/application\/listings\/(\d+)$/)
     if (oneM) {
       const l = this.listings.find((x) => x.listing_id === Number(oneM[1]))
       if (!l) return { status: 404, body: { error: 'Listing not found' } }
-      const withImages = (url.searchParams.get('includes') ?? '').split(',').includes('Images')
-      return { body: withImages ? l : this.strip(l) }
+      const refused = this.refused(url)
+      if (refused) return refused
+      const includes = (url.searchParams.get('includes') ?? '').split(',').filter(Boolean)
+      return { body: this.withIncludes(l, includes) }
     }
     return { status: 404, body: { error: `no route ${p}` } }
   }

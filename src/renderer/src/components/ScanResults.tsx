@@ -1,5 +1,5 @@
 import type { Listing, ScanChange, ShopSummary } from '@shared/types'
-import { ChangeRows, KIND_LABEL } from './ChangeList'
+import { ChangeRows, KIND_LABEL, changedSummary } from './ChangeList'
 import { ListingCard } from './ListingCard'
 
 /** The latest successful scan's outcome: new listings first, the rest collapsible. */
@@ -63,6 +63,12 @@ export function ScanResults({
           <details key={kind} className="results-group">
             <summary>
               {KIND_LABEL[kind]}: {list.length}
+              {kind === 'changed' && changedSummary(list) && (
+                <span className="dim" data-testid="changed-summary">
+                  {' '}
+                  ({changedSummary(list)})
+                </span>
+              )}
             </summary>
             <ChangeRows changes={list} onOpen={openChange} />
           </details>

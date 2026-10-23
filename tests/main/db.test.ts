@@ -23,8 +23,27 @@ import {
   transaction,
   upsertListing,
   findShopByName,
-  insertShop
+  insertShop,
+  getImageRow,
+  getListingRaw,
+  getShopRaw,
+  imageCounts,
+  insertListingStats,
+  insertShopStats,
+  listImagesToCleanup,
+  listImagesToSync,
+  listShopObjectKeys,
+  markImageError,
+  markImageObjectsDeleted,
+  markImageMissing,
+  resetStoredImages,
+  listStoredImages,
+  markImageStored,
+  updateShopInfo,
+  type Db
 } from '../../src/main/db'
+import { mapShop } from '../../src/main/mapEtsy'
+import shopFx from '../fixtures/shop.json'
 import { memDb, mkInput, mkShop, seedShop } from '../helpers/db'
 
 const img = (id: number) => ({
@@ -38,6 +57,19 @@ const img = (id: number) => ({
   height: null,
   alt: null
 })
+
+/** ListingImage colour/date fields absent from `img()`, as read back from the DB. */
+const noMeta = {
+  hexCode: null,
+  red: null,
+  green: null,
+  blue: null,
+  hue: null,
+  saturation: null,
+  brightness: null,
+  isBlackAndWhite: null,
+  createdAt: null
+}
 
 describe('migrations', () => {
   const dirs: string[] = []
@@ -103,7 +135,10 @@ describe('migrations', () => {
     // Earlier migrations that succeeded in the same run stay applied.
     const fresh = memDb()
     fresh.exec('PRAGMA user_version = 0')
-    fresh.exec('DROP TABLE scan_changes; DROP TABLE scans; DROP TABLE listings; DROP TABLE shops')
+    fresh.exec(
+      'DROP TABLE listing_stats; DROP TABLE shop_stats; DROP TABLE listing_videos; DROP TABLE listing_images; ' +
+        'DROP TABLE scan_changes; DROP TABLE scans; DROP TABLE listings; DROP TABLE shops'
+    )
     expect(() => migrate(fresh, next)).toThrow()
     expect(schemaVersion(fresh)).toBe(v)
   })
@@ -210,7 +245,7 @@ describe('listings upsert', () => {
     upsertListing(db, mkInput(1, { tags: ['x', 'y'], images: [img(5)] }), 100)
     const l = getListing(db, 1)!
     expect(l.tags).toEqual(['x', 'y'])
-    expect(l.images).toEqual([img(5)])
+    expect(l.images).toEqual([{ ...img(5), ...noMeta, syncStatus: 'pending', storedAt: null }])
     expect(l.firstSeenAt).toBe(100)
     expect(l.lastSeenAt).toBe(100)
     expect(l.removedAt).toBeNull()
@@ -229,7 +264,7 @@ describe('listings upsert', () => {
     expect(l.lastSeenAt).toBe(200)
     expect(l.removedAt).toBeNull()
     // images: null = not fetched this time → stored ones kept
-    expect(l.images).toEqual([img(5)])
+    expect(l.images).toEqual([expect.objectContaining(img(5))])
   })
 
   it('images: [] replaces stored images; new rows with null images get []', () => {
@@ -273,5 +308,228 @@ describe('scans', () => {
     const s = insertRunningScan(db, 20987654, 1)
     expect(failStaleRunningScans(db, 9)).toBe(1)
     expect(listScans(db, 20987654)[0]).toMatchObject({ id: s, status: 'error', finishedAt: 9 })
+  })
+})
+
+/** A database created by the v1 app (schema version 1) with some data in it. */
+function v1Db(): Db {
+  const db = memDb()
+  // memDb() is at the latest version — rebuild it as v1 from scratch.
+  db.exec(
+    'DROP TABLE listing_stats; DROP TABLE shop_stats; DROP TABLE listing_videos; DROP TABLE listing_images; ' +
+      'DROP TABLE scan_changes; DROP TABLE scans; DROP TABLE listings; DROP TABLE shops; PRAGMA user_version = 0'
+  )
+  migrate(db, MIGRATIONS.slice(0, 1))
+  expect(schemaVersion(db)).toBe(1)
+  db.prepare(
+    "INSERT INTO shops (id, shop_name, title, url, currency, etsy_active_count, added_at) VALUES (20987654, 'CeramicStudioUA', 'T', 'u', 'UAH', 2, 1)"
+  ).run()
+  const v1Images = JSON.stringify([
+    { id: 501, rank: 1, url75: 'a75', url170: 'a170', url570: 'a570', urlFull: 'afull', width: 10, height: 20, alt: 'first' },
+    { id: 502, rank: 2, url75: 'b75', url170: 'b170', url570: 'b570', urlFull: 'bfull', width: null, height: null, alt: null }
+  ])
+  const ins = db.prepare(
+    `INSERT INTO listings (listing_id, shop_id, title, description, price_amount, price_divisor, currency, url,
+       tags, quantity, etsy_created_at, etsy_updated_at, images, first_seen_at, last_seen_at, removed_at)
+     VALUES (?, 20987654, ?, 'd', 1000, 100, 'UAH', 'u', '["x"]', 1, 1, 1, ?, 100, 200, ?)`
+  )
+  ins.run(1, 'Active one', v1Images, null)
+  ins.run(2, 'Removed one', '[]', 300)
+  ins.run(3, 'Broken JSON', 'not json', null)
+  // Etsy reuses one photo on several listings: image 501 is on listing 4 too.
+  ins.run(4, 'Shares a photo', JSON.stringify([{ id: 501, rank: 3, url75: 'a75', url170: 'a170', url570: 'a570', urlFull: 'afull' }]), null)
+  const scan = db.prepare("INSERT INTO scans (shop_id, started_at, finished_at, status, is_baseline, total) VALUES (20987654, 1, 2, 'ok', 1, 2)").run()
+  db.prepare("INSERT INTO scan_changes (scan_id, listing_id, kind, old_value, new_value) VALUES (?, 1, 'changed', '{\"title\":\"a\"}', '{\"title\":\"b\"}')").run(
+    Number(scan.lastInsertRowid)
+  )
+  return db
+}
+
+describe('migration v2 (from a real v1 database)', () => {
+  it('adds the v2 columns/tables and backfills images as pending listing_images rows', () => {
+    const db = v1Db()
+    migrate(db)
+    expect(schemaVersion(db)).toBe(MIGRATIONS.length)
+    const tables = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+      .all()
+      .map((r) => (r as { name: string }).name)
+    expect(tables).toEqual(expect.arrayContaining(['listing_images', 'listing_videos', 'listing_stats', 'shop_stats']))
+    const cols = (t: string) =>
+      db.prepare(`PRAGMA table_info(${t})`).all().map((r) => (r as { name: string }).name)
+    expect(cols('listings')).toEqual(
+      expect.arrayContaining(['views', 'num_favorers', 'featured_rank', 'materials', 'raw_json', 'who_made', 'item_weight'])
+    )
+    expect(cols('listings')).not.toContain('images')
+    expect(cols('shops')).toEqual(expect.arrayContaining(['transaction_sold_count', 'review_average', 'raw_json', 'policy_shipping']))
+
+    // Images moved to listing_images, in rank order, waiting for MinIO.
+    const l1 = getListing(db, 1)!
+    expect(l1.images.map((i) => [i.id, i.rank, i.url570, i.urlFull, i.alt, i.syncStatus])).toEqual([
+      [501, 1, 'a570', 'afull', 'first', 'pending'],
+      [502, 2, 'b570', 'bfull', null, 'pending']
+    ])
+    expect(getImageRow(db, 501)).toMatchObject({ shop_id: 20987654, full_width: 10, full_height: 20, first_seen_at: 100 })
+    expect(getListing(db, 3)!.images).toEqual([]) // corrupt v1 JSON is skipped, not fatal
+    expect(getListing(db, 4)!.images.map((i) => [i.id, i.rank])).toEqual([[501, 3]]) // shared photo kept on both
+    expect(getListing(db, 1)!.images.map((i) => i.id)).toEqual([501, 502])
+    // Active rows get state 'active', removed ones keep removed_at; v2-only fields are unknown.
+    expect(l1).toMatchObject({ state: 'active', views: null, numFavorers: null, details: null })
+    expect(getListing(db, 2)).toMatchObject({ state: null, removedAt: 300 })
+    // Old scan rows and changes survive untouched.
+    expect(listScans(db, 20987654)).toHaveLength(1)
+    expect(listScanChanges(db, listScans(db, 20987654)[0].id)[0].newValue).toEqual({ title: 'b' })
+    expect(getShopSummary(db, 20987654)).toMatchObject({ profile: null, stats: null, statsDelta: null })
+    expect(imageCounts(db, 20987654)).toEqual({ total: 3, stored: 0, pending: 3, error: 0 })
+  })
+})
+
+describe('listing_images', () => {
+  const ref = (id: number, listingId = 1) => ({ listing_id: listingId, listing_image_id: id })
+  const im = (id: number, rank: number, over = {}) => ({ ...img(id), rank, urlFull: `full${id}`, url570: `570-${id}`, ...over })
+
+  it('new ids are inserted pending, gone ids get removed_at, a returning id is revived', () => {
+    const db = memDb()
+    seedShop(db)
+    upsertListing(db, mkInput(1, { images: [im(1, 1), im(2, 2)] }), 10)
+    upsertListing(db, mkInput(1, { images: [im(2, 1), im(3, 2)] }), 20)
+    expect(getListing(db, 1)!.images.map((i) => i.id)).toEqual([2, 3])
+    expect(getImageRow(db, 1)!.removed_at).toBe(20)
+    expect(getImageRow(db, 2)).toMatchObject({ rank: 1, removed_at: null })
+    upsertListing(db, mkInput(1, { images: [im(1, 1)] }), 30)
+    expect(getImageRow(db, 1)!.removed_at).toBeNull()
+    expect(getListing(db, 1)!.images.map((i) => i.id)).toEqual([1])
+  })
+
+  it('sync bookkeeping: to-sync list, stored guard on the downloaded URL, errors with attempts, cleanup', () => {
+    const db = memDb()
+    seedShop(db)
+    upsertListing(db, mkInput(1, { images: [im(1, 1), im(2, 2)] }), 10)
+    expect(listImagesToSync(db).map((r) => r.listing_image_id)).toEqual([1, 2])
+    const info = { keyFull: 'k1', key570: 'k1t', byteSize: 3, contentType: 'image/jpeg', etag: 'e', sha256: 'h', storedAt: 50 }
+    // URL replaced meanwhile → not marked stored
+    expect(markImageStored(db, ref(1), 'stale-url', info)).toBe(false)
+    expect(markImageStored(db, ref(1), 'full1', info)).toBe(true)
+    expect(getListing(db, 1)!.images[0]).toMatchObject({ syncStatus: 'stored', storedAt: 50 })
+    for (let i = 0; i < 5; i++) markImageError(db, ref(2), 'full2', 'CDN Etsy відповів HTTP 404')
+    expect(getImageRow(db, 2)).toMatchObject({ sync_status: 'error', sync_attempts: 5 })
+    expect(listImagesToSync(db)).toEqual([]) // gave up after 5 tries…
+    expect(listImagesToSync(db, { maxAttempts: null }).map((r) => r.listing_image_id)).toEqual([2]) // …unless forced
+    expect(imageCounts(db, 20987654)).toEqual({ total: 2, stored: 1, pending: 0, error: 1 })
+    expect(listShopObjectKeys(db, 20987654).sort()).toEqual(['k1', 'k1t'])
+
+    upsertListing(db, mkInput(1, { images: [im(2, 1)] }), 60) // image 1 removed
+    expect(listImagesToCleanup(db).map((r) => r.listing_image_id)).toEqual([1])
+    markImageObjectsDeleted(db, ref(1), 'other', 'k1t') // not the keys it has → untouched
+    expect(getImageRow(db, 1)).toMatchObject({ key_full: 'k1', sync_status: 'stored' })
+    markImageObjectsDeleted(db, ref(1), 'k1', 'k1t')
+    expect(listImagesToCleanup(db)).toEqual([])
+    expect(getImageRow(db, 1)).toMatchObject({ key_full: null, key_570: null, sync_status: 'pending' })
+  })
+
+  it('markImageObjectsDeleted also resets an image a rescan revived meanwhile (it must be uploaded again)', () => {
+    const db = memDb()
+    seedShop(db)
+    upsertListing(db, mkInput(1, { images: [im(1, 1), im(2, 2)] }), 10)
+    const info = { keyFull: 'k1', key570: 'k1t', byteSize: 3, contentType: 'image/jpeg', etag: 'e', sha256: 'h', storedAt: 50 }
+    markImageStored(db, ref(1), 'full1', info)
+    upsertListing(db, mkInput(1, { images: [im(2, 2)] }), 20) // removed → cleanup picks it up
+    const row = listImagesToCleanup(db)[0]
+    upsertListing(db, mkInput(1, { images: [im(1, 1), im(2, 2)] }), 30) // back before the delete finished
+    markImageObjectsDeleted(db, ref(1), row.key_full, row.key_570)
+    expect(getImageRow(db, 1)).toMatchObject({ removed_at: null, key_full: null, key_570: null, sync_status: 'pending' })
+    expect(listImagesToSync(db).map((r) => r.listing_image_id)).toContain(1)
+  })
+
+  it('resetStoredImages / markImageMissing queue stored copies again; listStoredImages lists them', () => {
+    const db = memDb()
+    seedShop(db)
+    upsertListing(db, mkInput(1, { images: [im(1, 1), im(2, 2)] }), 10)
+    const info = { keyFull: 'k', key570: null, byteSize: 3, contentType: 'image/jpeg', etag: 'e', sha256: 'h', storedAt: 50 }
+    markImageStored(db, ref(1), 'full1', info)
+    markImageStored(db, ref(2), 'full2', { ...info, keyFull: 'k2' })
+    expect(listStoredImages(db, 20987654).map((r) => r.listing_image_id)).toEqual([1, 2])
+    markImageMissing(db, ref(1))
+    expect(getImageRow(db, 1)).toMatchObject({ sync_status: 'pending', key_full: null })
+    expect(resetStoredImages(db)).toBe(1)
+    expect(getImageRow(db, 2)).toMatchObject({ sync_status: 'pending', key_full: null, stored_at: null })
+    expect(listStoredImages(db)).toEqual([])
+  })
+
+  it('one Etsy image id shared by two listings gets a row per listing (live Etsy reuses photos)', () => {
+    const db = memDb()
+    seedShop(db)
+    upsertListing(db, mkInput(1, { images: [im(7, 1), im(1, 2)] }), 10)
+    upsertListing(db, mkInput(2, { images: [im(7, 1), im(2, 2)] }), 10)
+    // Saving listing 2 must not steal image 7 from listing 1.
+    expect(getListing(db, 1)!.images.map((i) => i.id)).toEqual([7, 1])
+    expect(getListing(db, 2)!.images.map((i) => i.id)).toEqual([7, 2])
+    expect(imageCounts(db, 20987654)).toEqual({ total: 4, stored: 0, pending: 4, error: 0 })
+    // Rescanning listing 1 with the same images keeps both rows as they were.
+    upsertListing(db, mkInput(1, { images: [im(7, 1), im(1, 2)] }), 20)
+    expect(getListing(db, 2)!.images.map((i) => i.id)).toEqual([7, 2])
+    // State is per listing: storing / removing image 7 on listing 2 leaves listing 1's row alone.
+    const info = { keyFull: 'k27', key570: null, byteSize: 3, contentType: 'image/jpeg', etag: 'e', sha256: 'h', storedAt: 50 }
+    expect(markImageStored(db, ref(7, 2), 'full7', info)).toBe(true)
+    expect(getImageRow(db, 7, 1)).toMatchObject({ listing_id: 1, sync_status: 'pending', key_full: null })
+    expect(getImageRow(db, 7, 2)).toMatchObject({ listing_id: 2, sync_status: 'stored', key_full: 'k27' })
+    // Without a listing (the etsyimg:// handler) the stored copy wins.
+    expect(getImageRow(db, 7)).toMatchObject({ listing_id: 2, sync_status: 'stored' })
+    upsertListing(db, mkInput(1, { images: [im(1, 1)] }), 30)
+    expect(getImageRow(db, 7, 1)!.removed_at).toBe(30)
+    expect(getImageRow(db, 7, 2)!.removed_at).toBeNull()
+    markImageMissing(db, ref(7, 1)) // not stored on listing 1 → no effect on listing 2
+    expect(getImageRow(db, 7, 2)!.sync_status).toBe('stored')
+  })
+
+  it('one Etsy video id shared by two listings stays on both', () => {
+    const db = memDb()
+    seedShop(db)
+    const v = { id: 9, width: 1, height: 2, thumbnailUrl: null, videoUrl: null, state: 'active' }
+    upsertListing(db, mkInput(1, { videos: [v] }), 10)
+    upsertListing(db, mkInput(2, { videos: [v] }), 10)
+    expect(getListing(db, 1)!.videos.map((x) => x.id)).toEqual([9])
+    expect(getListing(db, 2)!.videos.map((x) => x.id)).toEqual([9])
+    upsertListing(db, mkInput(2, { videos: [] }), 20)
+    expect(getListing(db, 1)!.videos.map((x) => x.id)).toEqual([9])
+    expect(getListing(db, 2)!.videos).toEqual([])
+  })
+
+  it('deleteShop removes images, videos and stats too', () => {
+    const db = memDb()
+    seedShop(db)
+    upsertListing(db, mkInput(1, { images: [im(1, 1)], videos: [{ id: 9, width: 1, height: 1, thumbnailUrl: null, videoUrl: null, state: 'active' }] }), 10)
+    const s = insertRunningScan(db, 20987654, 1)
+    insertListingStats(db, s, [{ listingId: 1, views: 1, numFavorers: 1, featuredRank: null, quantity: 1 }])
+    insertShopStats(db, s, 20987654, { numFavorers: 1, transactionSoldCount: 1, reviewCount: 1, reviewAverage: 5, listingActiveCount: 1 })
+    deleteShop(db, 20987654)
+    for (const t of ['listing_images', 'listing_videos', 'listing_stats', 'shop_stats']) {
+      expect(db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get()).toEqual({ n: 0 })
+    }
+  })
+})
+
+describe('v2 listing and shop columns', () => {
+  it('views/personalization are kept when the details call did not answer; raw JSON is stored', () => {
+    const db = memDb()
+    seedShop(db)
+    const q = [{ questionId: 1, text: 'Name', instructions: null, type: 't', required: true, maxChars: 10, maxFiles: null, options: [] }]
+    upsertListing(db, mkInput(1, { views: 50, rawJson: '{"a":1}', details: { ...mkInput(1).details!, personalization: q } }), 10)
+    upsertListing(db, mkInput(1, { views: null, detailsFetched: false, rawJson: null, numFavorers: 3, details: { ...mkInput(1).details!, personalization: null } }), 20)
+    const l = getListing(db, 1)!
+    expect(l.views).toBe(50)
+    expect(l.numFavorers).toBe(3)
+    expect(l.details!.personalization).toEqual(q)
+    expect(getListingRaw(db, 1)).toBe('{"a":1}')
+  })
+
+  it('updateShopInfo writes the full profile and raw JSON', () => {
+    const db = memDb()
+    seedShop(db)
+    const fresh = mapShop(shopFx as never, 0)
+    updateShopInfo(db, fresh, 77)
+    const s = getShopSummary(db, 20987654)!
+    expect(s.profile).toEqual(fresh.profile)
+    expect(JSON.parse(getShopRaw(db, 20987654)!)).toEqual(shopFx)
   })
 })

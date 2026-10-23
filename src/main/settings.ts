@@ -1,11 +1,12 @@
-// Etsy API key storage. The key lives only in main: encrypted with Electron
-// safeStorage when an OS keyring backend is available, plaintext otherwise (the
-// UI warns). The renderer only ever sees `KeyStatus` — a masked keystring.
-// safeStorage is injected so tests run without Electron.
+// Secrets storage (settings.json): the Etsy API key and the MinIO settings.
+// Secrets live only in main: encrypted with Electron safeStorage when an OS
+// keyring backend is available, plaintext otherwise (the UI warns). The
+// renderer only ever sees `KeyStatus` (a masked keystring) and `MinioStatus`
+// (no secret at all). safeStorage is injected so tests run without Electron.
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
 import { dirname } from 'path'
-import type { KeyStatus } from '../shared/types'
+import type { KeyStatus, MinioSettingsInput, MinioStatus } from '../shared/types'
 
 export interface SafeStorageLike {
   isEncryptionAvailable(): boolean
@@ -21,8 +22,53 @@ interface StoredKey {
   encrypted: boolean
 }
 
+interface StoredMinio {
+  enabled?: boolean
+  endpoint?: string
+  accessKey?: string
+  bucket?: string
+  /** Same shape as the API key: encrypted with safeStorage when possible. */
+  secretKey?: StoredKey
+}
+
 interface SettingsFile {
   apiKey?: StoredKey
+  minio?: StoredMinio
+}
+
+/** Read settings.json; a missing or corrupt file reads as empty. */
+function readSettings(filePath: string): SettingsFile {
+  if (!existsSync(filePath)) return {}
+  try {
+    return JSON.parse(readFileSync(filePath, 'utf8')) as SettingsFile
+  } catch {
+    return {}
+  }
+}
+
+/** Atomic write (tmp + rename), mode 0600. Other sections of the file are kept by callers. */
+function writeSettings(filePath: string, data: SettingsFile): void {
+  mkdirSync(dirname(filePath), { recursive: true })
+  const tmp = `${filePath}.tmp`
+  writeFileSync(tmp, JSON.stringify(data, null, 2), { encoding: 'utf8', mode: 0o600 })
+  renameSync(tmp, filePath)
+}
+
+function seal(safe: SafeStorageLike, plain: string): StoredKey {
+  return safe.isEncryptionAvailable()
+    ? { data: safe.encryptString(plain).toString('base64'), encrypted: true }
+    : { data: plain, encrypted: false }
+}
+
+/** Decrypt a stored secret; null when it cannot be read. */
+function unseal(safe: SafeStorageLike, k: StoredKey | undefined): string | null {
+  if (!k?.data) return null
+  if (!k.encrypted) return k.data
+  try {
+    return safe.decryptString(Buffer.from(k.data, 'base64'))
+  } catch {
+    return null
+  }
 }
 
 export interface KeyStore {
@@ -58,31 +104,11 @@ function realEncryption(safe: SafeStorageLike): boolean {
 }
 
 export function createKeyStore(filePath: string, safe: SafeStorageLike): KeyStore {
-  function read(): SettingsFile {
-    if (!existsSync(filePath)) return {}
-    try {
-      return JSON.parse(readFileSync(filePath, 'utf8')) as SettingsFile
-    } catch {
-      return {}
-    }
-  }
-
-  function write(data: SettingsFile): void {
-    mkdirSync(dirname(filePath), { recursive: true })
-    const tmp = `${filePath}.tmp`
-    writeFileSync(tmp, JSON.stringify(data, null, 2), { encoding: 'utf8', mode: 0o600 })
-    renameSync(tmp, filePath)
-  }
+  const read = (): SettingsFile => readSettings(filePath)
+  const write = (data: SettingsFile): void => writeSettings(filePath, data)
 
   function getKey(): string | null {
-    const k = read().apiKey
-    if (!k?.data) return null
-    if (!k.encrypted) return k.data
-    try {
-      return safe.decryptString(Buffer.from(k.data, 'base64'))
-    } catch {
-      return null
-    }
+    return unseal(safe, read().apiKey)
   }
 
   function status(): KeyStatus {
@@ -106,11 +132,7 @@ export function createKeyStore(filePath: string, safe: SafeStorageLike): KeyStor
     setKey(keystring, sharedSecret) {
       const key = composeApiKey(keystring, sharedSecret)
       const data = read()
-      if (safe.isEncryptionAvailable()) {
-        data.apiKey = { data: safe.encryptString(key).toString('base64'), encrypted: true }
-      } else {
-        data.apiKey = { data: key, encrypted: false }
-      }
+      data.apiKey = seal(safe, key)
       write(data)
       return status()
     },
@@ -118,6 +140,133 @@ export function createKeyStore(filePath: string, safe: SafeStorageLike): KeyStor
       const data = read()
       delete data.apiKey
       write(data)
+      return status()
+    }
+  }
+}
+
+// ---------------------------------------------------------------------- MinIO
+
+/**
+ * Defaults = the docker-compose.yml defaults (MINIO_ROOT_USER /
+ * MINIO_ROOT_PASSWORD, S3 API on 127.0.0.1:9100), so a fresh install works
+ * against `docker compose up -d` without touching Settings.
+ */
+export const MINIO_DEFAULTS = {
+  enabled: true,
+  endpoint: 'http://127.0.0.1:9100',
+  accessKey: 'etsytracker',
+  secretKey: 'etsytracker-minio-secret',
+  bucket: 'etsy-tracker'
+} as const
+
+/** Everything main needs to talk to MinIO. Never sent to the renderer. */
+export interface MinioConfig {
+  enabled: boolean
+  endpoint: string
+  accessKey: string
+  secretKey: string
+  bucket: string
+}
+
+export interface MinioSettingsStore {
+  /** Renderer-safe view: no secret, only where it comes from. */
+  status(): MinioStatus
+  /** Full config incl. the secret, or null when a stored secret can't be decrypted. Main only. */
+  getConfig(): MinioConfig | null
+  /** Validate + save; an empty `secretKey` keeps the stored one. Throws a Ukrainian message. */
+  set(input: MinioSettingsInput): MinioStatus
+  /** Forget the stored secret (back to the docker-compose default). */
+  resetSecret(): MinioStatus
+}
+
+/** Normalise and validate the S3 endpoint: http(s)://host[:port], no path. */
+export function normalizeMinioEndpoint(raw: string): string {
+  const v = (raw ?? '').trim()
+  if (!v) throw new Error('Вкажіть адресу MinIO, напр. http://127.0.0.1:9100.')
+  let u: URL
+  try {
+    u = new URL(/^[a-z]+:\/\//i.test(v) ? v : `http://${v}`)
+  } catch {
+    throw new Error('Некоректна адреса MinIO.')
+  }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+    throw new Error('Адреса MinIO має починатися з http:// або https://.')
+  }
+  if (u.pathname !== '/' && u.pathname !== '') throw new Error('Адреса MinIO — без шляху, лише хост і порт.')
+  return `${u.protocol}//${u.host}`
+}
+
+/** S3 bucket naming rules (3–63 chars, lowercase letters, digits, dots, hyphens). */
+export function validateBucketName(raw: string): string {
+  const b = (raw ?? '').trim()
+  if (!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(b) || b.includes('..')) {
+    throw new Error('Назва бакета: 3–63 символи, малі латинські літери, цифри, крапки та дефіси.')
+  }
+  return b
+}
+
+export function createMinioSettingsStore(filePath: string, safe: SafeStorageLike): MinioSettingsStore {
+  const read = (): SettingsFile => readSettings(filePath)
+
+  function status(): MinioStatus {
+    const m = read().minio ?? {}
+    const stored = m.secretKey
+    const secret = unseal(safe, stored)
+    const unreadable = !!stored?.data && secret == null
+    return {
+      enabled: m.enabled ?? MINIO_DEFAULTS.enabled,
+      endpoint: m.endpoint ?? MINIO_DEFAULTS.endpoint,
+      accessKey: m.accessKey ?? MINIO_DEFAULTS.accessKey,
+      bucket: m.bucket ?? MINIO_DEFAULTS.bucket,
+      secretSource: stored?.data ? 'stored' : 'default',
+      encrypted: !!stored?.data && stored.encrypted && !unreadable && realEncryption(safe),
+      ...(unreadable ? { unreadable: true } : {})
+    }
+  }
+
+  function getConfig(): MinioConfig | null {
+    const m = read().minio ?? {}
+    const secret = m.secretKey?.data ? unseal(safe, m.secretKey) : MINIO_DEFAULTS.secretKey
+    if (secret == null) return null
+    return {
+      enabled: m.enabled ?? MINIO_DEFAULTS.enabled,
+      endpoint: m.endpoint ?? MINIO_DEFAULTS.endpoint,
+      accessKey: m.accessKey ?? MINIO_DEFAULTS.accessKey,
+      secretKey: secret,
+      bucket: m.bucket ?? MINIO_DEFAULTS.bucket
+    }
+  }
+
+  return {
+    status,
+    getConfig,
+    set(input) {
+      const data = read()
+      const m: StoredMinio = { ...(data.minio ?? {}) }
+      if (input.enabled !== undefined) m.enabled = !!input.enabled
+      if (input.endpoint !== undefined) m.endpoint = normalizeMinioEndpoint(input.endpoint)
+      if (input.accessKey !== undefined) {
+        const k = input.accessKey.trim()
+        if (k.length < 3 || /\s/.test(k)) throw new Error('Access key: щонайменше 3 символи, без пробілів.')
+        m.accessKey = k
+      }
+      if (input.bucket !== undefined) m.bucket = validateBucketName(input.bucket)
+      const secret = (input.secretKey ?? '').trim()
+      if (secret) {
+        if (secret.length < 8 || /\s/.test(secret)) {
+          throw new Error('Secret key: щонайменше 8 символів, без пробілів.')
+        }
+        m.secretKey = seal(safe, secret)
+      }
+      data.minio = m
+      writeSettings(filePath, data)
+      return status()
+    },
+    resetSecret() {
+      const data = read()
+      if (data.minio) delete data.minio.secretKey
+      writeSettings(filePath, data)
       return status()
     }
   }

@@ -25,40 +25,130 @@ export interface EtsyMoney {
   currency_code: string
 }
 
+/** OAS `Shop` (GET /shops/{shop_id}). Every field is optional-ish in practice. */
 export interface EtsyShop {
   shop_id: number
   user_id?: number
   shop_name: string
+  create_date?: number
+  created_timestamp?: number
   title: string | null
-  url: string
-  icon_url_fullxfull: string | null
-  listing_active_count: number
+  announcement?: string | null
   currency_code: string | null
   is_vacation?: boolean
+  vacation_message?: string | null
+  sale_message?: string | null
+  digital_sale_message?: string | null
+  update_date?: number
+  updated_timestamp?: number
+  listing_active_count: number
+  digital_listing_count?: number
+  login_name?: string
+  accepts_custom_requests?: boolean
+  policy_welcome?: string | null
+  policy_payment?: string | null
+  policy_shipping?: string | null
+  policy_refunds?: string | null
+  policy_additional?: string | null
+  policy_seller_info?: string | null
+  policy_update_date?: number
+  policy_has_private_receipt_info?: boolean
+  has_unstructured_policies?: boolean
+  policy_privacy?: string | null
+  vacation_autoreply?: string | null
+  url: string
+  image_url_760x100?: string | null
+  num_favorers?: number
+  languages?: string[]
+  icon_url_fullxfull: string | null
+  is_using_structured_policies?: boolean
+  has_onboarded_structured_policies?: boolean
+  include_dispute_form_link?: boolean
+  is_direct_checkout_onboarded?: boolean
+  is_etsy_payments_onboarded?: boolean
+  is_calculated_eligible?: boolean
+  is_opted_in_to_buyer_promise?: boolean
+  is_shop_us_based?: boolean
+  transaction_sold_count?: number
+  shipping_from_country_iso?: string | null
+  shop_location_country_iso?: string | null
+  review_count?: number | null
+  review_average?: number | null
   [k: string]: unknown
 }
 
+/** OAS `ShopListing` (an item of /shops/{id}/listings/active). */
 export interface EtsyListing {
   listing_id: number
+  user_id?: number
   shop_id: number
   title: string
   description: string
   state: string
-  url: string
-  price: EtsyMoney
-  tags?: string[]
-  quantity?: number
-  created_timestamp?: number
   creation_timestamp?: number
+  created_timestamp?: number
+  ending_timestamp?: number
   original_creation_timestamp?: number
   last_modified_timestamp?: number
   updated_timestamp?: number
+  state_timestamp?: number | null
+  quantity?: number
+  shop_section_id?: number | null
+  featured_rank?: number
+  url: string
+  num_favorers?: number
+  non_taxable?: boolean
+  is_taxable?: boolean
+  is_customizable?: boolean
+  is_personalizable?: boolean
+  listing_type?: string
+  tags?: string[]
+  materials?: string[]
+  shipping_profile_id?: number | null
+  return_policy_id?: number | null
+  processing_min?: number | null
+  processing_max?: number | null
+  who_made?: string | null
+  when_made?: string | null
+  is_supply?: boolean | null
+  item_weight?: number | null
+  item_weight_unit?: string | null
+  item_length?: number | null
+  item_width?: number | null
+  item_height?: number | null
+  item_dimensions_unit?: string | null
+  is_private?: boolean
+  style?: string[]
+  file_data?: string | null
+  has_variations?: boolean
+  should_auto_renew?: boolean
+  language?: string | null
+  price: EtsyMoney
+  converted_price?: EtsyMoney | null
+  taxonomy_id?: number | null
+  readiness_state_id?: number | null
+  /**
+   * Not in the OAS `ShopListing`, but the live /listings/active items carry it
+   * (verified 2026-10, same value as /listings/batch). Tabulated once a day.
+   */
+  views?: number
   [k: string]: unknown
 }
 
+/** OAS `ListingImage`. */
 export interface EtsyListingImage {
   listing_id: number
   listing_image_id: number
+  hex_code?: string | null
+  red?: number | null
+  green?: number | null
+  blue?: number | null
+  hue?: number | null
+  saturation?: number | null
+  brightness?: number | null
+  is_black_and_white?: boolean | null
+  creation_tsz?: number
+  created_timestamp?: number
   rank: number
   url_75x75: string
   url_170x135: string
@@ -70,9 +160,50 @@ export interface EtsyListingImage {
   [k: string]: unknown
 }
 
+/** OAS `ListingVideo`. */
+export interface EtsyListingVideo {
+  video_id: number
+  height?: number
+  width?: number
+  thumbnail_url?: string
+  video_url?: string
+  video_state?: string
+  [k: string]: unknown
+}
+
+/** OAS `…ListingPersonalization` (includes=Personalization). */
+export interface EtsyPersonalization {
+  personalization_questions?: Array<{
+    question_id?: number | null
+    question_text?: string
+    instructions?: string | null
+    question_type?: string
+    required?: boolean
+    max_allowed_characters?: number | null
+    max_allowed_files?: number | null
+    add_on_price?: EtsyMoney | null
+    options?: Array<{ option_id: number | null; label: string }> | null
+  }>
+}
+
+/** OAS `ShopListingWithAssociations` (/listings/batch, /listings/{id}). */
 export interface EtsyListingWithAssociations extends EtsyListing {
   images?: EtsyListingImage[]
+  videos?: EtsyListingVideo[]
+  personalization?: EtsyPersonalization | null
+  skus?: string[]
 }
+
+/**
+ * Associations requested from /listings/batch and /listings/{id} (the OAS enum
+ * is Images, Shop, User, Translations, Videos, Personalization, BuyerPrice).
+ * Shop/User duplicate what we read anyway, Translations multiply the payload,
+ * BuyerPrice is a buyer-specific computation — so they are not requested. If
+ * Etsy refuses this set for an API-key-only app (401/403) while plain
+ * `Images` works, the client falls back to `Images` for the rest of its life.
+ */
+export const DETAIL_INCLUDES = ['Images', 'Videos', 'Personalization'] as const
+export const FALLBACK_INCLUDES = ['Images'] as const
 
 interface Paged<T> {
   count: number
@@ -216,7 +347,9 @@ export interface EtsyClient {
     shopId: number,
     onPage?: (page: number, pages: number) => void
   ): Promise<ActiveListingsResult>
-  /** One listing with its images; null when Etsy answers 404. */
+  /** The associations currently requested for listing details. */
+  detailIncludes(): readonly string[]
+  /** One listing with its images/videos/personalization; null when Etsy answers 404. */
   getListing(listingId: number): Promise<EtsyListingWithAssociations | null>
   /**
    * Listings (with images) by id, 100 per batch request. Ids Etsy no longer
@@ -371,11 +504,35 @@ export function createEtsyClient(opts: EtsyClientOptions): EtsyClient {
     return body
   }
 
+  let includes: readonly string[] = DETAIL_INCLUDES
+
+  /**
+   * Run `fn` with the current includes; if Etsy refuses them as unauthorized
+   * and a smaller set works, keep using the smaller set from now on.
+   */
+  async function withIncludes<T>(fn: (inc: readonly string[]) => Promise<T>): Promise<T> {
+    try {
+      return await fn(includes)
+    } catch (e) {
+      if (!(e instanceof EtsyApiError) || e.kind !== 'auth' || includes === FALLBACK_INCLUDES) throw e
+      let out: T
+      try {
+        out = await fn(FALLBACK_INCLUDES)
+      } catch {
+        throw e
+      }
+      includes = FALLBACK_INCLUDES
+      return out
+    }
+  }
+
   async function getListing(listingId: number): Promise<EtsyListingWithAssociations | null> {
     try {
-      return await request<EtsyListingWithAssociations>(`/v3/application/listings/${listingId}`, {
-        includes: ['Images']
-      })
+      return await withIncludes((inc) =>
+        request<EtsyListingWithAssociations>(`/v3/application/listings/${listingId}`, {
+          includes: [...inc]
+        })
+      )
     } catch (e) {
       if (e instanceof EtsyApiError && e.kind === 'not_found') return null
       throw e
@@ -390,12 +547,14 @@ export function createEtsyClient(opts: EtsyClientOptions): EtsyClient {
    */
   async function batch(ids: number[]): Promise<EtsyListingWithAssociations[]> {
     try {
-      return expectPaged(
-        await request<Paged<EtsyListingWithAssociations>>('/v3/application/listings/batch', {
-          listing_ids: ids,
-          includes: ['Images']
-        })
-      ).results
+      return await withIncludes(async (inc) =>
+        expectPaged(
+          await request<Paged<EtsyListingWithAssociations>>('/v3/application/listings/batch', {
+            listing_ids: ids,
+            includes: [...inc]
+          })
+        ).results
+      )
     } catch (e) {
       if (!(e instanceof EtsyApiError) || (e.kind !== 'not_found' && e.kind !== 'bad_request')) throw e
       if (ids.length === 1) {
@@ -464,6 +623,8 @@ export function createEtsyClient(opts: EtsyClientOptions): EtsyClient {
     },
 
     getListing,
+
+    detailIncludes: () => includes,
 
     async getListingsByIds(ids, onChunk) {
       const out = new Map<number, EtsyListingWithAssociations>()

@@ -28,3 +28,21 @@ describe('filterListings', () => {
     expect(ls).toEqual(copy)
   })
 })
+
+describe('popularity sorts', () => {
+  const pop = [
+    mkListing(1, { numFavorers: 5, views: 900, favorersDelta: 0 }),
+    mkListing(2, { numFavorers: 50, views: 100, favorersDelta: 3 }),
+    mkListing(3, { numFavorers: null, views: null, favorersDelta: null }),
+    mkListing(4, { numFavorers: 20, views: 500, favorersDelta: 12 })
+  ]
+  it('Найпопулярніші (обране): most favorited first, unknown last', () => {
+    expect(ids(filterListings(pop, '', 'favorites'))).toEqual([2, 4, 1, 3])
+  })
+  it('Перегляди: most viewed first', () => {
+    expect(ids(filterListings(pop, '', 'views'))).toEqual([1, 4, 2, 3])
+  })
+  it('Ріст обраного: biggest growth since the previous scan first', () => {
+    expect(ids(filterListings(pop, '', 'favorites-growth'))).toEqual([4, 2, 1, 3])
+  })
+})

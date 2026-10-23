@@ -1,9 +1,15 @@
 import { vi } from 'vitest'
 import type {
   AddShopResult,
+  ImageCounts,
+  ImageSyncState,
   KeyStatus,
   KeyTestResult,
   Listing,
+  ListingStatsPoint,
+  MinioSettingsInput,
+  MinioStatus,
+  MinioTestResult,
   Quota,
   ScanChange,
   ScanOutcome,
@@ -14,6 +20,27 @@ import { useStore } from '../../src/renderer/src/store'
 
 export const noKey: KeyStatus = { hasKey: false, masked: null, encrypted: false }
 export const withKey: KeyStatus = { hasKey: true, masked: 'abcd…wxyz', encrypted: true }
+
+export const minioDefault: MinioStatus = {
+  enabled: true,
+  endpoint: 'http://127.0.0.1:9100',
+  accessKey: 'etsytracker',
+  bucket: 'etsy-tracker',
+  secretSource: 'default',
+  encrypted: false
+}
+
+export const idleSync: ImageSyncState = {
+  running: false,
+  shopId: null,
+  done: 0,
+  total: 0,
+  errors: 0,
+  lastError: null,
+  disabled: false
+}
+
+export const noImages: ImageCounts = { total: 0, stored: 0, pending: 0, error: 0 }
 
 export const mkScan = (over: Partial<ScanSummary> = {}): ScanSummary => ({
   id: 1,
@@ -122,6 +149,26 @@ export function makeApi() {
     onScanState: vi.fn(() => () => {}),
     getQuota: vi.fn(async (): Promise<Quota | null> => null),
     onQuota: vi.fn(() => () => {}),
+    getListingRaw: vi.fn(async (): Promise<string | null> => null),
+    getListingStats: vi.fn(async (): Promise<ListingStatsPoint[]> => []),
+    getMinioStatus: vi.fn(async (): Promise<MinioStatus> => minioDefault),
+    setMinio: vi.fn(
+      async (
+        _input: MinioSettingsInput
+      ): Promise<{ ok: true; status: MinioStatus } | { ok: false; error: string }> => ({
+        ok: true,
+        status: { ...minioDefault, secretSource: 'stored', encrypted: true }
+      })
+    ),
+    testMinio: vi.fn(
+      async (_input?: MinioSettingsInput): Promise<MinioTestResult> => ({ ok: true, message: 'З’єднання є.' })
+    ),
+    getImageStatus: vi.fn(async (): Promise<{ counts: ImageCounts; sync: ImageSyncState }> => ({
+      counts: noImages,
+      sync: idleSync
+    })),
+    syncImages: vi.fn(async (): Promise<ImageSyncState> => ({ ...idleSync, running: true })),
+    onImageSync: vi.fn(() => () => {}),
     openExternal: vi.fn(async () => true)
   }
 }
@@ -144,6 +191,9 @@ export function resetStore(): void {
     error: null,
     search: '',
     sort: 'newest',
+    imageCounts: null,
+    imageSync: null,
+    minioStatus: null,
     showSettings: false,
     showAddShop: false,
     detailListing: null,

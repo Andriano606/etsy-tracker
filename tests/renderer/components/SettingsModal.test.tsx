@@ -4,7 +4,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { SettingsModal } from '../../../src/renderer/src/components/SettingsModal'
 import { ConfirmModal } from '../../../src/renderer/src/components/ConfirmModal'
 import { useStore } from '../../../src/renderer/src/store'
-import { noKey, setupRenderer, withKey, type Api } from '../helpers'
+import { minioDefault, noKey, setupRenderer, withKey, type Api } from '../helpers'
 
 const FULL_KEY = 'abcd1234efgh5678wxyz'
 const SECRET = 'very-secret-value'
@@ -12,7 +12,7 @@ const SECRET = 'very-secret-value'
 let api: Api
 beforeEach(() => {
   api = setupRenderer()
-  useStore.setState({ showSettings: true, keyStatus: withKey })
+  useStore.setState({ showSettings: true, keyStatus: withKey, minioStatus: minioDefault })
 })
 
 const renderIt = () =>
@@ -102,5 +102,65 @@ describe('SettingsModal', () => {
   it('includes the Etsy trademark notice', () => {
     renderIt()
     expect(screen.getByText(/is a trademark of Etsy, Inc/)).toBeInTheDocument()
+  })
+})
+
+describe('SettingsModal: MinIO', () => {
+  const MSECRET = 'minio-typed-secret'
+
+  it('shows the docker-compose defaults; the secret input starts empty and is a password', () => {
+    renderIt()
+    const sec = screen.getByTestId('minio-section')
+    expect(sec).toHaveTextContent('Сховище зображень (MinIO)')
+    expect(screen.getByLabelText('Адреса (S3 API)')).toHaveValue('http://127.0.0.1:9100')
+    expect(screen.getByLabelText('Access key')).toHaveValue('etsytracker')
+    expect(screen.getByLabelText('Бакет')).toHaveValue('etsy-tracker')
+    expect(screen.getByLabelText('Secret key')).toHaveValue('')
+    expect(screen.getByLabelText('Secret key')).toHaveAttribute('type', 'password')
+    expect(screen.getByLabelText('Зберігати фото в MinIO')).toBeChecked()
+    expect(screen.getByTestId('minio-secret-status')).toHaveTextContent(/типовий ключ/)
+    expect(screen.getByTestId('minio-secret-status').querySelector('.warn')).toHaveTextContent(/загальновідомий/)
+  })
+
+  it('saves (secret only when typed), then clears the secret input', async () => {
+    const { container } = renderIt()
+    fireEvent.change(screen.getByLabelText('Бакет'), { target: { value: 'photos' } })
+    fireEvent.click(screen.getByText('Зберегти MinIO'))
+    await screen.findByText('Налаштування MinIO збережено.')
+    expect(api.setMinio).toHaveBeenLastCalledWith({
+      enabled: true,
+      endpoint: 'http://127.0.0.1:9100',
+      accessKey: 'etsytracker',
+      bucket: 'photos'
+    })
+    fireEvent.change(screen.getByLabelText('Secret key'), { target: { value: MSECRET } })
+    fireEvent.click(screen.getByLabelText('Зберігати фото в MinIO'))
+    fireEvent.click(screen.getByText('Зберегти MinIO'))
+    await waitFor(() => expect(api.setMinio).toHaveBeenLastCalledWith(expect.objectContaining({ secretKey: MSECRET, enabled: false })))
+    await waitFor(() => expect(screen.getByLabelText('Secret key')).toHaveValue(''))
+    expect(container.innerHTML).not.toContain(MSECRET)
+    expect(screen.getByTestId('minio-secret-status')).toHaveTextContent(/Збережено, зашифровано/)
+  })
+
+  it('shows a validation error from main', async () => {
+    api.setMinio.mockResolvedValue({ ok: false, error: 'Назва бакета: 3–63 символи' })
+    renderIt()
+    fireEvent.click(screen.getByText('Зберегти MinIO'))
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Назва бакета/)
+  })
+
+  it('Перевірити з’єднання tests the typed values', async () => {
+    api.testMinio.mockResolvedValue({ ok: false, message: 'MinIO недоступний (ECONNREFUSED). Запустіть: docker compose up -d' })
+    renderIt()
+    fireEvent.change(screen.getByLabelText('Адреса (S3 API)'), { target: { value: 'http://127.0.0.1:9999' } })
+    fireEvent.click(screen.getByText('Перевірити з’єднання'))
+    expect(await screen.findByText(/ECONNREFUSED/)).toBeInTheDocument()
+    expect(api.testMinio).toHaveBeenCalledWith(expect.objectContaining({ endpoint: 'http://127.0.0.1:9999' }))
+  })
+
+  it('an unreadable stored secret is reported', () => {
+    useStore.setState({ minioStatus: { ...minioDefault, secretSource: 'stored', unreadable: true } })
+    renderIt()
+    expect(screen.getByTestId('minio-secret-status')).toHaveTextContent(/не вдалося розшифрувати/)
   })
 })

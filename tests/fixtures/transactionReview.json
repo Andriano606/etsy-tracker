@@ -1,0 +1,14 @@
+{
+  "shop_id": 20987654,
+  "listing_id": 1801234567,
+  "transaction_id": 3456789012,
+  "buyer_user_id": 987654321,
+  "rating": 5,
+  "review": "Beautiful mug, arrived quickly.\nThe glaze is even nicer in person &amp; it&#39;s sturdy.",
+  "language": "en",
+  "image_url_fullxfull": "https://i.etsystatic.com/iusa/abc123/123456789/iusa_fullxfull.123456789_abcd.jpg",
+  "create_timestamp": 1760000000,
+  "created_timestamp": 1760000000,
+  "update_timestamp": 1760086400,
+  "updated_timestamp": 1760086400
+}

@@ -1,9 +1,18 @@
 import { Fragment, useEffect, useState } from 'react'
-import type { Listing, ListingDetails, ListingStatsPoint } from '@shared/types'
-import { formatCount, formatDateTime, formatDelta, formatEtsyDate, formatPrice } from '@shared/format'
+import type { Listing, ListingDetails, ListingStatsPoint, Review } from '@shared/types'
+import {
+  formatCount,
+  formatDateTime,
+  formatDelta,
+  formatEtsyDate,
+  formatPrice,
+  formatRating,
+  formatReviewCount,
+  ratingStars
+} from '@shared/format'
 import { LISTING_TYPE_LABEL, WHO_MADE_LABEL, whenMadeLabel } from '@shared/changes'
 import { useStore } from '../store'
-import { imageSrc } from '../imageUrl'
+import { imageSrc, reviewImageSrc } from '../imageUrl'
 import { ExternalLink } from './ExternalLink'
 import { useEscape } from './useEscape'
 
@@ -124,6 +133,7 @@ function StatsHistory({ listingId }: { listingId: number }): JSX.Element {
                 <th>👁 перегляди</th>
                 <th>★ ранг</th>
                 <th>К-сть</th>
+                <th>⭐ відгуки</th>
               </tr>
             </thead>
             <tbody>
@@ -134,6 +144,11 @@ function StatsHistory({ listingId }: { listingId: number }): JSX.Element {
                   <td>{p.views != null ? formatCount(p.views) : '—'}</td>
                   <td>{p.featuredRank != null && p.featuredRank >= 1 ? p.featuredRank : '—'}</td>
                   <td>{p.quantity ?? '—'}</td>
+                  <td>
+                    {p.reviewCount != null
+                      ? `${formatReviewCount(p.reviewCount, p.reviewsComplete === false)}${p.reviewAvg != null ? ` (${formatRating(p.reviewAvg)})` : ''}`
+                      : '—'}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -143,7 +158,112 @@ function StatsHistory({ listingId }: { listingId: number }): JSX.Element {
   )
 }
 
-/** Listing details: gallery, popularity, facts, "Деталі", tags, plain-text description, raw JSON. */
+const REVIEWS_PAGE = 20
+
+/** One review: stars, date, language, plain text with its line breaks, the buyer's photo. */
+function ReviewItem({ r }: { r: Review }): JSX.Element {
+  return (
+    <li className="review-item" data-testid="review-item">
+      <div className="review-body">
+        <div className="review-head">
+          <span className="stars" aria-label={`Оцінка ${r.rating ?? '—'} з 5`}>
+            {ratingStars(r.rating)}
+          </span>
+          <span className="dim">
+            {' '}
+            {formatEtsyDate(r.createdAt)}
+            {r.language ? ` · ${r.language}` : ''}
+            {r.origin === 'new' ? ' · новий' : ''}
+          </span>
+        </div>
+        {r.text && <div className="review-text">{r.text}</div>}
+        {r.hasImage && (
+          <img className="review-photo" src={reviewImageSrc(r)} alt="Фото покупця" loading="lazy" referrerPolicy="no-referrer" />
+        )}
+      </div>
+    </li>
+  )
+}
+
+/** The listing's stored reviews, newest first, loaded a page at a time only when opened. */
+function ReviewsSection({ listing }: { listing: Listing }): JSX.Element | null {
+  const id = listing.listingId
+  const [open, setOpen] = useState(false)
+  const [items, setItems] = useState<Review[] | undefined>(undefined)
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(false)
+  const [failed, setFailed] = useState(false)
+  useEffect(() => {
+    setOpen(false)
+    setItems(undefined)
+    setTotal(0)
+    setFailed(false)
+  }, [id])
+  const loadMore = (offset: number): void => {
+    setLoading(true)
+    setFailed(false)
+    window.api
+      .getListingReviews(id, offset, REVIEWS_PAGE)
+      .then((page) => {
+        // A sync may insert newer reviews meanwhile, shifting the offsets: a
+        // review already shown can come back on the next page — skip it.
+        setItems((prev) => {
+          const kept = offset === 0 ? [] : (prev ?? [])
+          const seen = new Set(kept.map((r) => r.id))
+          return [...kept, ...page.reviews.filter((r) => !seen.has(r.id))]
+        })
+        setTotal(page.total)
+      })
+      .catch(() => setFailed(true))
+      .finally(() => setLoading(false))
+  }
+  useEffect(() => {
+    if (open && items === undefined && !loading) loadMore(0)
+  }, [open, items, id])
+  if (listing.reviewCount == null) return null
+  return (
+    <details className="reviews-details" onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}>
+      <summary>
+        Відгуки ({formatReviewCount(listing.reviewCount, listing.reviewsPartial)})
+        {listing.reviewAvg != null && ` · ⭐ ${formatRating(listing.reviewAvg)}`}
+      </summary>
+      {open &&
+        (items === undefined ? (
+          failed ? (
+            <p className="hint">
+              Не вдалося завантажити відгуки.{' '}
+              <button className="btn subtle small" disabled={loading} onClick={() => loadMore(0)}>
+                Спробувати ще
+              </button>
+            </p>
+          ) : (
+            <p className="hint">Завантаження…</p>
+          )
+        ) : items.length === 0 ? (
+          <p className="hint">Відгуків ще немає.</p>
+        ) : (
+          <>
+            <ul className="review-list" data-testid="listing-reviews">
+              {items.map((r) => (
+                <ReviewItem key={r.id} r={r} />
+              ))}
+            </ul>
+            {failed && <p className="hint">Не вдалося завантажити відгуки.</p>}
+            {items.length < total && (
+              <button className="btn subtle small" disabled={loading} onClick={() => loadMore(items.length)}>
+                Показати ще ({formatCount(total - items.length)})
+              </button>
+            )}
+          </>
+        ))}
+      {listing.reviewsPartial && (
+        <p className="hint">Історія відгуків магазину ще завантажується — показано не всі.</p>
+      )}
+    </details>
+  )
+}
+
+/** Listing details: gallery, popularity, facts, "Деталі", tags, plain-text description, reviews, raw JSON. */
 export function ListingModal(): JSX.Element | null {
   const { detailListing: l, openListing } = useStore()
   const [idx, setIdx] = useState(0)
@@ -215,6 +335,17 @@ export function ListingModal(): JSX.Element | null {
                   </dd>
                 </>
               )}
+              {l.reviewCount != null && l.reviewCount > 0 && (
+                <>
+                  <dt>Відгуки</dt>
+                  <dd data-testid="fact-reviews">
+                    ⭐ {formatRating(l.reviewAvg)} ({formatReviewCount(l.reviewCount, l.reviewsPartial)})
+                    {l.reviewsNew != null && l.reviewsNew > 0 && (
+                      <span className="delta"> (+{formatCount(l.reviewsNew)} нових)</span>
+                    )}
+                  </dd>
+                </>
+              )}
               {l.featuredRank != null && l.featuredRank > 0 && (
                 <>
                   <dt>Рекомендований</dt>
@@ -270,6 +401,7 @@ export function ListingModal(): JSX.Element | null {
                 )}
               </section>
             )}
+            <ReviewsSection listing={l} />
             <StatsHistory listingId={l.listingId} />
             <RawJson listingId={l.listingId} />
           </div>

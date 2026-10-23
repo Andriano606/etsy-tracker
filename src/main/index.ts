@@ -2,12 +2,13 @@ import { app, BrowserWindow, Menu, net, protocol, safeStorage, shell } from 'ele
 import { join } from 'path'
 import type { Quota } from '../shared/types'
 import { isAllowedExternalUrl } from '../shared/externalUrl'
-import { markImageMissing, openDb } from './db'
+import { markImageMissing, markReviewImageMissing, openDb } from './db'
 import { createEtsyClient } from './etsyApi'
 import { IMAGE_SCHEME, createImageProtocolHandler } from './imageProtocol'
 import { type ImageStore, ImageStoreError, createMinioImageStore } from './imageStore'
 import { createImageSyncer } from './imageSync'
-import { registerIpc, startImageSync, type IpcContext } from './ipc'
+import { onReviewSyncDone, registerIpc, startImageSync, type IpcContext } from './ipc'
+import { createReviewSyncer } from './reviewSync'
 import { createScanner } from './scanner'
 import { type MinioConfig, createKeyStore, createMinioSettingsStore } from './settings'
 
@@ -141,9 +142,26 @@ if (!app.requestSingleInstanceLock()) {
         onMissing: (row) => {
           markImageMissing(db, row)
           void images.sync({ shopId: row.shop_id }).catch(() => undefined)
+        },
+        onReviewMissing: (row) => {
+          markReviewImageMissing(db, row.id)
+          void images.sync({ shopId: row.shop_id }).catch(() => undefined)
         }
       })
     )
+
+    // Reviews of the whole shop, after each ok scan (ipc.ts) or on demand;
+    // resumable and capped per run (reviewSync.ts).
+    let ctxRef: IpcContext | null = null
+    const reviews = createReviewSyncer({
+      db,
+      client,
+      getQuota: () => quota,
+      onState: (s) => send('reviews:progress', s),
+      onDone: (s) => {
+        if (ctxRef) onReviewSyncDone(ctxRef, s)
+      }
+    })
 
     const ctx: IpcContext = {
       db,
@@ -157,8 +175,10 @@ if (!app.requestSingleInstanceLock()) {
       makeStore,
       onMinioChanged: () => {
         cached = null
-      }
+      },
+      reviews
     }
+    ctxRef = ctx
     registerIpc(ctx)
     createWindow()
     // Images left 'pending' (MinIO was down, the app quit mid-sync, or rows

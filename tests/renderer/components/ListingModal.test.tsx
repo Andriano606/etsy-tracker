@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { ListingModal } from '../../../src/renderer/src/components/ListingModal'
 import { useStore } from '../../../src/renderer/src/store'
-import { mkListing, setupRenderer, type Api } from '../helpers'
+import { mkListing, mkReview, setupRenderer, type Api } from '../helpers'
 import { mkDetails } from '../../helpers/db'
 
 let api: Api
@@ -150,5 +150,124 @@ describe('ListingModal: popularity, details, raw JSON', () => {
     expect(rows[0]).toHaveTextContent('140')
     expect(rows[1]).toHaveTextContent('#1')
     expect(rows[1]).toHaveTextContent('—')
+  })
+})
+
+describe('ListingModal: reviews', () => {
+  const open = async (container: HTMLElement) => {
+    const details = container.querySelector('details.reviews-details') as HTMLDetailsElement
+    await act(async () => {
+      details.open = true
+      details.dispatchEvent(new Event('toggle'))
+    })
+  }
+
+  it('shows ⭐ avg (count) +N in the facts; the "Відгуки" section loads lazily, a page at a time', async () => {
+    const page1 = Array.from({ length: 20 }, (_, i) =>
+      mkReview(100 - i, { text: `Text ${100 - i}`, language: 'de', origin: i === 0 ? 'new' : 'backfill' })
+    )
+    api.getListingReviews
+      .mockResolvedValueOnce({ total: 25, offset: 0, reviews: page1 })
+      .mockResolvedValueOnce({ total: 25, offset: 20, reviews: [mkReview(80, { text: 'Oldest one' })] })
+    useStore.setState({ detailListing: mkListing(1, { reviewCount: 25, reviewAvg: 4.6, reviewsNew: 1 }) })
+    const { container } = render(<ListingModal />)
+    expect(screen.getByTestId('fact-reviews').textContent!.replace(/\s/g, ' ')).toBe('⭐ 4,6 (25) (+1 нових)')
+    expect(api.getListingReviews).not.toHaveBeenCalled()
+    await open(container)
+    expect(api.getListingReviews).toHaveBeenCalledWith(1, 0, 20)
+    const items = await screen.findAllByTestId('review-item')
+    expect(items).toHaveLength(20)
+    expect(items[0]).toHaveTextContent('Text 100')
+    expect(items[0]).toHaveTextContent('de')
+    expect(items[0]).toHaveTextContent('новий')
+    await act(async () => {
+      fireEvent.click(screen.getByText(/Показати ще \(5\)/))
+    })
+    expect(api.getListingReviews).toHaveBeenLastCalledWith(1, 20, 20)
+    expect(screen.getAllByTestId('review-item')).toHaveLength(21)
+    expect(screen.getByText('Oldest one')).toBeInTheDocument()
+  })
+
+  it('"Показати ще" skips reviews already shown (a sync inserted newer ones meanwhile)', async () => {
+    const page1 = Array.from({ length: 20 }, (_, i) => mkReview(100 - i, { text: `Text ${100 - i}` }))
+    // One new review arrived at the top: review 81 (the last shown) comes back first.
+    const page2 = [mkReview(81, { text: 'Text 81' }), mkReview(80, { text: 'Text 80' })]
+    api.getListingReviews
+      .mockResolvedValueOnce({ total: 22, offset: 0, reviews: page1 })
+      .mockResolvedValueOnce({ total: 23, offset: 20, reviews: page2 })
+    useStore.setState({ detailListing: mkListing(1, { reviewCount: 22, reviewAvg: 4.6 }) })
+    const { container } = render(<ListingModal />)
+    await open(container)
+    await screen.findAllByTestId('review-item')
+    await act(async () => {
+      fireEvent.click(screen.getByText(/Показати ще/))
+    })
+    const texts = screen.getAllByTestId('review-item').map((li) => li.querySelector('.review-text')!.textContent)
+    expect(texts).toHaveLength(21)
+    expect(new Set(texts).size).toBe(21)
+    expect(texts.at(-1)).toBe('Text 80')
+  })
+
+  it('a failed reviews load says so and can be retried (never stuck on "Завантаження…")', async () => {
+    api.getListingReviews
+      .mockRejectedValueOnce(new Error('ipc failed'))
+      .mockResolvedValueOnce({ total: 1, offset: 0, reviews: [mkReview(5, { text: 'Back again' })] })
+    useStore.setState({ detailListing: mkListing(1, { reviewCount: 1, reviewAvg: 5 }) })
+    const { container } = render(<ListingModal />)
+    await open(container)
+    expect(await screen.findByText(/Не вдалося завантажити відгуки/)).toBeInTheDocument()
+    expect(screen.queryByText('Завантаження…')).toBeNull()
+    await act(async () => {
+      fireEvent.click(screen.getByText('Спробувати ще'))
+    })
+    expect(await screen.findByText('Back again')).toBeInTheDocument()
+  })
+
+  it('review text is plain text with its line breaks; the photo goes through etsyimg://review', async () => {
+    const text = 'Great!\nSecond line <b>bold</b><img src=x onerror="alert(1)">'
+    api.getListingReviews.mockResolvedValue({ total: 1, offset: 0, reviews: [mkReview(5, { text, hasImage: true, rating: 3 })] })
+    useStore.setState({ detailListing: mkListing(2, { reviewCount: 1, reviewAvg: 3 }) })
+    const { container } = render(<ListingModal />)
+    await open(container)
+    const item = await screen.findByTestId('review-item')
+    const body = item.querySelector('.review-text')!
+    expect(body.textContent).toBe(text)
+    expect(body.querySelector('b')).toBeNull()
+    expect(container.querySelector('img[src="x"]')).toBeNull()
+    expect(item.querySelector('img.review-photo')!.getAttribute('src')).toBe('etsyimg://review/5/fullxfull')
+    expect(item).toHaveTextContent('★★★☆☆')
+  })
+
+  it('a partial history says so; a never-synced shop has no reviews section', async () => {
+    useStore.setState({ detailListing: mkListing(3, { reviewCount: 4, reviewAvg: 5, reviewsPartial: true }) })
+    const { container, unmount } = render(<ListingModal />)
+    expect(screen.getByTestId('fact-reviews')).toHaveTextContent('(≥ 4)')
+    await open(container)
+    expect(await screen.findByText(/ще завантажується/)).toBeInTheDocument()
+    unmount()
+    useStore.setState({ detailListing: mkListing(4, { reviewCount: null }) })
+    const r2 = render(<ListingModal />)
+    expect(r2.container.querySelector('details.reviews-details')).toBeNull()
+    expect(screen.queryByTestId('fact-reviews')).toBeNull()
+  })
+
+  it('the popularity history has the review count per scan ("≥" while partial)', async () => {
+    api.getListingStats.mockResolvedValue([
+      { scanId: 1, at: null, views: 1, numFavorers: 1, featuredRank: null, quantity: 1, reviewCount: 10, reviewAvg: 4.5, reviewsComplete: false },
+      { scanId: 2, at: null, views: 1, numFavorers: 1, featuredRank: null, quantity: 1, reviewCount: 14, reviewAvg: 4.75, reviewsComplete: true },
+      { scanId: 3, at: null, views: 1, numFavorers: 1, featuredRank: null, quantity: 1, reviewCount: null, reviewAvg: null, reviewsComplete: null }
+    ])
+    useStore.setState({ detailListing: mkListing(9) })
+    const { container } = render(<ListingModal />)
+    const details = container.querySelector('details.stats-details') as HTMLDetailsElement
+    await act(async () => {
+      details.open = true
+      details.dispatchEvent(new Event('toggle'))
+    })
+    const rows = (await screen.findByTestId('stats-history')).querySelectorAll('tbody tr')
+    expect(screen.getByText('⭐ відгуки')).toBeInTheDocument()
+    expect(rows[0].lastElementChild!.textContent).toBe('—')
+    expect(rows[1].lastElementChild!.textContent).toBe('14 (4,75)')
+    expect(rows[2].lastElementChild!.textContent).toBe('≥ 10 (4,5)')
   })
 })

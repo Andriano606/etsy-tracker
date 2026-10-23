@@ -63,6 +63,11 @@ export function imageObjectKey(
   return `shops/${shopId}/listings/${listingId}/${imageId}/${size}.${ext}`
 }
 
+/** `shops/{shop_id}/reviews/{review_key}/fullxfull.{ext}` — review keys are `[a-z0-9-]`. */
+export function reviewObjectKey(shopId: number, reviewKey: string, ext: string): string {
+  return `shops/${shopId}/reviews/${reviewKey.replace(/[^A-Za-z0-9-]/g, '_')}/fullxfull.${ext}`
+}
+
 export class ImageStoreError extends Error {
   constructor(message: string, public cause?: unknown) {
     super(message)

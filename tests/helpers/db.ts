@@ -1,9 +1,27 @@
 import type { Listing, ListingDetails, Shop } from '../../src/shared/types'
-import { type Db, type ListingInput, insertShop, openDb } from '../../src/main/db'
+import { type Db, type ListingInput, MIGRATIONS, insertShop, migrate, openDb } from '../../src/main/db'
 
 /** A fresh, migrated, real SQLite database in memory. */
 export function memDb(): Db {
   return openDb(':memory:')
+}
+
+/**
+ * An empty in-memory database at schema `version` (0 = no tables): a fresh
+ * memDb() with every table dropped, then migrated with the first `version`
+ * entries of MIGRATIONS — the starting point of a migration test.
+ */
+export function memDbAt(version: number): Db {
+  const db = memDb()
+  db.exec('PRAGMA foreign_keys = OFF')
+  const tables = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+    .all() as Array<{ name: string }>
+  for (const t of tables) db.exec(`DROP TABLE "${t.name}"`)
+  db.exec('PRAGMA user_version = 0')
+  db.exec('PRAGMA foreign_keys = ON')
+  migrate(db, MIGRATIONS.slice(0, version))
+  return db
 }
 
 export const mkShop = (over: Partial<Shop> = {}): Shop => ({

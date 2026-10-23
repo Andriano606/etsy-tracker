@@ -22,7 +22,8 @@ export function App(): JSX.Element {
     setProgress,
     setQuota,
     setError,
-    setImageSync
+    setImageSync,
+    setReviewSync
   } = useStore()
 
   useEffect(() => {
@@ -32,10 +33,11 @@ export function App(): JSX.Element {
       window.api.onScanProgress(setProgress),
       window.api.onScanState(({ shopId, running }) => setScanning(shopId, running)),
       window.api.onQuota(setQuota),
-      window.api.onImageSync(setImageSync)
+      window.api.onImageSync(setImageSync),
+      window.api.onReviewSync(setReviewSync)
     ]
     return () => offs.forEach((off) => off())
-  }, [load, setShops, setProgress, setScanning, setQuota, setImageSync])
+  }, [load, setShops, setProgress, setScanning, setQuota, setImageSync, setReviewSync])
 
   let main: JSX.Element | null
   if (!loaded) main = <div className="placeholder">Завантаження…</div>

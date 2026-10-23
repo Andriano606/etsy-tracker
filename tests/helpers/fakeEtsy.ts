@@ -6,6 +6,7 @@ import listingFx from '../fixtures/listing.json'
 import imageFx from '../fixtures/listingImage.json'
 import shopFx from '../fixtures/shop.json'
 import pingFx from '../fixtures/ping.json'
+import reviewFx from '../fixtures/transactionReview.json'
 import { fakeFetch, type FakeReply } from './fakeFetch'
 import {
   createEtsyClient,
@@ -13,7 +14,8 @@ import {
   type EtsyClientOptions,
   type EtsyListingImage,
   type EtsyListingWithAssociations,
-  type EtsyShop
+  type EtsyShop,
+  type EtsyTransactionReview
 } from '../../src/main/etsyApi'
 
 export const SHOP_ID = shopFx.shop_id
@@ -99,6 +101,33 @@ export function mkEtsyListing(
   }
 }
 
+/** Created time of review `n` (1-based; one day apart, newest = highest n). */
+export const reviewCreated = (n: number): number => 1_700_000_000 + n * 86_400
+
+/**
+ * A TransactionReview shaped like the fixture (every OAS field): transaction
+ * 5000+n, listing `listingId` (default 1 + n % 3), rating 1–5 cycling, no photo
+ * unless `over` gives one.
+ */
+export function mkEtsyReview(n: number, over: Partial<EtsyTransactionReview> = {}): EtsyTransactionReview {
+  const created = reviewCreated(n)
+  return {
+    ...(reviewFx as unknown as EtsyTransactionReview),
+    shop_id: SHOP_ID,
+    listing_id: 1 + (n % 3),
+    transaction_id: 5000 + n,
+    buyer_user_id: 7000 + n,
+    rating: 1 + (n % 5),
+    review: `Review number ${n}`,
+    image_url_fullxfull: null,
+    create_timestamp: created,
+    created_timestamp: created,
+    update_timestamp: created,
+    updated_timestamp: created,
+    ...over
+  }
+}
+
 export interface FakeEtsyOptions {
   /** Return a reply to override the normal answer for this request (nth = 1-based). */
   intercept?: (url: URL, nth: number) => FakeReply | null | undefined
@@ -112,6 +141,15 @@ export interface FakeEtsyOptions {
   refuseIncludes?: string[]
 }
 
+/**
+ * Order of /shops/{id}/reviews results. The OAS documents none; 'desc'
+ * (newest first) is the likely live one, 'asc'/'shuffle' prove the sync does
+ * not depend on it ('shuffle' = a fixed pseudo-random order, not by date).
+ * 'unstable' = newest first, but reviews of the same second come in a
+ * different order on every request (a sort by created time alone).
+ */
+export type ReviewOrder = 'desc' | 'asc' | 'shuffle' | 'unstable'
+
 export class FakeEtsy {
   shop: EtsyShop = { ...(shopFx as unknown as EtsyShop) }
   listings: EtsyListingWithAssociations[] = []
@@ -120,6 +158,11 @@ export class FakeEtsy {
   intercept: FakeEtsyOptions['intercept']
   batchUnknown: NonNullable<FakeEtsyOptions['batchUnknown']>
   refuseIncludes: string[]
+  /** The shop's reviews (GET /shops/{id}/reviews). */
+  reviews: EtsyTransactionReview[] = []
+  reviewOrder: ReviewOrder = 'desc'
+  /** Answer every reviews request with this HTTP status (e.g. 403, 404). */
+  reviewsStatus: number | null = null
 
   readonly fetch = fakeFetch((url) => this.handle(url))
 
@@ -184,6 +227,8 @@ export class FakeEtsy {
       const hit = this.shop.shop_name.toLowerCase().includes(name.toLowerCase())
       return { body: { count: hit ? 1 : 0, results: hit ? [this.shop] : [] } }
     }
+    const revM = p.match(/^\/v3\/application\/shops\/(\d+)\/reviews$/)
+    if (revM) return this.reviewsPage(Number(revM[1]), url)
     const shopM = p.match(/^\/v3\/application\/shops\/(\d+)(\/listings\/active)?$/)
     if (shopM) {
       if (Number(shopM[1]) !== this.shop.shop_id) {
@@ -222,5 +267,34 @@ export class FakeEtsy {
       return { body: this.withIncludes(l, includes) }
     }
     return { status: 404, body: { error: `no route ${p}` } }
+  }
+
+  /** getReviewsByShop: limit ≤ 100, offset ≤ 12000, inclusive min/max_created, `count` = matches. */
+  private reviewsPage(shopId: number, url: URL): FakeReply {
+    if (this.reviewsStatus) return { status: this.reviewsStatus, body: { error: 'Reviews unavailable' } }
+    if (shopId !== this.shop.shop_id) return { status: 404, body: { error: 'Shop not found' } }
+    const limit = Number(url.searchParams.get('limit') ?? 25)
+    const offset = Number(url.searchParams.get('offset') ?? 0)
+    if (limit > 100 || limit < 1 || offset > 12000) return { status: 400, body: { error: 'bad paging' } }
+    const min = url.searchParams.get('min_created')
+    const max = url.searchParams.get('max_created')
+    for (const v of [min, max]) {
+      if (v != null && Number(v) < 946684800) return { status: 400, body: { error: 'min_created below minimum' } }
+    }
+    const created = (r: EtsyTransactionReview): number => Number(r.created_timestamp ?? r.create_timestamp)
+    const all = this.reviews.filter(
+      (r) => (min == null || created(r) >= Number(min)) && (max == null || created(r) <= Number(max))
+    )
+    if (this.reviewOrder === 'unstable') {
+      const salt = this.requests.length * 31
+      const tie = (r: EtsyTransactionReview): number => (Number(r.transaction_id) * 7919 + salt) % 97
+      all.sort((a, b) => created(b) - created(a) || tie(a) - tie(b))
+    } else if (this.reviewOrder === 'shuffle') {
+      // Pseudo-random but stable (the same for every offset), not by date.
+      all.sort((a, b) => ((Number(a.transaction_id) * 7919) % 101) - ((Number(b.transaction_id) * 7919) % 101) || created(a) - created(b))
+    } else {
+      all.sort((a, b) => (this.reviewOrder === 'asc' ? 1 : -1) * (created(a) - created(b)) || Number(a.transaction_id) - Number(b.transaction_id))
+    }
+    return { body: { count: all.length, results: all.slice(offset, offset + limit) } }
   }
 }

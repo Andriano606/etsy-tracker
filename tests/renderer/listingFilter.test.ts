@@ -46,3 +46,18 @@ describe('popularity sorts', () => {
     expect(ids(filterListings(pop, '', 'favorites-growth'))).toEqual([4, 2, 1, 3])
   })
 })
+
+describe('review sorts', () => {
+  const rv = [
+    mkListing(1, { reviewCount: 3, reviewsNew: 0 }),
+    mkListing(2, { reviewCount: 120, reviewsNew: 2 }),
+    mkListing(3, { reviewCount: null, reviewsNew: null }),
+    mkListing(4, { reviewCount: 40, reviewsNew: 7 })
+  ]
+  it('Найбільше відгуків: most reviews first, never-synced last', () => {
+    expect(ids(filterListings(rv, '', 'reviews'))).toEqual([2, 4, 1, 3])
+  })
+  it('Ріст відгуків: most new reviews since the previous scan first', () => {
+    expect(ids(filterListings(rv, '', 'reviews-growth'))).toEqual([4, 2, 1, 3])
+  })
+})

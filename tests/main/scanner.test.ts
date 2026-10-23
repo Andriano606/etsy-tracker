@@ -377,7 +377,17 @@ describe('popularity history (listing_stats / shop_stats)', () => {
     const { db, etsy, scanner } = setup(2)
     const s1 = ok(await scanner.scanShop(SHOP_ID))
     expect(listListingStats(db, 1)).toEqual([
-      { scanId: s1.id, at: s1.finishedAt, views: 101, numFavorers: 11, featuredRank: -1, quantity: 5 }
+      {
+        scanId: s1.id,
+        at: s1.finishedAt,
+        views: 101,
+        numFavorers: 11,
+        featuredRank: -1,
+        quantity: 5,
+        reviewCount: null,
+        reviewAvg: null,
+        reviewsComplete: null
+      }
     ])
     expect(getListing(db, 1)).toMatchObject({ views: 101, numFavorers: 11, favorersDelta: null, viewsDelta: null })
     expect(getShopSummary(db, SHOP_ID)).toMatchObject({

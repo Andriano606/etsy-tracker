@@ -13,6 +13,10 @@ import type {
   ListingVideo,
   ListingStatsPoint,
   PersonalizationQuestion,
+  Review,
+  ReviewOrigin,
+  ReviewPage,
+  ReviewSyncInfo,
   ScanChange,
   ScanStatus,
   ScanSummary,
@@ -275,6 +279,92 @@ export const MIGRATIONS: string[] = [
     listing_active_count INTEGER
   );
   CREATE INDEX shop_stats_shop ON shop_stats(shop_id, scan_id);
+  `,
+  // v3: the shops' reviews (GET /shops/{id}/reviews) with their photos' MinIO
+  // state, the per-shop sync cursor, and per-scan review counts.
+  `
+  CREATE TABLE reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,  -- our id (etsyimg://review/{id}/fullxfull)
+    review_key TEXT NOT NULL UNIQUE,       -- t-{transaction_id}, else x-{listing}-{buyer|0}-{created}
+    shop_id INTEGER NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
+    listing_id INTEGER,                    -- no FK: reviews of listings we never stored
+    transaction_id INTEGER,
+    buyer_user_id INTEGER,
+    rating INTEGER,
+    review TEXT,                           -- entities decoded
+    language TEXT,
+    image_url_fullxfull TEXT,              -- NULL = none / not returned / not an Etsy CDN URL
+    create_timestamp INTEGER,              -- Etsy epoch seconds (the OAS has both spellings)
+    created_timestamp INTEGER,
+    update_timestamp INTEGER,
+    updated_timestamp INTEGER,
+    raw_json TEXT NOT NULL,                -- the latest API object
+    first_seen_at INTEGER NOT NULL,        -- epoch ms
+    last_seen_at INTEGER NOT NULL,         -- epoch ms
+    changed_at INTEGER,                    -- epoch ms: last time a rescan saw an edit
+    first_seen_scan_id INTEGER REFERENCES scans(id) ON DELETE SET NULL,
+    origin TEXT NOT NULL CHECK (origin IN ('backfill', 'new')),
+    image_sync_status TEXT CHECK (image_sync_status IN ('pending', 'stored', 'error')), -- NULL = no photo
+    image_sync_error TEXT,
+    image_sync_attempts INTEGER NOT NULL DEFAULT 0,
+    image_stored_at INTEGER,
+    image_key TEXT,                        -- MinIO object key; NULL = no object
+    image_byte_size INTEGER,
+    image_content_type TEXT,
+    image_etag TEXT,
+    image_sha256 TEXT
+  );
+  CREATE INDEX reviews_listing ON reviews(listing_id);
+  CREATE INDEX reviews_shop_created ON reviews(shop_id, created_timestamp);
+  CREATE INDEX reviews_scan ON reviews(first_seen_scan_id, origin);
+  CREATE INDEX reviews_image_sync ON reviews(shop_id, image_sync_status);
+
+  -- One row per shop: where the backfill / incremental sync stands.
+  CREATE TABLE review_sync (
+    shop_id INTEGER PRIMARY KEY REFERENCES shops(id) ON DELETE CASCADE,
+    backfill_complete INTEGER NOT NULL DEFAULT 0,
+    backfill_upper INTEGER,                -- s: the backfill covers created <= this (fixed at its start)
+    total_estimate INTEGER,                -- Etsy count of created <= backfill_upper at the start
+    win_hi INTEGER,                        -- s: current backfill window [win_lo, win_hi]
+    win_lo INTEGER,                        -- NULL = open down to the oldest review
+    win_offset INTEGER NOT NULL DEFAULT 0,
+    win_count INTEGER,                     -- Etsy count of the current window
+    win_span INTEGER,                      -- s: width used when a window must be narrowed
+    synced_through INTEGER,                -- s: incremental passes covered created <= this
+    inc_lo INTEGER,                        -- s: an incremental pass in progress [inc_lo, inc_hi]
+    inc_hi INTEGER,
+    inc_target INTEGER,                    -- s: where that pass ends
+    inc_offset INTEGER NOT NULL DEFAULT 0,
+    inc_count INTEGER,
+    oldest_created INTEGER,                -- s: oldest/newest created_timestamp stored
+    newest_created INTEGER,
+    requests_total INTEGER NOT NULL DEFAULT 0,
+    last_run_requests INTEGER NOT NULL DEFAULT 0,
+    last_synced_at INTEGER,                -- ms: last run that finished (ok or not)
+    last_error TEXT
+  );
+
+  CREATE TABLE listing_review_stats (
+    scan_id INTEGER NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
+    listing_id INTEGER NOT NULL,
+    review_count INTEGER NOT NULL,
+    review_avg REAL,
+    new_count INTEGER NOT NULL DEFAULT 0,
+    complete INTEGER NOT NULL,             -- 0 = the shop's backfill was incomplete (count is a lower bound)
+    PRIMARY KEY (scan_id, listing_id)
+  ) WITHOUT ROWID;
+  CREATE INDEX listing_review_stats_listing ON listing_review_stats(listing_id, scan_id);
+
+  CREATE TABLE shop_review_stats (
+    scan_id INTEGER PRIMARY KEY REFERENCES scans(id) ON DELETE CASCADE,
+    shop_id INTEGER NOT NULL,
+    review_count INTEGER NOT NULL,
+    review_avg REAL,
+    new_count INTEGER NOT NULL DEFAULT 0,
+    complete INTEGER NOT NULL,
+    synced_at INTEGER NOT NULL             -- ms
+  );
+  CREATE INDEX shop_review_stats_shop ON shop_review_stats(shop_id, scan_id);
   `
 ]
 
@@ -641,6 +731,8 @@ interface ListingExtras {
   images: ListingImage[]
   videos: ListingVideo[]
   prevStats?: { views: number | null; num_favorers: number | null }
+  /** Review aggregates of the listing; undefined = the shop's reviews were never synced. */
+  reviews?: { count: number; avg: number | null; fresh: number; partial: boolean }
 }
 
 function delta(cur: number | null | undefined, prev: number | null | undefined): number | null {
@@ -672,7 +764,11 @@ function toListing(r: ListingRow, x: ListingExtras): Listing {
     favorersDelta: delta(r.num_favorers, x.prevStats?.num_favorers),
     viewsDelta: delta(r.views, x.prevStats?.views),
     details: toDetails(r),
-    videos: x.videos
+    videos: x.videos,
+    reviewCount: x.reviews ? x.reviews.count : null,
+    reviewAvg: x.reviews ? x.reviews.avg : null,
+    reviewsNew: x.reviews ? x.reviews.fresh : null,
+    reviewsPartial: x.reviews ? x.reviews.partial : false
   }
 }
 
@@ -802,8 +898,8 @@ export function findShopByName(db: Db, shopName: string): Shop | null {
 }
 
 /**
- * Delete a shop; its listings (with images/videos), scans, stats and scan
- * changes go with it (FK cascade). MinIO objects are the caller's job —
+ * Delete a shop; its listings (with images/videos), scans, stats, scan
+ * changes, reviews and review sync state go with it (FK cascade). MinIO objects are the caller's job —
  * collect them first with `listShopObjectKeys`.
  */
 export function deleteShop(db: Db, id: number): void {
@@ -896,7 +992,8 @@ function shopSummary(db: Db, shop: Shop): ShopSummary {
     lastScan: last ? toScan(last) : null,
     newCount: lastOkScan && !lastOkScan.isBaseline ? lastOkScan.added : 0,
     stats,
-    statsDelta: shopStatsDelta(stats, getShopStats(db, prevId))
+    statsDelta: shopStatsDelta(stats, getShopStats(db, prevId)),
+    reviews: reviewSyncInfo(db, shop.id)
   }
 }
 
@@ -983,11 +1080,13 @@ function listingsOfShop(db: Db, shopId: number, activeOnly: boolean): Listing[] 
   const videos = videosFor(db, 'l.shop_id = ?', shopId)
   // Deltas compare with the previous successful scan (the latest one wrote the current values).
   const prev = statsOfScan(db, okScanIds(db, shopId, 2)[1])
+  const reviews = reviewAggregates(db, shopId)
   return rows.map((r) =>
     toListing(r, {
       images: images.get(r.listing_id) ?? [],
       videos: videos.get(r.listing_id) ?? [],
-      prevStats: prev.get(r.listing_id)
+      prevStats: prev.get(r.listing_id),
+      reviews: reviews?.(r.listing_id)
     })
   )
 }
@@ -1005,7 +1104,8 @@ export function getListing(db: Db, listingId: number): Listing | null {
   return toListing(r, {
     images: imagesFor(db, 'l.listing_id = ?', listingId).get(listingId) ?? [],
     videos: videosFor(db, 'l.listing_id = ?', listingId).get(listingId) ?? [],
-    prevStats: prev.get(listingId)
+    prevStats: prev.get(listingId),
+    reviews: reviewAggregates(db, r.shop_id, listingId)?.(listingId)
   })
 }
 
@@ -1274,8 +1374,10 @@ export type { ListingStatsPoint }
 export function listListingStats(db: Db, listingId: number): ListingStatsPoint[] {
   const rows = db
     .prepare(
-      `SELECT s.scan_id, sc.finished_at, s.views, s.num_favorers, s.featured_rank, s.quantity
+      `SELECT s.scan_id, sc.finished_at, s.views, s.num_favorers, s.featured_rank, s.quantity,
+         rs.review_count, rs.review_avg, rs.complete AS reviews_complete
        FROM listing_stats s JOIN scans sc ON sc.id = s.scan_id
+       LEFT JOIN listing_review_stats rs ON rs.scan_id = s.scan_id AND rs.listing_id = s.listing_id
        WHERE s.listing_id = ? ORDER BY s.scan_id`
     )
     .all(listingId) as Array<{
@@ -1285,6 +1387,9 @@ export function listListingStats(db: Db, listingId: number): ListingStatsPoint[]
     num_favorers: number | null
     featured_rank: number | null
     quantity: number | null
+    review_count: number | null
+    review_avg: number | null
+    reviews_complete: number | null
   }>
   return rows.map((r) => ({
     scanId: r.scan_id,
@@ -1292,7 +1397,10 @@ export function listListingStats(db: Db, listingId: number): ListingStatsPoint[]
     views: r.views,
     numFavorers: r.num_favorers,
     featuredRank: r.featured_rank,
-    quantity: r.quantity
+    quantity: r.quantity,
+    reviewCount: r.review_count,
+    reviewAvg: r.review_avg,
+    reviewsComplete: bool(r.reviews_complete)
   }))
 }
 
@@ -1434,7 +1542,15 @@ export function resetStoredImages(db: Db): number {
        WHERE sync_status = 'stored' OR key_full IS NOT NULL OR key_570 IS NOT NULL`
     )
     .run()
-  return Number(r.changes)
+  const rv = db
+    .prepare(
+      `UPDATE reviews SET image_key = NULL, image_stored_at = NULL, image_etag = NULL,
+         image_sync_status = CASE WHEN image_url_fullxfull IS NULL THEN NULL ELSE 'pending' END,
+         image_sync_error = NULL, image_sync_attempts = 0
+       WHERE image_sync_status = 'stored' OR image_key IS NOT NULL`
+    )
+    .run()
+  return Number(r.changes) + Number(rv.changes)
 }
 
 /** Active 'stored' rows (to verify their objects still exist on a forced sync). */
@@ -1452,7 +1568,13 @@ export function listShopObjectKeys(db: Db, shopId: number): string[] {
   const rows = db
     .prepare('SELECT key_full, key_570 FROM listing_images WHERE shop_id = ?')
     .all(shopId) as Array<{ key_full: string | null; key_570: string | null }>
-  return rows.flatMap((r) => [r.key_full, r.key_570]).filter((k): k is string => !!k)
+  const reviewKeys = db
+    .prepare('SELECT image_key FROM reviews WHERE shop_id = ? AND image_key IS NOT NULL')
+    .all(shopId) as Array<{ image_key: string }>
+  return [
+    ...rows.flatMap((r) => [r.key_full, r.key_570]),
+    ...reviewKeys.map((r) => r.image_key)
+  ].filter((k): k is string => !!k)
 }
 
 export function imageCounts(db: Db, shopId?: number | null): ImageCounts {
@@ -1585,4 +1707,584 @@ export function listScanChanges(db: Db, scanId: number): ScanChange[] {
     newValue: parseJson<TrackedFields | null>(r.new_value, null),
     listing: getListing(db, r.listing_id)
   }))
+}
+
+// -------------------------------------------------------------------- reviews
+
+/** A review as mapped from Etsy (`mapReview`); bookkeeping columns are set on write. */
+export interface ReviewInput {
+  key: string
+  shopId: number
+  listingId: number | null
+  transactionId: number | null
+  buyerUserId: number | null
+  rating: number | null
+  text: string | null
+  language: string | null
+  /** Validated Etsy CDN URL, else null. */
+  imageUrl: string | null
+  createTimestamp: number | null
+  createdTimestamp: number | null
+  updateTimestamp: number | null
+  updatedTimestamp: number | null
+  rawJson: string
+}
+
+interface ReviewRow {
+  id: number
+  review_key: string
+  shop_id: number
+  listing_id: Nullable<number>
+  transaction_id: Nullable<number>
+  buyer_user_id: Nullable<number>
+  rating: Nullable<number>
+  review: Nullable<string>
+  language: Nullable<string>
+  image_url_fullxfull: Nullable<string>
+  create_timestamp: Nullable<number>
+  created_timestamp: Nullable<number>
+  update_timestamp: Nullable<number>
+  updated_timestamp: Nullable<number>
+  raw_json: string
+  first_seen_at: number
+  last_seen_at: number
+  changed_at: Nullable<number>
+  first_seen_scan_id: Nullable<number>
+  origin: ReviewOrigin
+  image_sync_status: Nullable<ImageSyncStatus>
+  image_sync_error: Nullable<string>
+  image_sync_attempts: number
+  image_stored_at: Nullable<number>
+  image_key: Nullable<string>
+  image_byte_size: Nullable<number>
+  image_content_type: Nullable<string>
+  image_etag: Nullable<string>
+  image_sha256: Nullable<string>
+}
+
+/** The columns the image sync / etsyimg handler need of one review row. */
+export type ReviewImageRow = Pick<
+  ReviewRow,
+  | 'id'
+  | 'review_key'
+  | 'shop_id'
+  | 'image_url_fullxfull'
+  | 'image_sync_status'
+  | 'image_sync_attempts'
+  | 'image_key'
+>
+
+function toReview(r: ReviewRow & { listing_title?: string | null; listing_image_id?: number | null }): Review {
+  const out: Review = {
+    id: r.id,
+    key: r.review_key,
+    shopId: r.shop_id,
+    listingId: r.listing_id,
+    transactionId: r.transaction_id,
+    buyerUserId: r.buyer_user_id,
+    rating: r.rating,
+    text: r.review,
+    language: r.language,
+    hasImage: !!r.image_url_fullxfull,
+    imageStatus: r.image_sync_status,
+    createdAt: r.created_timestamp,
+    updatedAt: r.updated_timestamp,
+    firstSeenAt: r.first_seen_at,
+    firstSeenScanId: r.first_seen_scan_id,
+    origin: r.origin
+  }
+  if ('listing_title' in r) out.listingTitle = r.listing_title ?? null
+  if ('listing_image_id' in r) out.listingImageId = r.listing_image_id ?? null
+  return out
+}
+
+export interface ReviewSyncRow {
+  shop_id: number
+  backfill_complete: number
+  backfill_upper: Nullable<number>
+  total_estimate: Nullable<number>
+  win_hi: Nullable<number>
+  win_lo: Nullable<number>
+  win_offset: number
+  win_count: Nullable<number>
+  win_span: Nullable<number>
+  synced_through: Nullable<number>
+  inc_lo: Nullable<number>
+  inc_hi: Nullable<number>
+  inc_target: Nullable<number>
+  inc_offset: number
+  inc_count: Nullable<number>
+  oldest_created: Nullable<number>
+  newest_created: Nullable<number>
+  requests_total: number
+  last_run_requests: number
+  last_synced_at: Nullable<number>
+  last_error: Nullable<string>
+}
+
+const REVIEW_SYNC_COLS: Array<keyof ReviewSyncRow> = [
+  'shop_id',
+  'backfill_complete',
+  'backfill_upper',
+  'total_estimate',
+  'win_hi',
+  'win_lo',
+  'win_offset',
+  'win_count',
+  'win_span',
+  'synced_through',
+  'inc_lo',
+  'inc_hi',
+  'inc_target',
+  'inc_offset',
+  'inc_count',
+  'oldest_created',
+  'newest_created',
+  'requests_total',
+  'last_run_requests',
+  'last_synced_at',
+  'last_error'
+]
+
+/** A shop's review sync cursor before its first run. */
+export function emptyReviewSync(shopId: number): ReviewSyncRow {
+  return {
+    shop_id: shopId,
+    backfill_complete: 0,
+    backfill_upper: null,
+    total_estimate: null,
+    win_hi: null,
+    win_lo: null,
+    win_offset: 0,
+    win_count: null,
+    win_span: null,
+    synced_through: null,
+    inc_lo: null,
+    inc_hi: null,
+    inc_target: null,
+    inc_offset: 0,
+    inc_count: null,
+    oldest_created: null,
+    newest_created: null,
+    requests_total: 0,
+    last_run_requests: 0,
+    last_synced_at: null,
+    last_error: null
+  }
+}
+
+export function getReviewSync(db: Db, shopId: number): ReviewSyncRow | null {
+  const r = db.prepare('SELECT * FROM review_sync WHERE shop_id = ?').get(shopId) as ReviewSyncRow | undefined
+  return r ?? null
+}
+
+/** Two cursor rows hold the same saved values (every column `saveReviewSync` writes). */
+export function sameReviewSync(a: ReviewSyncRow, b: ReviewSyncRow): boolean {
+  return REVIEW_SYNC_COLS.every((c) => a[c] === b[c])
+}
+
+/** Insert or replace a shop's review sync cursor (no-op if the shop was deleted). */
+export function saveReviewSync(db: Db, row: ReviewSyncRow): void {
+  if (!db.prepare('SELECT 1 FROM shops WHERE id = ?').get(row.shop_id)) return
+  db.prepare(
+    `INSERT OR REPLACE INTO review_sync (${REVIEW_SYNC_COLS.join(', ')})
+     VALUES (${REVIEW_SYNC_COLS.map(() => '?').join(', ')})`
+  ).run(...REVIEW_SYNC_COLS.map((c) => row[c] as SQLInputValue))
+}
+
+export interface UpsertReviewsResult {
+  inserted: number
+  /** Known reviews whose content (rating, text, photo, update time…) changed. */
+  updated: number
+  /** Inserted with origin 'new'. */
+  fresh: number
+}
+
+/**
+ * Insert unseen reviews (origin from `isNew`, first_seen_scan_id = `scanId`)
+ * and refresh known ones: every API column + raw_json + last_seen_at; an edit
+ * sets changed_at; a changed photo URL queues the photo again (a vanished one
+ * leaves the object for cleanup — only what the API returns is kept). Origin
+ * and first-seen fields never change. Not wrapped in a transaction.
+ */
+export function upsertReviews(
+  db: Db,
+  shopId: number,
+  reviews: ReviewInput[],
+  o: { now: number; scanId: number | null; isNew: (r: ReviewInput) => boolean }
+): UpsertReviewsResult {
+  const out: UpsertReviewsResult = { inserted: 0, updated: 0, fresh: 0 }
+  const sel = db.prepare(
+    `SELECT id, listing_id, rating, review, language, image_url_fullxfull, updated_timestamp, update_timestamp
+     FROM reviews WHERE review_key = ?`
+  )
+  const ins = db.prepare(
+    `INSERT INTO reviews (review_key, shop_id, listing_id, transaction_id, buyer_user_id, rating, review,
+       language, image_url_fullxfull, create_timestamp, created_timestamp, update_timestamp,
+       updated_timestamp, raw_json, first_seen_at, last_seen_at, first_seen_scan_id, origin,
+       image_sync_status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  )
+  const upd = db.prepare(
+    `UPDATE reviews SET listing_id = ?, transaction_id = ?, buyer_user_id = ?, rating = ?, review = ?,
+       language = ?, image_url_fullxfull = ?, create_timestamp = ?, created_timestamp = ?,
+       update_timestamp = ?, updated_timestamp = ?, raw_json = ?, last_seen_at = ?,
+       changed_at = CASE WHEN ? THEN ? ELSE changed_at END
+     WHERE id = ?`
+  )
+  const requeue = db.prepare(
+    `UPDATE reviews SET image_sync_status = ?, image_sync_error = NULL, image_sync_attempts = 0
+     WHERE id = ?`
+  )
+  const seen = new Set<string>()
+  for (const r of reviews) {
+    if (seen.has(r.key)) continue
+    seen.add(r.key)
+    const ex = sel.get(r.key) as
+      | {
+          id: number
+          listing_id: number | null
+          rating: number | null
+          review: string | null
+          language: string | null
+          image_url_fullxfull: string | null
+          updated_timestamp: number | null
+          update_timestamp: number | null
+        }
+      | undefined
+    if (!ex) {
+      const fresh = o.isNew(r)
+      ins.run(
+        r.key,
+        shopId,
+        r.listingId,
+        r.transactionId,
+        r.buyerUserId,
+        r.rating,
+        r.text,
+        r.language,
+        r.imageUrl,
+        r.createTimestamp,
+        r.createdTimestamp,
+        r.updateTimestamp,
+        r.updatedTimestamp,
+        r.rawJson,
+        o.now,
+        o.now,
+        o.scanId,
+        fresh ? 'new' : 'backfill',
+        r.imageUrl ? 'pending' : null
+      )
+      out.inserted++
+      if (fresh) out.fresh++
+      continue
+    }
+    const changed =
+      ex.listing_id !== r.listingId ||
+      ex.rating !== r.rating ||
+      (ex.review ?? null) !== (r.text ?? null) ||
+      (ex.language ?? null) !== (r.language ?? null) ||
+      (ex.image_url_fullxfull ?? null) !== (r.imageUrl ?? null) ||
+      (ex.updated_timestamp ?? null) !== (r.updatedTimestamp ?? null) ||
+      (ex.update_timestamp ?? null) !== (r.updateTimestamp ?? null)
+    upd.run(
+      r.listingId,
+      r.transactionId,
+      r.buyerUserId,
+      r.rating,
+      r.text,
+      r.language,
+      r.imageUrl,
+      r.createTimestamp,
+      r.createdTimestamp,
+      r.updateTimestamp,
+      r.updatedTimestamp,
+      r.rawJson,
+      o.now,
+      changed ? 1 : 0,
+      o.now,
+      ex.id
+    )
+    if (changed) out.updated++
+    if ((ex.image_url_fullxfull ?? null) !== (r.imageUrl ?? null)) {
+      requeue.run(r.imageUrl ? 'pending' : null, ex.id)
+    }
+  }
+  return out
+}
+
+/** Oldest/newest created_timestamp and the count/average of a shop's stored reviews. */
+export function reviewTotals(
+  db: Db,
+  shopId: number
+): { count: number; avg: number | null; oldest: number | null; newest: number | null } {
+  const r = db
+    .prepare(
+      `SELECT COUNT(*) AS n, AVG(rating) AS avg, MIN(created_timestamp) AS oldest,
+         MAX(created_timestamp) AS newest FROM reviews WHERE shop_id = ?`
+    )
+    .get(shopId) as { n: number; avg: number | null; oldest: number | null; newest: number | null }
+  return { count: r.n, avg: roundAvg(r.avg), oldest: r.oldest, newest: r.newest }
+}
+
+/**
+ * How many of a shop's stored reviews were created in [lo, hi] (seconds; lo
+ * null = no lower bound) — what a finished sync window is checked against.
+ */
+export function countReviewsCreated(db: Db, shopId: number, lo: number | null, hi: number): number {
+  const r = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM reviews
+       WHERE shop_id = ? AND created_timestamp <= ? AND (? IS NULL OR created_timestamp >= ?)`
+    )
+    .get(shopId, hi, lo, lo) as { n: number }
+  return r.n
+}
+
+const roundAvg = (v: number | null | undefined): number | null =>
+  v == null ? null : Math.round(v * 100) / 100
+
+/**
+ * Per-listing review aggregates of a shop (optionally one listing): count,
+ * average, and how many were first seen as new by the latest successful
+ * scan's sync. null when the shop's reviews were never synced.
+ */
+function reviewAggregates(
+  db: Db,
+  shopId: number,
+  listingId?: number
+): ((listingId: number) => { count: number; avg: number | null; fresh: number; partial: boolean }) | null {
+  const sync = getReviewSync(db, shopId)
+  if (!sync || sync.backfill_upper == null) return null
+  const latest = okScanIds(db, shopId, 1)[0] ?? -1
+  const rows = db
+    .prepare(
+      `SELECT listing_id, COUNT(*) AS n, AVG(rating) AS avg,
+         SUM(CASE WHEN origin = 'new' AND first_seen_scan_id = ? THEN 1 ELSE 0 END) AS fresh
+       FROM reviews WHERE shop_id = ? ${listingId != null ? 'AND listing_id = ?' : ''}
+       GROUP BY listing_id`
+    )
+    .all(latest, shopId, ...(listingId != null ? [listingId] : [])) as Array<{
+    listing_id: number | null
+    n: number
+    avg: number | null
+    fresh: number
+  }>
+  const by = new Map(rows.map((r) => [r.listing_id, r]))
+  const partial = !sync.backfill_complete
+  return (id) => {
+    const r = by.get(id)
+    return r
+      ? { count: r.n, avg: roundAvg(r.avg), fresh: r.fresh, partial }
+      : { count: 0, avg: null, fresh: 0, partial }
+  }
+}
+
+/**
+ * Record review counts for one successful scan: a listing_review_stats row
+ * for every active listing of the shop (0 included) and a shop_review_stats
+ * row. Re-running (a manual sync after the scan) replaces them. Nothing is
+ * written while the shop was never synced.
+ */
+export function writeReviewStats(db: Db, shopId: number, scanId: number, now: number): void {
+  if (!db.prepare("SELECT 1 FROM scans WHERE id = ? AND status = 'ok'").get(scanId)) return
+  const sync = getReviewSync(db, shopId)
+  // Never synced (no reviews request has succeeded yet): nothing is known, write no zeros.
+  if (!sync || sync.backfill_upper == null) return
+  const complete = sync?.backfill_complete ? 1 : 0
+  db.prepare('DELETE FROM listing_review_stats WHERE scan_id = ?').run(scanId)
+  db.prepare(
+    `INSERT INTO listing_review_stats (scan_id, listing_id, review_count, review_avg, new_count, complete)
+     SELECT ?, l.listing_id, COUNT(r.id), ROUND(AVG(r.rating), 2),
+       COALESCE(SUM(CASE WHEN r.origin = 'new' AND r.first_seen_scan_id = ? THEN 1 ELSE 0 END), 0), ?
+     FROM listings l LEFT JOIN reviews r ON r.listing_id = l.listing_id AND r.shop_id = l.shop_id
+     WHERE l.shop_id = ? AND l.removed_at IS NULL
+     GROUP BY l.listing_id`
+  ).run(scanId, scanId, complete, shopId)
+  const t = reviewTotals(db, shopId)
+  const fresh = db
+    .prepare("SELECT COUNT(*) AS n FROM reviews WHERE shop_id = ? AND origin = 'new' AND first_seen_scan_id = ?")
+    .get(shopId, scanId) as { n: number }
+  db.prepare(
+    `INSERT OR REPLACE INTO shop_review_stats (scan_id, shop_id, review_count, review_avg, new_count, complete, synced_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(scanId, shopId, t.count, t.avg, fresh.n, complete, now)
+}
+
+/** What the shop header shows about the reviews; null = never tried (no run finished). */
+export function reviewSyncInfo(db: Db, shopId: number): ReviewSyncInfo | null {
+  const sync = getReviewSync(db, shopId)
+  if (!sync) return null
+  const t = reviewTotals(db, shopId)
+  const latest = okScanIds(db, shopId, 1)[0] ?? -1
+  const fresh = db
+    .prepare("SELECT COUNT(*) AS n FROM reviews WHERE shop_id = ? AND origin = 'new' AND first_seen_scan_id = ?")
+    .get(shopId, latest) as { n: number }
+  return {
+    synced: sync.backfill_upper != null,
+    stored: t.count,
+    average: t.avg,
+    backfillComplete: !!sync.backfill_complete,
+    estimate: sync.total_estimate,
+    lastSyncedAt: sync.last_synced_at,
+    lastError: sync.last_error,
+    newCount: fresh.n,
+    photos: reviewImageCounts(db, shopId)
+  }
+}
+
+/** One listing's reviews, newest first, a page at a time. */
+export function listListingReviews(db: Db, listingId: number, offset = 0, limit = 20): ReviewPage {
+  const l = Math.trunc(limit)
+  const lim = l > 0 ? Math.min(100, l) : 20
+  // NaN/negative → 0; a huge or infinite one is an empty page (SQLite would
+  // throw "datatype mismatch" for a non-integer-sized bound).
+  const o = Math.trunc(offset)
+  const off = o > 0 ? Math.min(o, Number.MAX_SAFE_INTEGER) : 0
+  const total = db.prepare('SELECT COUNT(*) AS n FROM reviews WHERE listing_id = ?').get(listingId) as { n: number }
+  const rows = db
+    .prepare(
+      `SELECT * FROM reviews WHERE listing_id = ?
+       ORDER BY created_timestamp DESC, id DESC LIMIT ? OFFSET ?`
+    )
+    .all(listingId, lim, off) as unknown as ReviewRow[]
+  return { total: total.n, offset: off, reviews: rows.map(toReview) }
+}
+
+/**
+ * Reviews first seen as new by a scan's sync (never backfilled ones), newest
+ * first, with the reviewed listing's title and first photo when we store it.
+ */
+export function listNewReviews(db: Db, scanId: number, limit = 200): Review[] {
+  const rows = db
+    .prepare(
+      `SELECT r.*, l.title AS listing_title,
+         (SELECT i.listing_image_id FROM listing_images i
+          WHERE i.listing_id = r.listing_id AND i.removed_at IS NULL
+          ORDER BY i.rank, i.listing_image_id LIMIT 1) AS listing_image_id
+       FROM reviews r LEFT JOIN listings l ON l.listing_id = r.listing_id
+       WHERE r.first_seen_scan_id = ? AND r.origin = 'new'
+       ORDER BY r.created_timestamp DESC, r.id DESC LIMIT ?`
+    )
+    .all(scanId, limit) as unknown as Array<ReviewRow & { listing_title: string | null; listing_image_id: number | null }>
+  return rows.map(toReview)
+}
+
+/** The raw API object of one review. */
+export function getReviewRaw(db: Db, id: number): string | null {
+  const r = db.prepare('SELECT raw_json FROM reviews WHERE id = ?').get(id) as { raw_json: string } | undefined
+  return r?.raw_json ?? null
+}
+
+// ------------------------------------------------------- review photo sync
+
+const REVIEW_IMAGE_COLS =
+  'id, review_key, shop_id, image_url_fullxfull, image_sync_status, image_sync_attempts, image_key'
+
+export function getReviewImageRow(db: Db, id: number): ReviewImageRow | null {
+  const r = db.prepare(`SELECT ${REVIEW_IMAGE_COLS} FROM reviews WHERE id = ?`).get(id)
+  return (r as ReviewImageRow | undefined) ?? null
+}
+
+/** Review photos still to copy: 'pending', and 'error' with < maxAttempts tries (null = all). */
+export function listReviewImagesToSync(
+  db: Db,
+  opts: { shopId?: number | null; maxAttempts?: number | null } = {}
+): ReviewImageRow[] {
+  const max = opts.maxAttempts === undefined ? 5 : opts.maxAttempts
+  const params: SQLInputValue[] = []
+  let where = "image_url_fullxfull IS NOT NULL AND (image_sync_status = 'pending' OR (image_sync_status = 'error'"
+  if (max != null) {
+    where += ' AND image_sync_attempts < ?'
+    params.push(max)
+  }
+  where += '))'
+  if (opts.shopId != null) {
+    where += ' AND shop_id = ?'
+    params.push(opts.shopId)
+  }
+  return db
+    .prepare(`SELECT ${REVIEW_IMAGE_COLS} FROM reviews WHERE ${where} ORDER BY shop_id, id`)
+    .all(...params) as unknown as ReviewImageRow[]
+}
+
+/** Review rows whose photo the API no longer returns but whose object still exists. */
+export function listReviewImagesToCleanup(db: Db): ReviewImageRow[] {
+  return db
+    .prepare(`SELECT ${REVIEW_IMAGE_COLS} FROM reviews WHERE image_key IS NOT NULL AND image_url_fullxfull IS NULL`)
+    .all() as unknown as ReviewImageRow[]
+}
+
+/** Stored review photos (verified on a forced sync). */
+export function listStoredReviewImages(db: Db, shopId?: number | null): ReviewImageRow[] {
+  return db
+    .prepare(
+      `SELECT ${REVIEW_IMAGE_COLS} FROM reviews WHERE image_sync_status = 'stored'
+       ${shopId != null ? 'AND shop_id = ?' : ''} ORDER BY shop_id, id`
+    )
+    .all(...(shopId != null ? [shopId] : [])) as unknown as ReviewImageRow[]
+}
+
+export interface StoredReviewImageInfo {
+  key: string
+  byteSize: number
+  contentType: string | null
+  etag: string | null
+  sha256: string
+  storedAt: number
+}
+
+/** Record an upload — only if the row still has the URL that was downloaded. */
+export function markReviewImageStored(db: Db, id: number, downloadedUrl: string, s: StoredReviewImageInfo): boolean {
+  const r = db
+    .prepare(
+      `UPDATE reviews SET image_sync_status = 'stored', image_sync_error = NULL, image_stored_at = ?,
+         image_key = ?, image_byte_size = ?, image_content_type = ?, image_etag = ?, image_sha256 = ?
+       WHERE id = ? AND image_url_fullxfull = ? AND image_sync_status != 'stored'`
+    )
+    .run(s.storedAt, s.key, s.byteSize, s.contentType, s.etag, s.sha256, id, downloadedUrl)
+  return Number(r.changes) > 0
+}
+
+export function markReviewImageError(db: Db, id: number, downloadedUrl: string, error: string): void {
+  db.prepare(
+    `UPDATE reviews SET image_sync_status = 'error', image_sync_error = ?, image_sync_attempts = image_sync_attempts + 1
+     WHERE id = ? AND image_url_fullxfull = ?`
+  ).run(error.slice(0, 500), id, downloadedUrl)
+}
+
+/** The object `key` was deleted: forget it (guarded by the key actually deleted). */
+export function markReviewImageObjectDeleted(db: Db, id: number, key: string): void {
+  db.prepare(
+    `UPDATE reviews SET image_key = NULL, image_stored_at = NULL, image_etag = NULL,
+       image_sync_status = CASE WHEN image_url_fullxfull IS NULL THEN NULL ELSE 'pending' END,
+       image_sync_error = NULL, image_sync_attempts = 0
+     WHERE id = ? AND image_key = ?`
+  ).run(id, key)
+}
+
+/** A stored review photo is missing from MinIO: queue it again. */
+export function markReviewImageMissing(db: Db, id: number): void {
+  db.prepare(
+    `UPDATE reviews SET image_key = NULL, image_stored_at = NULL, image_etag = NULL,
+       image_sync_status = 'pending', image_sync_error = NULL, image_sync_attempts = 0
+     WHERE id = ? AND image_sync_status = 'stored'`
+  ).run(id)
+}
+
+/** Review photos of a shop by MinIO copy state. */
+export function reviewImageCounts(db: Db, shopId?: number | null): ImageCounts {
+  const rows = db
+    .prepare(
+      `SELECT image_sync_status AS s, COUNT(*) AS n FROM reviews
+       WHERE image_url_fullxfull IS NOT NULL AND image_sync_status IS NOT NULL
+       ${shopId != null ? 'AND shop_id = ?' : ''} GROUP BY image_sync_status`
+    )
+    .all(...(shopId != null ? [shopId] : [])) as Array<{ s: ImageSyncStatus; n: number }>
+  const c: ImageCounts = { total: 0, stored: 0, pending: 0, error: 0 }
+  for (const r of rows) {
+    c[r.s] = r.n
+    c.total += r.n
+  }
+  return c
 }

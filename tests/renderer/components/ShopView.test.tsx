@@ -5,7 +5,7 @@ import { ShopView } from '../../../src/renderer/src/components/ShopView'
 import { ConfirmModal } from '../../../src/renderer/src/components/ConfirmModal'
 import { HistoryModal } from '../../../src/renderer/src/components/ScanHistory'
 import { useStore } from '../../../src/renderer/src/store'
-import { idleSync, mkChange, mkListing, mkScan, mkShop, setupRenderer, withKey, type Api } from '../helpers'
+import { idleReviews, idleSync, mkChange, mkListing, mkReview, mkScan, mkShop, setupRenderer, withKey, type Api } from '../helpers'
 
 let api: Api
 beforeEach(() => {
@@ -309,5 +309,151 @@ describe('ShopView: popularity, image sync, what changed', () => {
     expect(rows[1]).toHaveTextContent('Змінилось: теги')
     expect(screen.getByText(/Фото: 2 → 3 \(нових 1\)/)).toBeInTheDocument()
     expect(screen.getByText('Теги: +b')).toBeInTheDocument()
+  })
+})
+
+describe('ShopView: reviews', () => {
+  const info = (over = {}) => ({
+    synced: true,
+    stored: 3200,
+    average: 4.87,
+    backfillComplete: false,
+    estimate: 9300,
+    lastSyncedAt: 1,
+    lastError: null,
+    newCount: 0,
+    photos: { total: 40, stored: 12, pending: 28, error: 0 },
+    ...over
+  })
+
+  it('cards show ⭐ avg (count), "≥" while the history is partial, and +N new reviews', () => {
+    show({
+      shops: [mkShop({ lastOkScan: mkScan() })],
+      listings: [
+        mkListing(1, { reviewCount: 123, reviewAvg: 4.9, reviewsNew: 2, reviewsPartial: false }),
+        mkListing(2, { reviewCount: 1200, reviewAvg: 4.5, reviewsNew: 0, reviewsPartial: true }),
+        mkListing(3, { reviewCount: 0, reviewAvg: null, reviewsNew: 0 })
+      ]
+    })
+    const badges = screen.getAllByTestId('card-reviews').map((b) => b.textContent!.replace(/\s/g, ' '))
+    // Newest first: #3 has none (no badge), then #2, #1.
+    expect(badges).toEqual(['⭐ 4,5 (≥ 1 200)', '⭐ 4,9 (123) +2'])
+  })
+
+  it('sorts "Найбільше відгуків" and "Ріст відгуків"', () => {
+    show({
+      shops: [mkShop({ lastOkScan: mkScan() })],
+      listings: [
+        mkListing(1, { title: 'A', reviewCount: 5, reviewsNew: 3 }),
+        mkListing(2, { title: 'B', reviewCount: 50, reviewsNew: 1 }),
+        mkListing(3, { title: 'C', reviewCount: null, reviewsNew: null })
+      ]
+    })
+    const titles = () => screen.getAllByTestId('listing-card').map((c) => c.querySelector('.card-title')!.textContent)
+    const sort = screen.getByLabelText('Сортування')
+    fireEvent.change(sort, { target: { value: 'reviews' } })
+    expect(titles()).toEqual(['B', 'A', 'C'])
+    fireEvent.change(sort, { target: { value: 'reviews-growth' } })
+    expect(titles()).toEqual(['A', 'B', 'C'])
+    expect(screen.getByRole('option', { name: 'Найбільше відгуків' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'Ріст відгуків' })).toBeInTheDocument()
+  })
+
+  it('the header shows stored / ~estimate, sync progress, errors and "Синхронізувати відгуки"', async () => {
+    show({ shops: [mkShop({ lastOkScan: mkScan(), reviews: info() })] })
+    const line = () => screen.getByTestId('review-sync').textContent!.replace(/\s/g, ' ')
+    expect(line()).toContain('Відгуки: 3 200 / ~9 300 · ⭐ 4,87')
+    expect(line()).toContain('історія завантажується')
+    expect(line()).toContain('фото відгуків: 12/40')
+    await act(async () => {
+      fireEvent.click(screen.getByText('Синхронізувати відгуки'))
+    })
+    expect(api.syncReviews).toHaveBeenCalledWith(1)
+    // While running: live numbers, no button.
+    act(() => {
+      useStore.setState({ reviewSync: { 1: idleReviews(1, { running: true, phase: 'backfill', stored: 3300, estimate: 9300, requests: 4 }) } })
+    })
+    expect(line()).toContain('Відгуки: 3 300 / ~9 300')
+    expect(line()).toContain('синхронізація (історія, запитів: 4)')
+    expect(screen.queryByText('Синхронізувати відгуки')).toBeNull()
+  })
+
+  it('a complete history shows no estimate; an unavailable endpoint shows the friendly error', () => {
+    show({
+      shops: [
+        mkShop({
+          lastOkScan: mkScan(),
+          reviews: info({ stored: 9312, backfillComplete: true, lastError: 'Відгуки цього магазину недоступні (HTTP 404). Товари скануються як і раніше.' })
+        })
+      ]
+    })
+    const t = screen.getByTestId('review-sync').textContent!.replace(/\s/g, ' ')
+    expect(t).toContain('Відгуки: 9 312 · ⭐ 4,87')
+    expect(t).not.toContain('~')
+    expect(t).not.toContain('історія завантажується')
+    expect(t).toContain('недоступні (HTTP 404)')
+  })
+
+  it('never synced: says so and offers the sync', () => {
+    show({ shops: [mkShop({ lastOkScan: mkScan(), reviews: null })] })
+    expect(screen.getByTestId('review-sync')).toHaveTextContent('Відгуки ще не синхронізовано')
+    expect(screen.getByText('Синхронізувати відгуки')).toBeEnabled()
+  })
+
+  it('only failed runs so far (403): "not synced" + the error, no "0" and no "історія завантажується"', () => {
+    const err = 'Etsy не дозволяє читати відгуки цього магазину з цим ключем (HTTP 403). Товари скануються як і раніше.'
+    show({
+      shops: [
+        mkShop({
+          lastOkScan: mkScan(),
+          reviews: info({ synced: false, stored: 0, average: null, estimate: null, lastError: err, photos: { total: 0, stored: 0, pending: 0, error: 0 } })
+        })
+      ]
+    })
+    const t = screen.getByTestId('review-sync').textContent!.replace(/\s/g, ' ')
+    expect(t).toContain('Відгуки ще не синхронізовано')
+    expect(t).toContain('HTTP 403')
+    expect(t).not.toContain('Відгуки: 0')
+    expect(t).not.toContain('історія завантажується')
+  })
+
+  it('"Нові відгуки" shows the real count when the list main sent is capped', () => {
+    show({
+      shops: [mkShop({ lastOkScan: mkScan(), reviews: info({ newCount: 350 }) })],
+      newReviews: Array.from({ length: 200 }, (_, i) => mkReview(i + 1))
+    })
+    const group = screen.getByTestId('new-reviews')
+    expect(group.querySelector('summary')!.textContent!.replace(/\s/g, ' ')).toBe('Нові відгуки: 350 (показано 200 з 350)')
+    expect(group.querySelectorAll('.review-item')).toHaveLength(200)
+  })
+
+  it('"Нові відгуки" group in the scan results: stars, text excerpt, listing, date, photo; opens the listing', async () => {
+    const listing = mkListing(1, { title: 'Blue mug' })
+    api.getListing.mockResolvedValue(listing)
+    show({
+      shops: [mkShop({ lastOkScan: mkScan() })],
+      newReviews: [
+        mkReview(1, { rating: 4, text: 'Lovely!\nWould buy again', listingTitle: 'Blue mug', listingImageId: 10, hasImage: true, createdAt: 1_760_000_000 }),
+        mkReview(2, { rating: 5, text: 'x'.repeat(400), listingTitle: 'Plate', listingImageId: null })
+      ]
+    })
+    const group = screen.getByTestId('new-reviews')
+    expect(group).toHaveTextContent('Нові відгуки: 2')
+    expect(group).toHaveTextContent('★★★★☆')
+    expect(group).toHaveTextContent('Lovely!')
+    expect(group).toHaveTextContent('09.10.2025')
+    expect(group.textContent).toContain('…') // long text is an excerpt
+    expect(group.querySelector('img.review-photo')!.getAttribute('src')).toBe('etsyimg://review/1/fullxfull')
+    expect(group.querySelector('.review-listing img')!.getAttribute('src')).toBe('etsyimg://img/10/75x75')
+    await act(async () => {
+      fireEvent.click(within(group).getByTitle('Blue mug'))
+    })
+    expect(api.getListing).toHaveBeenCalledWith(1)
+    expect(useStore.getState().detailListing).toBe(listing)
+  })
+
+  it('no new reviews → no group (also for a baseline scan)', () => {
+    show({ shops: [mkShop({ lastOkScan: mkScan({ isBaseline: true }) })], newReviews: [] })
+    expect(screen.queryByTestId('new-reviews')).toBeNull()
   })
 })

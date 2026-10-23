@@ -164,6 +164,18 @@ export interface Listing {
   /** Extra content fields; null for rows never fetched with schema v2. */
   details?: ListingDetails | null
   videos?: ListingVideo[]
+  /**
+   * Reviews stored for this listing (all time, from the shop's review sync);
+   * null = the shop's reviews were never synced. While the shop's backfill is
+   * incomplete the count is a lower bound (`reviewsPartial`).
+   */
+  reviewCount?: number | null
+  /** Average rating of the stored reviews (1–5), null when none. */
+  reviewAvg?: number | null
+  /** Reviews first seen as new (not backfilled) by the latest successful scan's sync. */
+  reviewsNew?: number | null
+  /** The shop's review history is not fully loaded yet: counts are "≥". */
+  reviewsPartial?: boolean
 }
 
 export type ScanStatus = 'running' | 'ok' | 'error'
@@ -332,6 +344,92 @@ export interface ShopSummary extends Shop {
   stats?: ShopStats | null
   /** latest − previous successful scan, per field (null where unknown). */
   statsDelta?: ShopStats | null
+  /** What we have stored of the shop's reviews; null = never synced. */
+  reviews?: ReviewSyncInfo | null
+}
+
+/** How a stored review was first found. */
+export type ReviewOrigin = 'backfill' | 'new'
+
+/** One Etsy TransactionReview as stored (GET /shops/{id}/reviews). */
+export interface Review {
+  /** Our row id (used by etsyimg://review/{id}/fullxfull). */
+  id: number
+  /** Natural key: `t-{transaction_id}`, else `x-{listing_id}-{buyer_user_id|0}-{created}`. */
+  key: string
+  shopId: number
+  listingId: number | null
+  transactionId: number | null
+  buyerUserId: number | null
+  /** 1–5. */
+  rating: number | null
+  /** Plain text (entities decoded); null/'' when the buyer wrote none. */
+  text: string | null
+  language: string | null
+  /** The buyer attached a photo (and the API returned it). */
+  hasImage: boolean
+  /** MinIO copy state of the photo; null without a photo. */
+  imageStatus: ImageSyncStatus | null
+  /** Etsy epoch seconds. */
+  createdAt: number | null
+  updatedAt: number | null
+  /** Our bookkeeping, epoch ms. */
+  firstSeenAt: number
+  firstSeenScanId: number | null
+  origin: ReviewOrigin
+  /** For the "Нові відгуки" panel: the reviewed listing as we store it. */
+  listingTitle?: string | null
+  listingImageId?: number | null
+}
+
+/** One page of a listing's reviews (`reviews:listing`), newest first. */
+export interface ReviewPage {
+  total: number
+  offset: number
+  reviews: Review[]
+}
+
+/** The shop's review sync as stored (`review_sync` + counts). */
+export interface ReviewSyncInfo {
+  /**
+   * A reviews request has succeeded at least once (the backfill started). False
+   * = only failed runs so far (e.g. 403): nothing is known about the reviews.
+   */
+  synced: boolean
+  /** Reviews stored for the shop. */
+  stored: number
+  /** Average rating of the stored reviews. */
+  average: number | null
+  /** The whole history has been read (else counts are a lower bound). */
+  backfillComplete: boolean
+  /** Etsy's `count` of the shop's reviews when the backfill started (≈ total). */
+  estimate: number | null
+  /** Epoch ms of the last sync run that finished. */
+  lastSyncedAt: number | null
+  /** Why the last run failed/stopped, or null. */
+  lastError: string | null
+  /** Reviews first seen as new by the latest successful scan's sync. */
+  newCount: number
+  /** MinIO copy state of the review photos. */
+  photos: ImageCounts
+}
+
+/** A review sync run in progress or just finished (`reviews:progress`). */
+export interface ReviewSyncState {
+  shopId: number
+  running: boolean
+  phase: 'backfill' | 'incremental' | null
+  /** Reviews stored for the shop now. */
+  stored: number
+  estimate: number | null
+  /** API requests made by this run. */
+  requests: number
+  /** Reviews first seen as new by this run. */
+  newReviews: number
+  backfillComplete: boolean
+  /** The run stopped at its request budget / the daily-quota reserve; it continues next time. */
+  budgetExhausted: boolean
+  error: string | null
 }
 
 /** Per-shop counts of active listing images by MinIO sync state. */
@@ -407,4 +505,9 @@ export interface ListingStatsPoint {
   numFavorers: number | null
   featuredRank: number | null
   quantity: number | null
+  /** Reviews stored for the listing when that scan's review sync ran (null = not synced). */
+  reviewCount?: number | null
+  reviewAvg?: number | null
+  /** false = the shop's history was still being backfilled: reviewCount is "≥". */
+  reviewsComplete?: boolean | null
 }

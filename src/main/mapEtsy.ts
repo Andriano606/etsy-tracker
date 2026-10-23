@@ -9,14 +9,15 @@ import type {
 import { decodeHtmlEntities } from '../shared/html'
 import { isEtsyCdnUrl } from '../shared/externalUrl'
 import { shopUrlFor } from '../shared/shopUrl'
-import type { ListingInput, ListingStatsInput, ShopInput } from './db'
+import type { ListingInput, ListingStatsInput, ReviewInput, ShopInput } from './db'
 import type {
   EtsyListing,
   EtsyListingImage,
   EtsyListingVideo,
   EtsyListingWithAssociations,
   EtsyPersonalization,
-  EtsyShop
+  EtsyShop,
+  EtsyTransactionReview
 } from './etsyApi'
 
 function int(v: unknown, fallback = 0): number {
@@ -278,5 +279,42 @@ export function shopStats(s: EtsyShop): ShopStats {
     reviewCount: optInt(s.review_count),
     reviewAverage: optNum(s.review_average),
     listingActiveCount: optInt(s.listing_active_count)
+  }
+}
+
+/**
+ * The natural key of a review. getReviewsByShop returns `TransactionReview`
+ * objects, and a transaction gets at most one review, so `t-{transaction_id}`.
+ * Should Etsy ever leave transaction_id out, the fallback is deterministic
+ * from what identifies a review otherwise: `x-{listing_id}-{buyer_user_id|0}-{created}`
+ * (a buyer reviews one listing once per purchase; a second review of the same
+ * listing by a hidden buyer in the same second would collide — accepted).
+ * Only `[a-z0-9-]` so it can be a MinIO path segment as is.
+ */
+export function reviewKey(r: EtsyTransactionReview): string {
+  const tx = optInt(r.transaction_id)
+  if (tx != null && tx > 0) return `t-${tx}`
+  const created = optInt(r.created_timestamp ?? r.create_timestamp) ?? 0
+  return `x-${int(r.listing_id)}-${optInt(r.buyer_user_id) ?? 0}-${created}`
+}
+
+/** Etsy TransactionReview → our row. The photo URL is kept only when it is https on Etsy's CDN. */
+export function mapReview(r: EtsyTransactionReview): ReviewInput {
+  const url = cdnUrl(r.image_url_fullxfull)
+  return {
+    key: reviewKey(r),
+    shopId: int(r.shop_id),
+    listingId: optInt(r.listing_id),
+    transactionId: optInt(r.transaction_id),
+    buyerUserId: optInt(r.buyer_user_id),
+    rating: optInt(r.rating),
+    text: optText(r.review),
+    language: optStr(r.language),
+    imageUrl: url || null,
+    createTimestamp: optInt(r.create_timestamp),
+    createdTimestamp: optInt(r.created_timestamp ?? r.create_timestamp),
+    updateTimestamp: optInt(r.update_timestamp),
+    updatedTimestamp: optInt(r.updated_timestamp ?? r.update_timestamp),
+    rawJson: JSON.stringify(r)
   }
 }

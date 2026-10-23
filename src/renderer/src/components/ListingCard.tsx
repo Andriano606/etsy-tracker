@@ -1,11 +1,38 @@
 import type { Listing } from '@shared/types'
-import { formatCount, formatPrice } from '@shared/format'
+import { formatCount, formatPrice, formatRating, formatReviewCount } from '@shared/format'
 import { imageSrc } from '../imageUrl'
 
-/** ❤ favorers (+growth since the previous scan), 👁 views, ★ featured rank. */
+/** ⭐ average (count) of the stored reviews + "+N" new since the previous scan. */
+export function ReviewBadge({ listing }: { listing: Listing }): JSX.Element | null {
+  const { reviewCount, reviewAvg, reviewsNew, reviewsPartial } = listing
+  if (reviewCount == null || reviewCount === 0) return null
+  return (
+    <span
+      className="reviews"
+      data-testid="card-reviews"
+      title={
+        reviewsPartial
+          ? 'Відгуки (історія магазину ще завантажується — щонайменше стільки)'
+          : 'Відгуки покупців: середня оцінка (кількість)'
+      }
+    >
+      ⭐ {formatRating(reviewAvg)} ({formatReviewCount(reviewCount, reviewsPartial)})
+      {reviewsNew != null && reviewsNew > 0 && (
+        <span className="delta up" title="Нові відгуки з минулого сканування">
+          {' '}+{formatCount(reviewsNew)}
+        </span>
+      )}
+    </span>
+  )
+}
+
+/** ❤ favorers (+growth since the previous scan), 👁 views, ★ featured rank, ⭐ reviews. */
 export function PopularityBadges({ listing }: { listing: Listing }): JSX.Element | null {
   const { numFavorers, views, featuredRank, favorersDelta } = listing
-  if (numFavorers == null && views == null && !(featuredRank != null && featuredRank > 0)) return null
+  const hasReviews = (listing.reviewCount ?? 0) > 0
+  if (numFavorers == null && views == null && !(featuredRank != null && featuredRank > 0) && !hasReviews) {
+    return null
+  }
   return (
     <div className="card-stats" data-testid="card-stats">
       {numFavorers != null && (
@@ -24,6 +51,7 @@ export function PopularityBadges({ listing }: { listing: Listing }): JSX.Element
           ★ {featuredRank}
         </span>
       )}
+      <ReviewBadge listing={listing} />
     </div>
   )
 }

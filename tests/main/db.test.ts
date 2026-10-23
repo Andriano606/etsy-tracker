@@ -40,11 +40,17 @@ import {
   listStoredImages,
   markImageStored,
   updateShopInfo,
+  listListingStats,
+  saveReviewSync,
+  emptyReviewSync,
+  upsertReviews,
+  writeReviewStats,
   type Db
 } from '../../src/main/db'
-import { mapShop } from '../../src/main/mapEtsy'
+import { mapReview, mapShop } from '../../src/main/mapEtsy'
 import shopFx from '../fixtures/shop.json'
-import { memDb, mkInput, mkShop, seedShop } from '../helpers/db'
+import reviewFx from '../fixtures/transactionReview.json'
+import { memDb, memDbAt, mkInput, mkShop, seedShop } from '../helpers/db'
 
 const img = (id: number) => ({
   id,
@@ -133,12 +139,7 @@ describe('migrations', () => {
     expect(cols).not.toContain('note')
     expect(listShopSummaries(db)).toHaveLength(1)
     // Earlier migrations that succeeded in the same run stay applied.
-    const fresh = memDb()
-    fresh.exec('PRAGMA user_version = 0')
-    fresh.exec(
-      'DROP TABLE listing_stats; DROP TABLE shop_stats; DROP TABLE listing_videos; DROP TABLE listing_images; ' +
-        'DROP TABLE scan_changes; DROP TABLE scans; DROP TABLE listings; DROP TABLE shops'
-    )
+    const fresh = memDbAt(0)
     expect(() => migrate(fresh, next)).toThrow()
     expect(schemaVersion(fresh)).toBe(v)
   })
@@ -313,13 +314,8 @@ describe('scans', () => {
 
 /** A database created by the v1 app (schema version 1) with some data in it. */
 function v1Db(): Db {
-  const db = memDb()
-  // memDb() is at the latest version — rebuild it as v1 from scratch.
-  db.exec(
-    'DROP TABLE listing_stats; DROP TABLE shop_stats; DROP TABLE listing_videos; DROP TABLE listing_images; ' +
-      'DROP TABLE scan_changes; DROP TABLE scans; DROP TABLE listings; DROP TABLE shops; PRAGMA user_version = 0'
-  )
-  migrate(db, MIGRATIONS.slice(0, 1))
+  // A real v1 database, built from scratch with only the first migration.
+  const db = memDbAt(1)
   expect(schemaVersion(db)).toBe(1)
   db.prepare(
     "INSERT INTO shops (id, shop_name, title, url, currency, etsy_active_count, added_at) VALUES (20987654, 'CeramicStudioUA', 'T', 'u', 'UAH', 2, 1)"
@@ -531,5 +527,92 @@ describe('v2 listing and shop columns', () => {
     const s = getShopSummary(db, 20987654)!
     expect(s.profile).toEqual(fresh.profile)
     expect(JSON.parse(getShopRaw(db, 20987654)!)).toEqual(shopFx)
+  })
+})
+
+describe('migration v3 (from a real v2 database)', () => {
+  /** A database the v2 app wrote: a shop, listings with images, two ok scans with stats, changes. */
+  function v2Db(): Db {
+    const db = memDbAt(2)
+    expect(schemaVersion(db)).toBe(2)
+    insertShop(db, { ...mkShop(), profile: mapShop(shopFx as never, 1).profile })
+    upsertListing(db, mkInput(1, { views: 10, numFavorers: 2, images: [{ ...img(501), urlFull: 'https://i.etsystatic.com/a.jpg' }] }), 100)
+    upsertListing(db, mkInput(2, { views: 20, numFavorers: 4 }), 100)
+    for (const at of [1000, 2000]) {
+      const id = insertRunningScan(db, 20987654, at)
+      insertListingStats(db, id, [{ listingId: 1, views: 10, numFavorers: 2, featuredRank: null, quantity: 1 }])
+      insertShopStats(db, id, 20987654, { numFavorers: 5, transactionSoldCount: 9, reviewCount: 3, reviewAverage: 4.5, listingActiveCount: 2 })
+      finishScanOk(db, id, at + 1, { isBaseline: at === 1000, truncated: false, total: 2, added: 0, removed: 0, changed: 1, returned: 0 })
+      insertChange(db, id, 2, 'changed', { title: 'a' }, { title: 'b' })
+    }
+    markImageStored(db, { listing_id: 1, listing_image_id: 501 }, 'https://i.etsystatic.com/a.jpg', {
+      keyFull: 'k501', key570: null, byteSize: 1, contentType: 'image/jpeg', etag: 'e', sha256: 'h', storedAt: 5
+    })
+    return db
+  }
+
+  it('adds the review tables, keeps every v2 row, and starts with "never synced"', () => {
+    const db = v2Db()
+    // Snapshot every v2 table with plain SQL (today's query functions already read v3 tables).
+    const v2Tables = ['shops', 'listings', 'listing_images', 'listing_videos', 'listing_stats', 'shop_stats', 'scans', 'scan_changes']
+    const dump = () => Object.fromEntries(v2Tables.map((t) => [t, db.prepare(`SELECT * FROM ${t} ORDER BY 1, 2`).all()]))
+    const before = dump()
+    expect(before.listings).toHaveLength(2)
+    expect(before.scans).toHaveLength(2)
+    migrate(db)
+    expect(dump()).toEqual(before)
+    expect(schemaVersion(db)).toBe(3)
+    const tables = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+      .all()
+      .map((r) => (r as { name: string }).name)
+    expect(tables).toEqual(
+      expect.arrayContaining(['reviews', 'review_sync', 'listing_review_stats', 'shop_review_stats'])
+    )
+    const indexes = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'reviews'")
+      .all()
+      .map((r) => (r as { name: string }).name)
+    expect(indexes).toEqual(expect.arrayContaining(['reviews_listing', 'reviews_shop_created']))
+    const cols = db.prepare('PRAGMA table_info(reviews)').all().map((r) => (r as { name: string }).name)
+    expect(cols).toEqual(
+      expect.arrayContaining([
+        'review_key', 'shop_id', 'listing_id', 'transaction_id', 'buyer_user_id', 'rating', 'review', 'language',
+        'image_url_fullxfull', 'create_timestamp', 'created_timestamp', 'update_timestamp', 'updated_timestamp',
+        'raw_json', 'first_seen_at', 'last_seen_at', 'first_seen_scan_id', 'origin', 'image_sync_status', 'image_key'
+      ])
+    )
+
+    // v2 data reads back through today's functions.
+    expect(listActiveListings(db, 20987654).map((l) => [l.listingId, l.views, l.numFavorers, l.images.length])).toEqual([
+      [2, 20, 4, 0],
+      [1, 10, 2, 1]
+    ])
+    expect(listListingStats(db, 1).map((p) => p.views)).toEqual([10, 10])
+    expect(getImageRow(db, 501)).toMatchObject({ sync_status: 'stored', key_full: 'k501' })
+    expect(getShopSummary(db, 20987654)).toMatchObject({ stats: { reviewCount: 3 }, reviews: null })
+    // Never synced: no review numbers at all (not "0 reviews").
+    expect(getListing(db, 1)).toMatchObject({ reviewCount: null, reviewAvg: null, reviewsNew: null, reviewsPartial: false })
+    expect(listListingStats(db, 1)[0]).toMatchObject({ reviewCount: null, reviewsComplete: null })
+    expect(listShopObjectKeys(db, 20987654)).toEqual(['k501'])
+  })
+
+  it('the migrated database takes reviews, and a shop delete cascades to them', () => {
+    const db = v2Db()
+    migrate(db)
+    const scanId = listScans(db, 20987654)[0].id
+    saveReviewSync(db, { ...emptyReviewSync(20987654), backfill_upper: 10, backfill_complete: 1 })
+    upsertReviews(db, 20987654, [mapReview({ ...(reviewFx as never), shop_id: 20987654, listing_id: 1 })], {
+      now: 7,
+      scanId,
+      isNew: () => true
+    })
+    writeReviewStats(db, 20987654, scanId, 8)
+    expect(getListing(db, 1)).toMatchObject({ reviewCount: 1, reviewAvg: 5, reviewsNew: 1 })
+    expect(listListingStats(db, 1).at(-1)).toMatchObject({ reviewCount: 1, reviewAvg: 5, reviewsComplete: true })
+    deleteShop(db, 20987654)
+    for (const t of ['reviews', 'review_sync', 'listing_review_stats', 'shop_review_stats']) {
+      expect(db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get()).toEqual({ n: 0 })
+    }
   })
 })

@@ -205,7 +205,41 @@ export interface EtsyListingWithAssociations extends EtsyListing {
 export const DETAIL_INCLUDES = ['Images', 'Videos', 'Personalization'] as const
 export const FALLBACK_INCLUDES = ['Images'] as const
 
-interface Paged<T> {
+/**
+ * OAS `TransactionReview` (an item of GET /shops/{shop_id}/reviews). The OAS
+ * documents both `create_timestamp`/`created_timestamp` and
+ * `update_timestamp`/`updated_timestamp` (same meaning, epoch seconds).
+ * `buyer_user_id` and `image_url_fullxfull` "may be absent, depending on the
+ * buyer's privacy settings".
+ */
+export interface EtsyTransactionReview {
+  shop_id: number
+  listing_id: number
+  transaction_id?: number | null
+  buyer_user_id?: number | null
+  rating: number
+  review?: string | null
+  language?: string | null
+  image_url_fullxfull?: string | null
+  create_timestamp?: number
+  created_timestamp?: number
+  update_timestamp?: number
+  updated_timestamp?: number
+  [k: string]: unknown
+}
+
+/** Query of getReviewsByShop: `min_created`/`max_created` are epoch seconds (OAS minimum 946684800). */
+export interface ReviewQuery {
+  limit?: number
+  offset?: number
+  minCreated?: number
+  maxCreated?: number
+}
+
+/** The OAS `minimum` of `min_created`/`max_created` (2000-01-01). */
+export const REVIEW_EPOCH_MIN = 946_684_800
+
+export interface Paged<T> {
   count: number
   results: T[]
 }
@@ -360,6 +394,11 @@ export interface EtsyClient {
     ids: number[],
     onChunk?: (done: number, total: number) => void
   ): Promise<Map<number, EtsyListingWithAssociations>>
+  /**
+   * One page of GET /shops/{shop_id}/reviews (getReviewsByShop): limit ≤ 100,
+   * optional created-time bounds. The OAS documents no result order.
+   */
+  getShopReviews(shopId: number, q?: ReviewQuery): Promise<Paged<EtsyTransactionReview>>
 }
 
 export function buildUrl(baseUrl: string, path: string, params: Params = {}): string {
@@ -623,6 +662,19 @@ export function createEtsyClient(opts: EtsyClientOptions): EtsyClient {
     },
 
     getListing,
+
+    async getShopReviews(shopId, q = {}) {
+      const clamp = (v: number | undefined): number | undefined =>
+        v == null ? undefined : Math.max(REVIEW_EPOCH_MIN, Math.trunc(v))
+      return expectPaged(
+        await request<Paged<EtsyTransactionReview>>(`/v3/application/shops/${shopId}/reviews`, {
+          limit: Math.min(PAGE_LIMIT, Math.max(1, q.limit ?? PAGE_LIMIT)),
+          offset: q.offset || undefined,
+          min_created: clamp(q.minCreated),
+          max_created: clamp(q.maxCreated)
+        })
+      )
+    },
 
     detailIncludes: () => includes,
 

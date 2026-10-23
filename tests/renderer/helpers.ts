@@ -11,6 +11,9 @@ import type {
   MinioStatus,
   MinioTestResult,
   Quota,
+  Review,
+  ReviewPage,
+  ReviewSyncState,
   ScanChange,
   ScanOutcome,
   ScanSummary,
@@ -41,6 +44,40 @@ export const idleSync: ImageSyncState = {
 }
 
 export const noImages: ImageCounts = { total: 0, stored: 0, pending: 0, error: 0 }
+
+export const idleReviews = (shopId = 1, over: Partial<ReviewSyncState> = {}): ReviewSyncState => ({
+  shopId,
+  running: false,
+  phase: null,
+  stored: 0,
+  estimate: null,
+  requests: 0,
+  newReviews: 0,
+  backfillComplete: false,
+  budgetExhausted: false,
+  error: null,
+  ...over
+})
+
+export const mkReview = (id: number, over: Partial<Review> = {}): Review => ({
+  id,
+  key: `t-${9000 + id}`,
+  shopId: 1,
+  listingId: 1,
+  transactionId: 9000 + id,
+  buyerUserId: null,
+  rating: 5,
+  text: `Review ${id}`,
+  language: 'en',
+  hasImage: false,
+  imageStatus: null,
+  createdAt: 1_760_000_000 + id,
+  updatedAt: 1_760_000_000 + id,
+  firstSeenAt: 0,
+  firstSeenScanId: 1,
+  origin: 'new',
+  ...over
+})
 
 export const mkScan = (over: Partial<ScanSummary> = {}): ScanSummary => ({
   id: 1,
@@ -151,6 +188,13 @@ export function makeApi() {
     onQuota: vi.fn(() => () => {}),
     getListingRaw: vi.fn(async (): Promise<string | null> => null),
     getListingStats: vi.fn(async (): Promise<ListingStatsPoint[]> => []),
+    getListingReviews: vi.fn(
+      async (_listingId: number, offset = 0): Promise<ReviewPage> => ({ total: 0, offset, reviews: [] })
+    ),
+    getNewReviews: vi.fn(async (_scanId: number): Promise<Review[]> => []),
+    // Like main: starts a run, returns nothing (the state comes via onReviewSync).
+    syncReviews: vi.fn(async (_shopId: number): Promise<void> => undefined),
+    onReviewSync: vi.fn(() => () => {}),
     getMinioStatus: vi.fn(async (): Promise<MinioStatus> => minioDefault),
     setMinio: vi.fn(
       async (
@@ -184,6 +228,8 @@ export function resetStore(): void {
     activeShopId: null,
     listings: [],
     lastChanges: [],
+    newReviews: [],
+    reviewSync: {},
     scans: [],
     scanning: {},
     progress: {},

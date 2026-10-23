@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { waitFor } from '@testing-library/react'
 import { useStore } from '../../src/renderer/src/store'
 import type { ScanOutcome } from '../../src/shared/types'
-import { idleSync, minioDefault, mkChange, mkListing, mkScan, mkShop, setupRenderer, type Api } from './helpers'
+import { idleReviews, idleSync, minioDefault, mkChange, mkListing, mkReview, mkScan, mkShop, setupRenderer, type Api } from './helpers'
 
 let api: Api
 beforeEach(() => {
@@ -114,5 +114,39 @@ describe('store: images and MinIO', () => {
     expect(useStore.getState().minioStatus?.secretSource).toBe('stored')
     api.setMinio.mockResolvedValue({ ok: false, error: 'Назва бакета…' })
     expect(await useStore.getState().saveMinio({ bucket: 'X' })).toEqual({ ok: false, error: 'Назва бакета…' })
+  })
+})
+
+describe('store: reviews', () => {
+  it('reloadShopData loads the latest ok scan’s new reviews', async () => {
+    api.listShops.mockResolvedValue([mkShop({ lastOkScan: mkScan({ id: 7 }) })])
+    api.getNewReviews.mockResolvedValue([mkReview(1)])
+    await useStore.getState().load()
+    expect(api.getNewReviews).toHaveBeenCalledWith(7)
+    expect(useStore.getState().newReviews).toHaveLength(1)
+  })
+
+  it('a finished review sync of the open shop refreshes shops and its data; others only update progress', async () => {
+    useStore.setState({ shops: [mkShop({ lastOkScan: mkScan({ id: 3 }) })], activeShopId: 1 })
+    useStore.getState().setReviewSync(idleReviews(1, { running: true, stored: 50 }))
+    expect(useStore.getState().reviewSync[1]).toMatchObject({ running: true, stored: 50 })
+    expect(api.listListings).not.toHaveBeenCalled()
+    useStore.getState().setReviewSync(idleReviews(2, { running: false }))
+    expect(api.listShops).not.toHaveBeenCalled()
+    useStore.getState().setReviewSync(idleReviews(1, { running: false, stored: 80 }))
+    await waitFor(() => expect(api.listListings).toHaveBeenCalledWith(1))
+    expect(api.listShops).toHaveBeenCalled()
+  })
+
+  it('syncReviews asks main for the open shop; the live state comes only from reviews:progress', async () => {
+    useStore.setState({ activeShopId: 4 })
+    // Main's first progress event of the new run arrives before the invoke resolves.
+    api.syncReviews.mockImplementation(async (shopId: number) => {
+      useStore.getState().setReviewSync(idleReviews(shopId, { running: true, phase: 'backfill' }))
+    })
+    await useStore.getState().syncReviews()
+    expect(api.syncReviews).toHaveBeenCalledWith(4)
+    // Nothing returned by the invoke may overwrite it.
+    expect(useStore.getState().reviewSync[4]).toMatchObject({ running: true, phase: 'backfill' })
   })
 })

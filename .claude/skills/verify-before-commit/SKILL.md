@@ -45,12 +45,13 @@ For each new function, branch, or behavior added this session, confirm there is
 a test asserting it. If coverage is **missing or incomplete**:
 - Write the missing tests, following the patterns already in `tests/`:
   - **never hit the real Etsy API** — use the fake Etsy server
-    (`tests/helpers/fakeEtsy.ts`: `FakeEtsy`, `mkEtsyListing`, `intercept` for
+    (`tests/helpers/fakeEtsy.ts`: `FakeEtsy`, `mkEtsyListing`, `mkEtsyReview` +
+    `etsy.reviews` / `reviewOrder` / `reviewsStatus` for `/shops/{id}/reviews`, `intercept` for
     4xx/5xx/429/network failures) or `tests/helpers/fakeFetch.ts`
     (`fakeFetch`, `queuedFetch`); keep `tests/fixtures/*.json` shaped exactly
     like Etsy's responses
   - use a **real in-memory `node:sqlite` DB** (`tests/helpers/db.ts`:
-    `memDb`, `seedShop`, `mkInput`, `mkListing`, `mkDetails`) — don't mock the database
+    `memDb`, `memDbAt`, `seedShop`, `mkInput`, `mkListing`, `mkDetails`) — don't mock the database
   - **never hit MinIO or Etsy's CDN** in tests — use `tests/helpers/fakeImageStore.ts`
     (`FakeImageStore` with `down` / `failPutsAfter`, `fakeCdn`, `cdnBytes`); the real
     MinIO client (`createMinioImageStore`) is checked live against
@@ -60,10 +61,12 @@ a test asserting it. If coverage is **missing or incomplete**:
     `vi.mock` + `vi.hoisted` (see `tests/main/ipc.test.ts`)
   - a schema change = a **new** entry in `MIGRATIONS` (never edit a shipped one)
     plus a test in `tests/main/db.test.ts` that starts from a real database at the
-    previous version (`migrate(db, MIGRATIONS.slice(0, n))`, insert data, migrate, assert)
+    previous version (`memDbAt(n)` = every table dropped, then
+    `migrate(db, MIGRATIONS.slice(0, n))`; insert data, migrate, assert)
   - renderer tests use `// @vitest-environment jsdom` and
     `tests/renderer/helpers.ts` (`setupRenderer`, `makeApi`, `mkShop`,
-    `mkScan`, `mkListing`, `mkChange`, `minioDefault`, `idleSync`); a new
+    `mkScan`, `mkListing`, `mkChange`, `mkReview`, `minioDefault`, `idleSync`,
+    `idleReviews`); a new
     `window.api` method needs a stub in `makeApi()`; wrap clicks that trigger async store updates in
     `act(async () => …)`
 - Cover the happy path **and** the error/edge branches (the existing suite tests

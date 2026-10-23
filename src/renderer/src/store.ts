@@ -9,6 +9,8 @@ import type {
   MinioStatus,
   MinioTestResult,
   Quota,
+  Review,
+  ReviewSyncState,
   ScanChange,
   ScanProgress,
   ScanSummary,
@@ -47,6 +49,10 @@ export type SortMode =
   | 'views'
   /** Biggest favorers growth since the previous successful scan first. */
   | 'favorites-growth'
+  /** Most reviews (stored) first. */
+  | 'reviews'
+  /** Most new reviews since the previous successful scan first. */
+  | 'reviews-growth'
 
 /**
  * Shops with a single "Сканувати повторно" call in flight. scanAll must not
@@ -64,6 +70,10 @@ interface AppState {
   listings: Listing[]
   /** Changes recorded by the selected shop's latest successful scan. */
   lastChanges: ScanChange[]
+  /** Reviews first seen as new by that scan's review sync. */
+  newReviews: Review[]
+  /** Review sync runs, per shop, pushed by main. */
+  reviewSync: Record<number, ReviewSyncState | undefined>
   /** Scan history of the selected shop, newest first. */
   scans: ScanSummary[]
   scanning: Record<number, boolean>
@@ -104,6 +114,8 @@ interface AppState {
   clearKey: () => Promise<void>
   testKey: (keystring?: string, sharedSecret?: string) => Promise<KeyTestResult>
 
+  setReviewSync: (s: ReviewSyncState) => void
+  syncReviews: () => Promise<void>
   setImageSync: (s: ImageSyncState) => void
   syncImages: () => Promise<void>
   saveMinio: (input: MinioSettingsInput) => Promise<{ ok: boolean; error?: string }>
@@ -124,6 +136,8 @@ export const useStore = create<AppState>((set, get) => ({
   activeShopId: null,
   listings: [],
   lastChanges: [],
+  newReviews: [],
+  reviewSync: {},
   scans: [],
   scanning: {},
   progress: {},
@@ -177,7 +191,7 @@ export const useStore = create<AppState>((set, get) => ({
 
   selectShop: async (id) => {
     saveActiveShop(id)
-    set({ activeShopId: id, search: '', listings: [], lastChanges: [], scans: [], imageCounts: null })
+    set({ activeShopId: id, search: '', listings: [], lastChanges: [], newReviews: [], scans: [], imageCounts: null })
     await get().reloadShopData()
   },
 
@@ -186,14 +200,15 @@ export const useStore = create<AppState>((set, get) => ({
     if (id == null) return
     const shop = get().shops.find((s) => s.id === id)
     const okScanId = shop?.lastOkScan?.id
-    const [listings, scans, lastChanges, images] = await Promise.all([
+    const [listings, scans, lastChanges, images, newReviews] = await Promise.all([
       window.api.listListings(id),
       window.api.listScans(id),
       okScanId != null ? window.api.getScanChanges(okScanId) : Promise.resolve([] as ScanChange[]),
-      window.api.getImageStatus(id)
+      window.api.getImageStatus(id),
+      okScanId != null ? window.api.getNewReviews(okScanId) : Promise.resolve([] as Review[])
     ])
     if (get().activeShopId !== id) return
-    set({ listings, scans, lastChanges, imageCounts: images.counts, imageSync: images.sync })
+    set({ listings, scans, lastChanges, newReviews, imageCounts: images.counts, imageSync: images.sync })
   },
 
   addShop: async (input) => {
@@ -292,6 +307,23 @@ export const useStore = create<AppState>((set, get) => ({
   },
   testKey: (keystring, sharedSecret) => window.api.testApiKey(keystring, sharedSecret),
 
+  setReviewSync: (s) => {
+    set((st) => ({ reviewSync: { ...st.reviewSync, [s.shopId]: s } }))
+    // A finished run changed counts, badges and the "Нові відгуки" group.
+    if (!s.running && get().activeShopId === s.shopId) {
+      void (async () => {
+        const shops = await window.api.listShops()
+        set({ shops })
+        await get().reloadShopData()
+      })()
+    }
+  },
+  syncReviews: async () => {
+    const id = get().activeShopId
+    if (id == null) return
+    // The live state arrives only through `reviews:progress` (setReviewSync).
+    await window.api.syncReviews(id)
+  },
   setImageSync: (imageSync) => {
     const wasRunning = get().imageSync?.running
     set({ imageSync })

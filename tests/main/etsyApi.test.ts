@@ -3,6 +3,7 @@ import {
   BATCH_LIMIT,
   FIND_SHOP_MAX_PAGES,
   EtsyApiError,
+  REVIEW_EPOCH_MIN,
   buildUrl,
   createEtsyClient,
   parseQuota,
@@ -11,7 +12,7 @@ import {
 import findShopsFx from '../fixtures/findShops.json'
 import error403 from '../fixtures/error-403.json'
 import { fakeFetch, queuedFetch, type FakeReply } from '../helpers/fakeFetch'
-import { FakeEtsy, mkEtsyListing } from '../helpers/fakeEtsy'
+import { FakeEtsy, SHOP_ID, mkEtsyListing, mkEtsyReview, reviewCreated } from '../helpers/fakeEtsy'
 
 function client(fetch: typeof globalThis.fetch, over = {}) {
   const sleep = vi.fn(async (_ms: number) => {})
@@ -485,5 +486,35 @@ describe('request timeout', () => {
     const { c } = client(f as unknown as typeof fetch, { requestTimeoutMs: 20 })
     expect(await c.ping()).toEqual({ application_id: 9 })
     expect(await c.ping()).toEqual({ application_id: 9 })
+  })
+})
+
+describe('client.getShopReviews', () => {
+  it('asks for 100 per page with the created bounds, clamped to the OAS minimum', async () => {
+    const etsy = new FakeEtsy(0)
+    etsy.reviews.push(mkEtsyReview(1))
+    const page = await etsy.client().getShopReviews(SHOP_ID, { minCreated: 5, maxCreated: reviewCreated(2), offset: 0 })
+    expect(page.count).toBe(1)
+    const u = etsy.requests[0]
+    expect(u.pathname).toBe(`/v3/application/shops/${SHOP_ID}/reviews`)
+    expect(u.searchParams.get('limit')).toBe('100')
+    expect(u.searchParams.get('offset')).toBeNull()
+    expect(u.searchParams.get('min_created')).toBe(String(REVIEW_EPOCH_MIN))
+    expect(u.searchParams.get('max_created')).toBe(String(reviewCreated(2)))
+  })
+})
+
+describe('client.getShopReviews errors', () => {
+  it('403 is an auth error, 404 not_found, 400 bad_request — the caller decides', async () => {
+    const etsy = new FakeEtsy(0)
+    for (const [status, kind] of [[403, 'auth'], [404, 'not_found'], [400, 'bad_request']] as const) {
+      etsy.reviewsStatus = status
+      const e = await err(etsy.client().getShopReviews(SHOP_ID))
+      expect(e.kind).toBe(kind)
+    }
+  })
+  it('the fake refuses offsets beyond the v3 cap like Etsy does', async () => {
+    const etsy = new FakeEtsy(0)
+    expect((await err(etsy.client().getShopReviews(SHOP_ID, { offset: 12100 }))).kind).toBe('bad_request')
   })
 })

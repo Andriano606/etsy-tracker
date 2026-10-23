@@ -69,3 +69,31 @@ export function formatDelta(n: number | null | undefined, digits = 0): string {
   const abs = Math.abs(n).toLocaleString('uk-UA', { maximumFractionDigits: digits })
   return n > 0 ? `+${abs}` : `−${abs}`
 }
+
+/** An average rating: 4.8666 → "4,87"; "—" when unknown. */
+export function formatRating(avg: number | null | undefined): string {
+  if (avg == null || !Number.isFinite(avg)) return '—'
+  return avg.toLocaleString('uk-UA', { maximumFractionDigits: 2 })
+}
+
+/** A 1–5 rating as stars: 4 → "★★★★☆"; '' when unknown. */
+export function ratingStars(rating: number | null | undefined): string {
+  if (rating == null || !Number.isFinite(rating)) return ''
+  const n = Math.max(0, Math.min(5, Math.round(rating)))
+  return '★'.repeat(n) + '☆'.repeat(5 - n)
+}
+
+/** A review count, "≥ 12" while the shop's history is still being loaded. */
+export function formatReviewCount(n: number | null | undefined, partial: boolean | null | undefined): string {
+  if (n == null) return '—'
+  return partial ? `≥ ${formatCount(n)}` : formatCount(n)
+}
+
+/** First `max` characters of a text, cut at a word boundary when possible, with "…". */
+export function textExcerpt(text: string | null | undefined, max = 280): string {
+  const t = (text ?? '').trim()
+  if (t.length <= max) return t
+  const cut = t.slice(0, max)
+  const sp = cut.lastIndexOf(' ')
+  return `${(sp > max * 0.6 ? cut.slice(0, sp) : cut).trimEnd()}…`
+}

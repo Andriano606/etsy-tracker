@@ -1,12 +1,12 @@
 // `etsyimg://img/{listing_image_id}/{size}` — how the renderer shows listing
-// images. Main resolves the id in listing_images and streams the MinIO copy;
+// images (and `etsyimg://review/{review row id}/fullxfull` review photos). Main resolves the id in listing_images and streams the MinIO copy;
 // when there is none (not synced yet, MinIO off or down) it fetches the Etsy
 // CDN URL itself and passes it through. The renderer never sees MinIO
 // credentials or object keys, and CSP only has to allow `etsyimg:`.
 
 import { Readable } from 'stream'
 import type { ImageSize } from '../shared/types'
-import { type Db, type ImageRow, getImageRow } from './db'
+import { type Db, type ImageRow, type ReviewImageRow, getImageRow, getReviewImageRow } from './db'
 import type { ImageStore } from './imageStore'
 import { isEtsyCdnUrl } from '../shared/externalUrl'
 
@@ -29,6 +29,31 @@ export function parseImageUrl(url: string): { imageId: number; size: ImageSize }
   if (!SIZES.includes(size)) return null
   const imageId = Number(m[1])
   return Number.isSafeInteger(imageId) && imageId > 0 ? { imageId, size } : null
+}
+
+/** `etsyimg://review/42/fullxfull` → 42 (review photos exist only in fullxfull); null otherwise. */
+export function parseReviewImageUrl(url: string): number | null {
+  let u: URL
+  try {
+    u = new URL(url)
+  } catch {
+    return null
+  }
+  if (u.protocol !== `${IMAGE_SCHEME}:` || u.hostname !== 'review') return null
+  const m = u.pathname.match(/^\/(\d{1,20})\/fullxfull$/)
+  if (!m) return null
+  const id = Number(m[1])
+  return Number.isSafeInteger(id) && id > 0 ? id : null
+}
+
+/** Where to read a review photo from (pure): the MinIO copy, else its Etsy CDN URL. */
+export function resolveReviewImageSource(row: ReviewImageRow | null, storeAvailable: boolean): ImageSource {
+  if (!row) return { kind: 'none' }
+  const url = row.image_url_fullxfull && isEtsyCdnUrl(row.image_url_fullxfull) ? row.image_url_fullxfull : null
+  if (storeAvailable && row.image_sync_status === 'stored' && row.image_key) {
+    return { kind: 'store', key: row.image_key, fallbackUrl: url }
+  }
+  return url ? { kind: 'cdn', url } : { kind: 'none' }
 }
 
 export type ImageSource =
@@ -80,6 +105,8 @@ export interface ImageProtocolDeps {
    * the app marks it pending and queues a sync. The image is still served from the CDN.
    */
   onMissing?: (row: ImageRow) => void
+  /** The same for a stored review photo. */
+  onReviewMissing?: (row: ReviewImageRow) => void
 }
 
 const CACHE = 'private, max-age=86400'
@@ -108,20 +135,33 @@ export function createImageProtocolHandler(deps: ImageProtocolDeps): (req: Reque
     }
   }
 
-  return async (req) => {
-    const parsed = parseImageUrl(req.url)
-    if (!parsed) return new Response(null, { status: 400 })
-    const row = getImageRow(deps.db, parsed.imageId)
-
-    let store: ImageStore | null = null
-    if (row?.sync_status === 'stored') {
-      try {
-        store = await deps.getStore()
-      } catch {
-        store = null
-      }
+  async function storeIfStored(stored: boolean): Promise<ImageStore | null> {
+    if (!stored) return null
+    try {
+      return await deps.getStore()
+    } catch {
+      return null
     }
-    const src = resolveImageSource(row, parsed.size, store != null)
+  }
+
+  return async (req) => {
+    let src: ImageSource
+    let onMissing: (() => void) | undefined
+    let store: ImageStore | null
+    const reviewId = parseReviewImageUrl(req.url)
+    if (reviewId != null) {
+      const row = getReviewImageRow(deps.db, reviewId)
+      store = await storeIfStored(row?.image_sync_status === 'stored')
+      src = resolveReviewImageSource(row, store != null)
+      onMissing = row ? () => deps.onReviewMissing?.(row) : undefined
+    } else {
+      const parsed = parseImageUrl(req.url)
+      if (!parsed) return new Response(null, { status: 400 })
+      const row = getImageRow(deps.db, parsed.imageId)
+      store = await storeIfStored(row?.sync_status === 'stored')
+      src = resolveImageSource(row, parsed.size, store != null)
+      onMissing = row ? () => deps.onMissing?.(row) : undefined
+    }
     if (src.kind === 'none') return new Response(null, { status: 404 })
     if (src.kind === 'cdn') return fromCdn(src.url)
 
@@ -138,7 +178,7 @@ export function createImageProtocolHandler(deps: ImageProtocolDeps): (req: Reque
         })
       }
       // The store answered but has no such object: re-queue the copy.
-      if (row) deps.onMissing?.(row)
+      onMissing?.()
     } catch {
       // MinIO went away between sync and display — fall through to the CDN.
     }

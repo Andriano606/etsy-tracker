@@ -12,6 +12,9 @@ import type {
   MinioStatus,
   MinioTestResult,
   Quota,
+  Review,
+  ReviewPage,
+  ReviewSyncState,
   ScanOutcome
 } from '../shared/types'
 import { isAllowedExternalUrl } from '../shared/externalUrl'
@@ -22,7 +25,9 @@ import {
   getListingRaw,
   imageCounts,
   listActiveListings,
+  listListingReviews,
   listListingStats,
+  listNewReviews,
   listScanChanges,
   listScans,
   listShopObjectKeys,
@@ -32,6 +37,7 @@ import {
 import { EtsyApiError, type EtsyClient } from './etsyApi'
 import { type ImageStore, describeStoreError } from './imageStore'
 import type { ImageSyncer } from './imageSync'
+import type { ReviewSyncer } from './reviewSync'
 import type { Scanner } from './scanner'
 import {
   type KeyStore,
@@ -59,6 +65,8 @@ export interface IpcContext {
   makeStore: (cfg: MinioConfig) => Promise<ImageStore>
   /** MinIO settings were saved: drop the cached store. */
   onMinioChanged: () => void
+  /** The background review sync (GET /shops/{id}/reviews), after scans or on demand. */
+  reviews: ReviewSyncer
 }
 
 export interface ImageStatus {
@@ -104,7 +112,10 @@ export async function scanAll(ctx: IpcContext): Promise<ScanOutcome[]> {
     sendToRenderer(ctx, 'scan:state', { shopId: s.id, running: false })
     notifyShopsChanged(ctx)
     const last = out[out.length - 1]
-    if (last.ok) startImageSync(ctx, s.id)
+    if (last.ok) {
+      startImageSync(ctx, s.id)
+      startReviewSync(ctx, s.id, last.scan.id)
+    }
     // A bad key fails every shop the same way — stop instead of repeating it.
     if (!last.ok && /API-ключ/.test(last.error)) break
   }
@@ -117,6 +128,26 @@ export async function scanAll(ctx: IpcContext): Promise<ScanOutcome[]> {
  */
 export function startImageSync(ctx: Pick<IpcContext, 'images'>, shopId: number | null, force = false): void {
   ctx.images?.sync({ shopId, force }).catch(() => undefined)
+}
+
+/**
+ * After a successful scan (or on "Синхронізувати відгуки"): sync the shop's
+ * reviews in the background. Never awaited by the scan and never able to fail it.
+ */
+export function startReviewSync(ctx: Pick<IpcContext, 'reviews'>, shopId: number, scanId?: number | null): void {
+  ctx.reviews?.sync(shopId, { scanId: scanId ?? null }).catch(() => undefined)
+}
+
+/** An id from the renderer as a positive safe integer, else null (the handler answers "nothing"). */
+export function positiveId(v: unknown): number | null {
+  const n = Number(v)
+  return Number.isSafeInteger(n) && n > 0 ? n : null
+}
+
+/** A review sync run finished: copy its photos, refresh the renderer's shop list. */
+export function onReviewSyncDone(ctx: IpcContext, s: ReviewSyncState): void {
+  startImageSync(ctx, s.shopId)
+  notifyShopsChanged(ctx)
 }
 
 /** Typed (unsaved) settings over the stored ones; throws a Ukrainian message on bad input. */
@@ -191,13 +222,33 @@ export function registerIpc(ctx: IpcContext): void {
   ipcMain.handle('listing:raw', (_e, listingId: number) => getListingRaw(db, listingId))
   ipcMain.handle('listing:stats', (_e, listingId: number) => listListingStats(db, listingId))
   ipcMain.handle('scans:list', (_e, shopId: number) => listScans(db, shopId))
+  ipcMain.handle('reviews:listing', (_e, listingId: number, offset?: number, limit?: number): ReviewPage => {
+    const id = positiveId(listingId)
+    if (id == null) return { total: 0, offset: 0, reviews: [] }
+    return listListingReviews(db, id, Number(offset ?? 0), Number(limit ?? 20))
+  })
+  ipcMain.handle('reviews:new', (_e, scanId: number): Review[] => {
+    const id = positiveId(scanId)
+    return id == null ? [] : listNewReviews(db, id)
+  })
+  // Starts (or queues) a run and returns nothing: `reviews:progress` is the
+  // only source of the live state — a state returned here would be the
+  // previous run's (the new one starts a microtask later) and could overwrite
+  // the new run's first "running" event in the renderer.
+  ipcMain.handle('reviews:sync', (_e, shopId: number): void => {
+    const id = positiveId(shopId)
+    if (id != null) startReviewSync(ctx, id)
+  })
   ipcMain.handle('scan:changes', (_e, scanId: number) => listScanChanges(db, scanId))
 
   ipcMain.handle('scan:shop', async (_e, shopId: number) => {
     sendToRenderer(ctx, 'scan:state', { shopId, running: true })
     try {
       const res = await scanner.scanShop(shopId)
-      if (res.ok) startImageSync(ctx, shopId)
+      if (res.ok) {
+        startImageSync(ctx, shopId)
+        startReviewSync(ctx, shopId, res.scan.id)
+      }
       return res
     } finally {
       sendToRenderer(ctx, 'scan:state', { shopId, running: false })

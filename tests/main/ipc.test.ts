@@ -11,13 +11,22 @@ vi.mock('electron', () => ({
   shell: { openExternal }
 }))
 
-import { mergeMinioConfig, registerIpc, scanAll, testKey, testMinio, type IpcContext } from '../../src/main/ipc'
+import {
+  mergeMinioConfig,
+  onReviewSyncDone,
+  registerIpc,
+  scanAll,
+  testKey,
+  testMinio,
+  type IpcContext
+} from '../../src/main/ipc'
+import { createReviewSyncer } from '../../src/main/reviewSync'
 import { createImageSyncer } from '../../src/main/imageSync'
 import { createScanner } from '../../src/main/scanner'
 import { createKeyStore, createMinioSettingsStore, MINIO_DEFAULTS } from '../../src/main/settings'
-import { getListing, imageCounts } from '../../src/main/db'
+import { getListing, getShopSummary, imageCounts, listScans, reviewImageCounts } from '../../src/main/db'
 import { FakeImageStore, fakeCdn } from '../helpers/fakeImageStore'
-import { FakeEtsy, SHOP_ID } from '../helpers/fakeEtsy'
+import { FakeEtsy, SHOP_ID, mkEtsyReview } from '../helpers/fakeEtsy'
 import { memDb, seedShop } from '../helpers/db'
 import { fakeSafeStorage } from '../helpers/safeStorage'
 import { mkdtempSync } from 'fs'
@@ -42,6 +51,14 @@ function ctx(etsy = new FakeEtsy(2)) {
   })
   const makeStore = vi.fn(async () => store)
   const onMinioChanged = vi.fn()
+  // Wired like index.ts: progress to the window, and on finish photos + shops:changed.
+  let ref: IpcContext | null = null
+  const reviews = createReviewSyncer({
+    db,
+    client,
+    onState: (st) => sent.push(['reviews:progress', st]),
+    onDone: (st) => ref && onReviewSyncDone(ref, st)
+  })
   const c: IpcContext = {
     db,
     keyStore,
@@ -53,8 +70,10 @@ function ctx(etsy = new FakeEtsy(2)) {
     minio,
     images,
     makeStore,
-    onMinioChanged
+    onMinioChanged,
+    reviews
   }
+  ref = c
   return { c, etsy, sent, store, cdn, makeStore, onMinioChanged }
 }
 
@@ -286,5 +305,108 @@ describe('MinIO settings over IPC', () => {
       bucket: MINIO_DEFAULTS.bucket,
       secretKey: 'abcdefgh'
     })
+  })
+})
+
+describe('reviews after a scan', () => {
+  const ready = () => {
+    const t = ctx()
+    t.c.keyStore.setKey('keystring1', 'secret1')
+    seedShop(t.c.db, { id: SHOP_ID })
+    registerIpc(t.c)
+    return t
+  }
+
+  it('scan:shop returns first; the shop’s reviews sync after it, then their photos', async () => {
+    const { c, etsy, sent, store } = ready()
+    etsy.reviews.push(
+      mkEtsyReview(1, { listing_id: 1, image_url_fullxfull: 'https://i.etsystatic.com/r/1.jpg' }),
+      mkEtsyReview(2, { listing_id: 2 })
+    )
+    const out = (await call('scan:shop', SHOP_ID)) as { ok: boolean; scan: { id: number } }
+    expect(out.ok).toBe(true)
+    const st = await c.reviews.sync(SHOP_ID) // waits behind the run the handler started
+    expect(st.stored).toBe(2)
+    expect(getShopSummary(c.db, SHOP_ID)!.reviews).toMatchObject({ stored: 2, backfillComplete: true })
+    expect(sent.some(([ch, p]) => ch === 'reviews:progress' && (p as { running: boolean }).running)).toBe(true)
+    await vi.waitFor(() => expect(reviewImageCounts(c.db, SHOP_ID).stored).toBe(1))
+    expect([...store.objects.keys()].some((k) => k.includes('/reviews/t-5001/'))).toBe(true)
+    // The first sync is a backfill: nothing is "new" for the scan's results panel.
+    expect(await call('reviews:new', out.scan.id)).toEqual([])
+    const page = (await call('reviews:listing', 1, 0, 20)) as { total: number; reviews: unknown[] }
+    expect(page.total).toBe(1)
+    expect(sent.filter(([ch]) => ch === 'shops:changed').length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('a reviews failure (403) never fails or rolls back the scan', async () => {
+    const { c, etsy } = ready()
+    etsy.reviewsStatus = 403
+    const out = (await call('scan:shop', SHOP_ID)) as { ok: boolean }
+    expect(out.ok).toBe(true)
+    const st = await c.reviews.sync(SHOP_ID)
+    expect(st.error).toMatch(/не дозволяє читати відгуки/)
+    expect(listScans(c.db, SHOP_ID)[0]).toMatchObject({ status: 'ok' })
+    expect(getListing(c.db, 1)).not.toBeNull()
+    expect(getShopSummary(c.db, SHOP_ID)!.reviews!.lastError).toMatch(/403/)
+    // No reviews request ever succeeded: the shop is not "synced" — no 0-counts, no "≥ 0".
+    expect(getShopSummary(c.db, SHOP_ID)!.reviews).toMatchObject({ synced: false, stored: 0 })
+    expect(getListing(c.db, 1)).toMatchObject({ reviewCount: null, reviewsPartial: false })
+  })
+
+  it('new reviews of a rescan show up under that scan', async () => {
+    const { c, etsy } = ready()
+    etsy.reviews.push(mkEtsyReview(1, { listing_id: 1 }))
+    await call('scan:shop', SHOP_ID)
+    await c.reviews.sync(SHOP_ID)
+    etsy.reviews.push(mkEtsyReview(2, { listing_id: 1, created_timestamp: Math.floor(Date.now() / 1000) - 1 }))
+    const out = (await call('scan:shop', SHOP_ID)) as { scan: { id: number } }
+    await c.reviews.sync(SHOP_ID, { scanId: out.scan.id })
+    const fresh = (await call('reviews:new', out.scan.id)) as Array<{ transactionId: number; listingTitle: string }>
+    expect(fresh.map((r) => r.transactionId)).toEqual([5002])
+    expect(fresh[0].listingTitle).toBe('Listing 1')
+    expect(getListing(c.db, 1)).toMatchObject({ reviewCount: 2, reviewsNew: 1 })
+  })
+
+  it('reviews:sync replies with nothing; its run reports only through reviews:progress, in order', async () => {
+    const { c, etsy, sent } = ready()
+    etsy.reviews.push(mkEtsyReview(1))
+    await c.reviews.sync(SHOP_ID) // a previous, finished run (its final state is running: false)
+    sent.length = 0
+    // Like Electron: the reply is whatever the handler's promise resolves to.
+    const reply = await Promise.resolve(call('reviews:sync', SHOP_ID))
+    expect(reply).toBeUndefined()
+    await c.reviews.sync(SHOP_ID) // waits behind the run the handler started
+    const progress = sent.filter(([ch]) => ch === 'reviews:progress').map(([, p]) => (p as { running: boolean }).running)
+    expect(progress[0]).toBe(true)
+    expect(progress.indexOf(false)).toBeGreaterThan(0)
+  })
+
+  it('review handlers answer "nothing" to bad ids and offsets instead of throwing', async () => {
+    const { c, etsy } = ready()
+    etsy.reviews.push(mkEtsyReview(1, { listing_id: 1 }))
+    await call('scan:shop', SHOP_ID)
+    await c.reviews.sync(SHOP_ID)
+    const empty = { total: 0, offset: 0, reviews: [] }
+    expect(await call('reviews:listing', Number.NaN, 0, 20)).toEqual(empty)
+    expect(await call('reviews:listing', -1, 0, 20)).toEqual(empty)
+    expect(await call('reviews:listing', 1, 1e300, 20)).toMatchObject({ total: 1, reviews: [] })
+    expect(await call('reviews:listing', 1, Infinity, 20)).toMatchObject({ total: 1, reviews: [] })
+    expect(await call('reviews:listing', 1, Number.NaN, Number.NaN)).toMatchObject({ total: 1, offset: 0 })
+    expect(await call('reviews:new', 'x')).toEqual([])
+    const before = etsy.requests.length
+    expect(await call('reviews:sync', Number.NaN)).toBeUndefined()
+    expect(c.reviews.state(Number.NaN)).toBeNull()
+    expect(etsy.requests.length).toBe(before)
+  })
+
+  it('reviews:sync starts a run on demand; scanAll syncs every ok shop', async () => {
+    const { c, etsy } = ready()
+    etsy.reviews.push(mkEtsyReview(1))
+    await call('reviews:sync', SHOP_ID)
+    expect((await c.reviews.sync(SHOP_ID)).stored).toBe(1)
+    const before = etsy.count(`/v3/application/shops/${SHOP_ID}/reviews`)
+    await scanAll(c)
+    await c.reviews.sync(SHOP_ID)
+    expect(etsy.count(`/v3/application/shops/${SHOP_ID}/reviews`)).toBeGreaterThan(before)
   })
 })

@@ -1,5 +1,6 @@
-// Copies listing images from Etsy's CDN into the image store (MinIO), outside
-// of any scan transaction: a scan commits its DB rows first (new/replaced
+// Copies listing images — and review photos (`reviews.image_url_fullxfull`,
+// written by the review sync) — from Etsy's CDN into the image store (MinIO),
+// outside of any scan transaction: a scan commits its DB rows first (new/replaced
 // images land in listing_images as 'pending'), then this loop downloads and
 // uploads them. A MinIO outage or a disabled store never touches a scan — the
 // rows simply stay 'pending' and are picked up by the next run (after the next
@@ -12,14 +13,23 @@ import type { ImageSyncState } from '../shared/types'
 import {
   type Db,
   type ImageRow,
+  type ReviewImageRow,
   getImageRow,
+  getReviewImageRow,
   listImagesToCleanup,
   listImagesToSync,
+  listReviewImagesToCleanup,
+  listReviewImagesToSync,
   listStoredImages,
+  listStoredReviewImages,
   markImageError,
   markImageMissing,
   markImageObjectsDeleted,
-  markImageStored
+  markImageStored,
+  markReviewImageError,
+  markReviewImageMissing,
+  markReviewImageObjectDeleted,
+  markReviewImageStored
 } from './db'
 import { isEtsyCdnUrl } from '../shared/externalUrl'
 import {
@@ -27,7 +37,8 @@ import {
   ImageStoreError,
   describeStoreError,
   imageExt,
-  imageObjectKey
+  imageObjectKey,
+  reviewObjectKey
 } from './imageStore'
 
 export class DownloadError extends Error {
@@ -211,6 +222,26 @@ export function createImageSyncer(deps: ImageSyncDeps): ImageSyncer {
     }
   }
 
+  /** A review photo (only fullxfull exists): same rules as a listing image. */
+  async function storeReview(store: ImageStore, snapshot: ReviewImageRow): Promise<void> {
+    const row = getReviewImageRow(db, snapshot.id)
+    if (!row || !row.image_url_fullxfull || row.image_sync_status === 'stored') return
+    const url = row.image_url_fullxfull
+    const full = await downloadImage(url, dl)
+    const key = reviewObjectKey(row.shop_id, row.review_key, imageExt(full.contentType, url))
+    const { etag } = await store.put(key, full.body, full.contentType)
+    if (row.image_key && row.image_key !== key) await store.remove(row.image_key)
+    const recorded = markReviewImageStored(db, row.id, url, {
+      key,
+      byteSize: full.body.length,
+      contentType: full.contentType,
+      etag,
+      sha256: createHash('sha256').update(full.body).digest('hex'),
+      storedAt: now()
+    })
+    if (!recorded && getReviewImageRow(db, row.id)?.image_key !== key) await store.remove(key)
+  }
+
   async function runOnce(req: ImageSyncRequest): Promise<ImageSyncState> {
     current = { ...idle(), running: true, shopId: req.shopId ?? null }
     emit(true)
@@ -242,6 +273,16 @@ export function createImageSyncer(deps: ImageSyncDeps): ImageSyncer {
         return finish({ lastError: describeStoreError(e) })
       }
     }
+    // Review photos the API no longer returns (the buyer's privacy settings):
+    // keep only what Etsy still shows.
+    for (const row of listReviewImagesToCleanup(db)) {
+      try {
+        await store.remove(row.image_key!)
+        markReviewImageObjectDeleted(db, row.id, row.image_key!)
+      } catch (e) {
+        return finish({ lastError: describeStoreError(e) })
+      }
+    }
 
     // Manual sync: check that what the DB calls 'stored' is really in the
     // bucket (switched bucket, wiped volume, objects deleted by hand) and
@@ -256,15 +297,20 @@ export function createImageSyncer(deps: ImageSyncDeps): ImageSyncer {
             }
           }
         }
+        for (const row of listStoredReviewImages(db, req.shopId ?? null)) {
+          if (!row.image_key || !(await store.stat(row.image_key))) markReviewImageMissing(db, row.id)
+        }
       } catch (e) {
         return finish({ lastError: describeStoreError(e) })
       }
     }
 
-    const rows = listImagesToSync(db, {
-      shopId: req.shopId ?? null,
-      maxAttempts: req.force ? null : maxAttempts
-    })
+    const scope = { shopId: req.shopId ?? null, maxAttempts: req.force ? null : maxAttempts }
+    type Task = { kind: 'listing'; row: ImageRow } | { kind: 'review'; row: ReviewImageRow }
+    const rows: Task[] = [
+      ...listImagesToSync(db, scope).map((row): Task => ({ kind: 'listing', row })),
+      ...listReviewImagesToSync(db, scope).map((row): Task => ({ kind: 'review', row }))
+    ]
     current.total = rows.length
     emit(true)
 
@@ -272,16 +318,19 @@ export function createImageSyncer(deps: ImageSyncDeps): ImageSyncer {
     let storeFailure: string | null = null
     const worker = async (): Promise<void> => {
       while (next < rows.length && storeFailure == null) {
-        const row = rows[next++]
+        const task = rows[next++]
         try {
-          await storeOne(store!, row)
+          if (task.kind === 'listing') await storeOne(store!, task.row)
+          else await storeReview(store!, task.row)
         } catch (e) {
           if (e instanceof ImageStoreError) {
             // MinIO itself is failing: stop, leave the rest pending for next time.
             storeFailure = e.message
             return
           }
-          markImageError(db, row, row.url_fullxfull, (e as Error)?.message ?? String(e))
+          const msg = (e as Error)?.message ?? String(e)
+          if (task.kind === 'listing') markImageError(db, task.row, task.row.url_fullxfull, msg)
+          else markReviewImageError(db, task.row.id, task.row.image_url_fullxfull ?? '', msg)
           current.errors++
         }
         current.done++

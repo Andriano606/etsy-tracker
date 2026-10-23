@@ -8,3 +8,8 @@ import type { ImageSize, ListingImage } from '@shared/types'
 export function imageSrc(img: Pick<ListingImage, 'id'>, size: ImageSize): string {
   return `etsyimg://img/${img.id}/${size}`
 }
+
+/** A review photo (only the original exists): MinIO copy, else the Etsy CDN — via main. */
+export function reviewImageSrc(review: { id: number }): string {
+  return `etsyimg://review/${review.id}/fullxfull`
+}

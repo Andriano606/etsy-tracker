@@ -6,11 +6,14 @@ import {
   mapListing,
   mapListingDetails,
   mapPersonalization,
+  mapReview,
   mapShop,
   mapVideos,
+  reviewKey,
   shopStats
 } from '../../src/main/mapEtsy'
-import type { EtsyListing, EtsyListingWithAssociations, EtsyShop } from '../../src/main/etsyApi'
+import type { EtsyListing, EtsyListingWithAssociations, EtsyShop, EtsyTransactionReview } from '../../src/main/etsyApi'
+import reviewFx from '../fixtures/transactionReview.json'
 import listingFx from '../fixtures/listing.json'
 import detailsFx from '../fixtures/listingWithAssociations.json'
 import imageFx from '../fixtures/listingImage.json'
@@ -289,5 +292,47 @@ describe('mapShop', () => {
       reviewAverage: 4.9,
       listingActiveCount: 3
     })
+  })
+})
+
+describe('mapReview (OAS TransactionReview)', () => {
+  it('maps every field of the fixture, decodes entities, keys by transaction_id', () => {
+    const r = mapReview(reviewFx as EtsyTransactionReview)
+    expect(r).toEqual({
+      key: 't-3456789012',
+      shopId: 20987654,
+      listingId: 1801234567,
+      transactionId: 3456789012,
+      buyerUserId: 987654321,
+      rating: 5,
+      text: "Beautiful mug, arrived quickly.\nThe glaze is even nicer in person & it's sturdy.",
+      language: 'en',
+      imageUrl: reviewFx.image_url_fullxfull,
+      createTimestamp: 1760000000,
+      createdTimestamp: 1760000000,
+      updateTimestamp: 1760086400,
+      updatedTimestamp: 1760086400,
+      rawJson: JSON.stringify(reviewFx)
+    })
+  })
+
+  it('privacy-absent fields stay null; a non-CDN photo URL is dropped; only create_* still gives created', () => {
+    const r = mapReview({
+      shop_id: 1,
+      listing_id: 2,
+      transaction_id: 3,
+      rating: 4,
+      review: null,
+      image_url_fullxfull: 'http://evil.example/x.jpg',
+      create_timestamp: 1_750_000_000
+    } as EtsyTransactionReview)
+    expect(r).toMatchObject({ buyerUserId: null, text: null, imageUrl: null, createdTimestamp: 1_750_000_000, updatedTimestamp: null })
+  })
+
+  it('falls back to a deterministic key without transaction_id', () => {
+    const base = { shop_id: 1, listing_id: 22, rating: 5, created_timestamp: 1_750_000_000 } as EtsyTransactionReview
+    expect(reviewKey(base)).toBe('x-22-0-1750000000')
+    expect(reviewKey({ ...base, buyer_user_id: 9 })).toBe('x-22-9-1750000000')
+    expect(reviewKey({ ...base, transaction_id: 0 })).toBe('x-22-0-1750000000')
   })
 })

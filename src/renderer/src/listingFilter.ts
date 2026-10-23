@@ -22,6 +22,10 @@ export function filterListings(listings: Listing[], search: string, sort: SortMo
       return hit.sort(byNum((l) => l.views))
     case 'favorites-growth':
       return hit.sort(byNum((l) => l.favorersDelta))
+    case 'reviews':
+      return hit.sort(byNum((l) => l.reviewCount))
+    case 'reviews-growth':
+      return hit.sort(byNum((l) => l.reviewsNew))
     case 'price-asc':
       return hit.sort((a, b) => price(a) - price(b) || b.listingId - a.listingId)
     case 'price-desc':

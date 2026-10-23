@@ -11,6 +11,9 @@ import type {
   MinioStatus,
   MinioTestResult,
   Quota,
+  Review,
+  ReviewPage,
+  ReviewSyncState,
   ScanChange,
   ScanOutcome,
   ScanProgress,
@@ -55,6 +58,14 @@ const api = {
   listScans: (shopId: number): Promise<ScanSummary[]> => ipcRenderer.invoke('scans:list', shopId),
   getScanChanges: (scanId: number): Promise<ScanChange[]> =>
     ipcRenderer.invoke('scan:changes', scanId),
+  /** One listing's stored reviews, newest first, a page at a time. */
+  getListingReviews: (listingId: number, offset = 0, limit = 20): Promise<ReviewPage> =>
+    ipcRenderer.invoke('reviews:listing', listingId, offset, limit),
+  /** Reviews first seen as new by a scan's review sync. */
+  getNewReviews: (scanId: number): Promise<Review[]> => ipcRenderer.invoke('reviews:new', scanId),
+  /** Start syncing the shop's reviews (continues a backfill); the live state comes via onReviewSync. */
+  syncReviews: (shopId: number): Promise<void> => ipcRenderer.invoke('reviews:sync', shopId),
+  onReviewSync: (cb: (s: ReviewSyncState) => void): (() => void) => subscribe('reviews:progress', cb),
 
   scanShop: (shopId: number): Promise<ScanOutcome> => ipcRenderer.invoke('scan:shop', shopId),
   scanAll: (): Promise<ScanOutcome[]> => ipcRenderer.invoke('scan:all'),

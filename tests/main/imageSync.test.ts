@@ -1,10 +1,20 @@
 import { describe, expect, it, vi } from 'vitest'
-import { deleteShop, getImageRow, getListing, imageCounts, listShopObjectKeys } from '../../src/main/db'
+import {
+  deleteShop,
+  getImageRow,
+  getListing,
+  getReviewImageRow,
+  imageCounts,
+  listShopObjectKeys,
+  resetStoredImages,
+  reviewImageCounts
+} from '../../src/main/db'
+import { createReviewSyncer } from '../../src/main/reviewSync'
 import { DownloadError, createImageSyncer, downloadImage } from '../../src/main/imageSync'
 import { createScanner } from '../../src/main/scanner'
 import type { ImageSyncState, ScanOutcome } from '../../src/shared/types'
 import { memDb, seedShop } from '../helpers/db'
-import { FakeEtsy, SHOP_ID, mkEtsyImage } from '../helpers/fakeEtsy'
+import { FakeEtsy, SHOP_ID, mkEtsyImage, mkEtsyReview, reviewCreated } from '../helpers/fakeEtsy'
 import { FakeImageStore, cdnBytes, fakeCdn, type FakeCdnOptions } from '../helpers/fakeImageStore'
 
 function setup(count = 2, cdnOpts: FakeCdnOptions = {}) {
@@ -354,5 +364,90 @@ describe('downloadImage', () => {
     await expect(downloadImage(CDN, { fetch: hang, sleep: async () => {}, timeoutMs: 10, retries: 1 })).rejects.toThrow(
       /тайм-аут/
     )
+  })
+})
+
+describe('review photos (Etsy CDN → MinIO)', () => {
+  const photo = (n: number, ext = 'jpg') => `https://i.etsystatic.com/iusa/${n}/il_fullxfull.${n}.${ext}`
+
+  async function withReviews(cdnOpts: FakeCdnOptions = {}) {
+    const t = setup(0, cdnOpts)
+    t.etsy.reviews.push(
+      mkEtsyReview(1, { image_url_fullxfull: photo(1) }),
+      mkEtsyReview(2), // no photo
+      mkEtsyReview(3, { image_url_fullxfull: photo(3) })
+    )
+    let clock = reviewCreated(3) + 10
+    const reviews = createReviewSyncer({ db: t.db, client: t.etsy.client(), now: () => clock * 1000 })
+    await reviews.sync(SHOP_ID)
+    const idOf = (tx: number) => (t.db.prepare('SELECT id FROM reviews WHERE transaction_id = ?').get(tx) as { id: number }).id
+    return { ...t, reviews, idOf, tick: () => (clock += 3600) }
+  }
+
+  it('copies each review photo to shops/{shop}/reviews/{review_key}/fullxfull.{ext}', async () => {
+    const { db, store, images, idOf } = await withReviews()
+    expect(reviewImageCounts(db, SHOP_ID)).toEqual({ total: 2, stored: 0, pending: 2, error: 0 })
+    const st = await images.sync({ shopId: SHOP_ID })
+    expect(st).toMatchObject({ total: 2, done: 2, errors: 0, lastError: null })
+    expect([...store.objects.keys()].sort()).toEqual([
+      `shops/${SHOP_ID}/reviews/t-5001/fullxfull.jpg`,
+      `shops/${SHOP_ID}/reviews/t-5003/fullxfull.jpg`
+    ])
+    expect(store.objects.get(`shops/${SHOP_ID}/reviews/t-5001/fullxfull.jpg`)!.body).toEqual(cdnBytes(photo(1)))
+    expect(getReviewImageRow(db, idOf(5001))).toMatchObject({ image_sync_status: 'stored', image_key: `shops/${SHOP_ID}/reviews/t-5001/fullxfull.jpg` })
+    expect(reviewImageCounts(db, SHOP_ID)).toEqual({ total: 2, stored: 2, pending: 0, error: 0 })
+    expect(listShopObjectKeys(db, SHOP_ID)).toHaveLength(2)
+  })
+
+  it('a CDN failure marks that photo error with attempts; MinIO down leaves photos pending', async () => {
+    const { db, images, store, idOf } = await withReviews({ status: { 'il_fullxfull.3.': 404 } })
+    store.down = true
+    expect((await images.sync({ shopId: SHOP_ID })).lastError).toMatch(/MinIO недоступний/)
+    expect(reviewImageCounts(db, SHOP_ID)).toMatchObject({ pending: 2, error: 0 })
+    store.down = false
+    const st = await images.sync({ shopId: SHOP_ID })
+    expect(st.errors).toBe(1)
+    const row = db.prepare('SELECT image_sync_status, image_sync_attempts, image_sync_error FROM reviews WHERE id = ?').get(idOf(5003))
+    expect(row).toMatchObject({ image_sync_status: 'error', image_sync_attempts: 1, image_sync_error: expect.stringMatching(/404/) })
+  })
+
+  it('a photo the API stops returning (privacy) is deleted from MinIO; a replaced one is re-uploaded', async () => {
+    const { db, etsy, store, images, reviews, idOf, tick } = await withReviews()
+    await images.sync({ shopId: SHOP_ID })
+    // Review 1's photo is gone from the API; review 3's became a PNG.
+    etsy.reviews[0].image_url_fullxfull = null
+    etsy.reviews[2].image_url_fullxfull = photo(3, 'png')
+    tick()
+    await reviews.sync(SHOP_ID)
+    expect(getReviewImageRow(db, idOf(5001))).toMatchObject({ image_sync_status: null, image_url_fullxfull: null })
+    expect(getReviewImageRow(db, idOf(5003))).toMatchObject({ image_sync_status: 'pending' })
+    const cdn = fakeCdn({ contentType: 'image/png' })
+    const again = createImageSyncer({ db, getStore: async () => store, fetch: cdn, sleep: async () => {} })
+    await again.sync({ shopId: SHOP_ID })
+    expect([...store.objects.keys()]).toEqual([`shops/${SHOP_ID}/reviews/t-5003/fullxfull.png`])
+    expect(store.removed).toEqual(
+      expect.arrayContaining([`shops/${SHOP_ID}/reviews/t-5001/fullxfull.jpg`, `shops/${SHOP_ID}/reviews/t-5003/fullxfull.jpg`])
+    )
+    expect(getReviewImageRow(db, idOf(5001))!.image_key).toBeNull()
+  })
+
+  it('a forced sync re-uploads stored review photos missing from the bucket', async () => {
+    const { db, store, images } = await withReviews()
+    await images.sync({ shopId: SHOP_ID })
+    store.objects.clear()
+    await images.sync({ shopId: SHOP_ID, force: true })
+    expect(store.objects.size).toBe(2)
+    expect(reviewImageCounts(db, SHOP_ID).stored).toBe(2)
+  })
+
+  it('a new bucket queues review photos again; deleting the shop lists their keys', async () => {
+    const { db, images } = await withReviews()
+    await images.sync({ shopId: SHOP_ID })
+    const keys = listShopObjectKeys(db, SHOP_ID)
+    expect(keys.filter((k) => k.includes('/reviews/'))).toHaveLength(2)
+    expect(resetStoredImages(db)).toBe(2)
+    expect(reviewImageCounts(db, SHOP_ID)).toMatchObject({ stored: 0, pending: 2 })
+    deleteShop(db, SHOP_ID)
+    expect(reviewImageCounts(db, SHOP_ID).total).toBe(0)
   })
 })

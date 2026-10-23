@@ -1,9 +1,18 @@
 import { describe, expect, it, vi } from 'vitest'
-import { type ImageRow, getImageRow, markImageStored, upsertListing } from '../../src/main/db'
+import {
+  type ImageRow,
+  getImageRow,
+  markImageStored,
+  markReviewImageStored,
+  upsertListing,
+  upsertReviews
+} from '../../src/main/db'
 import {
   createImageProtocolHandler,
   parseImageUrl,
-  resolveImageSource
+  parseReviewImageUrl,
+  resolveImageSource,
+  resolveReviewImageSource
 } from '../../src/main/imageProtocol'
 import { memDb, mkInput, seedShop } from '../helpers/db'
 import { FakeImageStore, cdnBytes, fakeCdn } from '../helpers/fakeImageStore'
@@ -209,5 +218,77 @@ describe('etsyimg:// handler', () => {
     })
     expect((await failing(new Request('etsyimg://img/5/570xN'))).status).toBe(502)
     expect(getImageRow(db, 5)!.sync_status).toBe('pending')
+  })
+})
+
+describe('etsyimg://review/{id}/fullxfull (review photos)', () => {
+  const PHOTO = 'https://i.etsystatic.com/iusa/1/r_fullxfull.jpg'
+  function setup(imageUrl: string | null = PHOTO) {
+    const db = memDb()
+    seedShop(db)
+    upsertReviews(
+      db,
+      20987654,
+      [
+        {
+          key: 't-1', shopId: 20987654, listingId: 1, transactionId: 1, buyerUserId: null, rating: 5, text: 'ok',
+          language: 'en', imageUrl, createTimestamp: 1, createdTimestamp: 1, updateTimestamp: 1, updatedTimestamp: 1,
+          rawJson: '{}'
+        }
+      ],
+      { now: 1, scanId: null, isNew: () => false }
+    )
+    const id = (db.prepare('SELECT id FROM reviews').get() as { id: number }).id
+    const store = new FakeImageStore()
+    const cdn = fakeCdn()
+    let up = true
+    const missing: number[] = []
+    const handler = createImageProtocolHandler({
+      db,
+      getStore: async () => (up ? store : null),
+      fetch: cdn,
+      onReviewMissing: (r) => missing.push(r.id)
+    })
+    return { db, id, store, cdn, missing, get: (u: string) => handler(new Request(u)), off: () => (up = false) }
+  }
+
+  it('parses only review/{positive id}/fullxfull', () => {
+    expect(parseReviewImageUrl('etsyimg://review/42/fullxfull')).toBe(42)
+    for (const u of ['etsyimg://review/42/570xN', 'etsyimg://review/0/fullxfull', 'etsyimg://img/42/fullxfull', 'etsyimg://review/x/fullxfull']) {
+      expect(parseReviewImageUrl(u)).toBeNull()
+    }
+  })
+
+  it('resolveReviewImageSource: MinIO when stored, else the CDN; non-CDN URLs are refused', () => {
+    const base = { id: 1, review_key: 't-1', shop_id: 2, image_sync_attempts: 0 }
+    expect(resolveReviewImageSource({ ...base, image_url_fullxfull: PHOTO, image_sync_status: 'stored', image_key: 'k' }, true)).toEqual({
+      kind: 'store', key: 'k', fallbackUrl: PHOTO
+    })
+    expect(resolveReviewImageSource({ ...base, image_url_fullxfull: PHOTO, image_sync_status: 'stored', image_key: 'k' }, false)).toEqual({
+      kind: 'cdn', url: PHOTO
+    })
+    expect(resolveReviewImageSource({ ...base, image_url_fullxfull: 'https://evil.example/x.jpg', image_sync_status: 'pending', image_key: null }, true)).toEqual({ kind: 'none' })
+    expect(resolveReviewImageSource(null, true)).toEqual({ kind: 'none' })
+  })
+
+  it('serves the CDN until stored, then the MinIO copy; a vanished object falls back and is reported', async () => {
+    const { db, id, store, cdn, missing, get } = setup()
+    const first = await get(`etsyimg://review/${id}/fullxfull`)
+    expect(first.status).toBe(200)
+    expect(Buffer.from(await first.arrayBuffer())).toEqual(cdnBytes(PHOTO))
+    await store.put('r/k.jpg', Buffer.from('FROM-MINIO'), 'image/jpeg')
+    markReviewImageStored(db, id, PHOTO, { key: 'r/k.jpg', byteSize: 10, contentType: 'image/jpeg', etag: 'e', sha256: 'h', storedAt: 2 })
+    expect(await (await get(`etsyimg://review/${id}/fullxfull`)).text()).toBe('FROM-MINIO')
+    expect(cdn.calls).toEqual([PHOTO])
+    store.objects.clear()
+    expect((await get(`etsyimg://review/${id}/fullxfull`)).status).toBe(200)
+    expect(missing).toEqual([id])
+  })
+
+  it('404 for an unknown review or one without a photo; 400 for a bad size', async () => {
+    const { id, get } = setup(null)
+    expect((await get(`etsyimg://review/${id}/fullxfull`)).status).toBe(404)
+    expect((await get('etsyimg://review/999/fullxfull')).status).toBe(404)
+    expect((await get(`etsyimg://review/${id}/570xN`)).status).toBe(400)
   })
 })

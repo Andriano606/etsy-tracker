@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
-import type { ImageCounts, ImageSyncState, ShopSummary } from '@shared/types'
-import { formatAgo, formatCount, formatDateTime, formatDelta, isStale } from '@shared/format'
+import type { ImageCounts, ImageSyncState, ReviewSyncState, ShopSummary } from '@shared/types'
+import { formatAgo, formatCount, formatDateTime, formatDelta, formatRating, isStale } from '@shared/format'
 import { useStore, type SortMode } from '../store'
 import { filterListings } from '../listingFilter'
 import { ExternalLink } from './ExternalLink'
@@ -92,6 +92,75 @@ export function ImageSyncLine({
   )
 }
 
+/**
+ * "Відгуки: 3 200 / ~9 300 · ⭐ 4,87 · фото відгуків: 12/40" + the running sync,
+ * its error and "Синхронізувати відгуки".
+ */
+export function ReviewSyncLine({
+  shop,
+  live,
+  canSync,
+  onSync
+}: {
+  shop: ShopSummary
+  live: ReviewSyncState | undefined
+  canSync: boolean
+  onSync: () => void
+}): JSX.Element | null {
+  const all = shop.reviews ?? null
+  const running = !!live?.running
+  // Only failed runs so far (e.g. 403): show "not synced" + the error, no counts.
+  const info = all?.synced ? all : null
+  const lastError = all?.lastError ?? null
+  if (!all && !running && !shop.lastOkScan) return null
+  const stored = running ? live!.stored : (info?.stored ?? 0)
+  const estimate = running ? (live!.estimate ?? info?.estimate ?? null) : (info?.estimate ?? null)
+  const complete = running ? live!.backfillComplete : !!info?.backfillComplete
+  const error = running ? null : lastError
+  return (
+    <div className="review-sync" data-testid="review-sync">
+      {info || running ? (
+        <span title="Відгуки магазину, збережені в базі (з GET /shops/{id}/reviews)">
+          Відгуки: {formatCount(stored)}
+          {!complete && estimate != null && estimate > stored && ` / ~${formatCount(estimate)}`}
+          {info?.average != null && ` · ⭐ ${formatRating(info.average)}`}
+        </span>
+      ) : (
+        <span className="dim">Відгуки ще не синхронізовано</span>
+      )}
+      {!running && info && !complete && (
+        <span className="dim" title="Історію відгуків завантажено не повністю — продовжиться з наступним скануванням">
+          {' '}
+          · історія завантажується
+        </span>
+      )}
+      {info && info.photos.total > 0 && (
+        <span className="dim">
+          {' '}
+          · фото відгуків: {formatCount(info.photos.stored)}/{formatCount(info.photos.total)}
+        </span>
+      )}
+      {running && (
+        <span className="scan-progress">
+          {' '}
+          · синхронізація ({live!.phase === 'incremental' ? 'нові' : 'історія'}, запитів: {live!.requests})
+        </span>
+      )}
+      {error && (
+        <span className="err" title={error}>
+          {' '}
+          · {error}
+        </span>
+      )}
+      {!running && (
+        <button className="btn subtle small" disabled={!canSync} onClick={onSync}>
+          Синхронізувати відгуки
+        </button>
+      )}
+    </div>
+  )
+}
+
 export function ShopView(): JSX.Element | null {
   const {
     shops,
@@ -111,7 +180,10 @@ export function ShopView(): JSX.Element | null {
     scanShop,
     removeShop,
     openListing,
-    syncImages
+    syncImages,
+    newReviews,
+    reviewSync,
+    syncReviews
   } = useStore()
   const shop = shops.find((s) => s.id === activeShopId)
 
@@ -146,6 +218,12 @@ export function ShopView(): JSX.Element | null {
           </div>
           <ShopStatsLine shop={shop} />
           <ImageSyncLine counts={imageCounts} sync={imageSync} onSync={() => void syncImages()} />
+          <ReviewSyncLine
+            shop={shop}
+            live={reviewSync[shop.id]}
+            canSync={!!keyStatus?.hasKey && !busy}
+            onSync={() => void syncReviews()}
+          />
         </div>
         <div className="shop-actions">
           <button
@@ -187,7 +265,7 @@ export function ShopView(): JSX.Element | null {
           </div>
         )}
 
-        <ScanResults shop={shop} changes={lastChanges} onOpen={openListing} />
+        <ScanResults shop={shop} changes={lastChanges} newReviews={newReviews} onOpen={openListing} />
 
         {listings.length > 0 && (
           <section className="all-listings">
@@ -212,6 +290,8 @@ export function ShopView(): JSX.Element | null {
                 <option value="favorites">Найпопулярніші (обране)</option>
                 <option value="views">Перегляди</option>
                 <option value="favorites-growth">Ріст обраного</option>
+                <option value="reviews">Найбільше відгуків</option>
+                <option value="reviews-growth">Ріст відгуків</option>
               </select>
             </div>
             {visible.length === 0 ? (

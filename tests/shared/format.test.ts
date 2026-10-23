@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
   STALE_AFTER_MS,
+  formatRating,
+  formatReviewCount,
+  ratingStars,
+  textExcerpt,
   formatAgo,
   formatCount,
   formatDelta,
@@ -55,5 +59,30 @@ describe('formatCount / formatDelta', () => {
     expect(formatDelta(-0.05, 2)).toBe('−0,05')
     expect(formatDelta(0)).toBe('')
     expect(formatDelta(null)).toBe('')
+  })
+})
+
+describe('review formatting', () => {
+  it('formatRating keeps up to 2 decimals with a comma', () => {
+    expect(formatRating(4.8666)).toBe('4,87')
+    expect(formatRating(5)).toBe('5')
+    expect(formatRating(null)).toBe('—')
+  })
+  it('ratingStars draws 1–5 stars, clamped', () => {
+    expect(ratingStars(4)).toBe('★★★★☆')
+    expect(ratingStars(5)).toBe('★★★★★')
+    expect(ratingStars(9)).toBe('★★★★★')
+    expect(ratingStars(null)).toBe('')
+  })
+  it('formatReviewCount marks a partial count with ≥', () => {
+    expect(formatReviewCount(1200, true).replace(/\s/g, ' ')).toBe('≥ 1 200')
+    expect(formatReviewCount(12, false)).toBe('12')
+    expect(formatReviewCount(null, true)).toBe('—')
+  })
+  it('textExcerpt cuts long text at a word boundary', () => {
+    expect(textExcerpt('short')).toBe('short')
+    expect(textExcerpt('one two three four five', 15)).toBe('one two three…')
+    expect(textExcerpt('abcdefghijklmnop', 5)).toBe('abcde…')
+    expect(textExcerpt(null)).toBe('')
   })
 })

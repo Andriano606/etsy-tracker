@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it } from 'vitest'
-import { act, fireEvent, render, screen, within } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { ui } from '../../../src/renderer/src/features/orders'
 import { ConfirmModal } from '../../../src/renderer/src/components/ConfirmModal'
 import { useStore } from '../../../src/renderer/src/store'
@@ -8,6 +8,7 @@ import type { LedgerEntry, LedgerPage, ListingSales, Order, OrderItem, OrderPaym
 import { localDate, localDaySec } from '../../../src/shared/features/orders'
 import { formatEtsyDate, formatPrice } from '../../../src/shared/format'
 import { etsyIn, mkMyListing, mockFeature, setupRenderer, type Api } from '../helpers'
+import { fakeLayout } from '../ui/measure'
 
 let api: Api
 beforeEach(() => {
@@ -136,7 +137,22 @@ const click = async (el: HTMLElement) => {
   })
 }
 
-const confirmDialog = () => screen.getByRole('button', { name: 'Підтвердити' })
+const cleanupAll = () => cleanup()
+/** The open confirmation's confirm button — it says the verb of the change. */
+const confirmDialog = (name: string) =>
+  within(screen.getByText('Підтвердження').closest('[role="alertdialog"]') as HTMLElement).getByRole('button', { name })
+/** The open confirmation's whole text. */
+const confirmText = () => (screen.getByText('Підтвердження').closest('[role="alertdialog"], [role="dialog"], .modal') as HTMLElement).textContent ?? ''
+
+/** The value shown next to `label` in a fact list or a number tile (whitespace normalized like price()). */
+function valueOf(root: HTMLElement, label: string): string {
+  const el = within(root).getAllByText(label, { selector: '.fx-fact-label, .ui-stat-label-text' })[0]
+  const box = el.closest('.fx-fact, .ui-stat') as HTMLElement
+  return (box.querySelector('dd, .ui-stat-value')?.textContent ?? '').replace(/\s/g, ' ')
+}
+
+/** A ledger amount as the UI prints it: a sign, a typographic minus. */
+const signed = (amount: number) => (amount > 0 ? '+' : amount < 0 ? '−' : '') + price(Math.abs(amount))
 
 describe('ui registration', () => {
   it('two "Мій магазин" tabs and the own-listing "Продажі" section', () => {
@@ -151,13 +167,13 @@ describe('Мій магазин → Замовлення', () => {
     await renderTab('orders')
     expect(api.featureCall).toHaveBeenCalledWith('orders', 'list', { sortOn: 'created', sortOrder: 'desc', limit: 25, offset: 0 })
     const row = screen.getByTestId('order-row-9001')
-    expect(row).toHaveTextContent(formatEtsyDate(T0))
-    expect(row).toHaveTextContent('#9001')
-    expect(row).toHaveTextContent('Olena K')
+    expect(row).toHaveTextContent('#9001Olena K')
+    expect(row).toHaveTextContent(`${formatEtsyDate(T0)} · товарів: 3`)
     expect(row).toHaveTextContent(price(2600))
-    expect(row).toHaveTextContent(/^\S+#9001Olena K3.+USDоплаченоне відправлено🎁 подарунокВідкрити$/)
-    expect(row).toHaveTextContent('🎁 подарунок')
-    expect(within(row).getAllByRole('cell')[3]).toHaveTextContent('3')
+    // Status chips: words (with icons), not colour alone; the gift chip has no emoji.
+    expect(row).toHaveTextContent(/оплачено\s*не відправлено\s*подарунок\s*Відкрити$/)
+    // The row's button names its order (a screen reader's button list tells the rows apart).
+    expect(within(row).getByRole('button', { name: 'Відкрити замовлення #9001' })).toBeInTheDocument()
     const row2 = screen.getByTestId('order-row-9002')
     expect(row2).toHaveTextContent('відкрите')
     expect(row2).toHaveTextContent('не оплачено')
@@ -261,8 +277,8 @@ describe('Мій магазин → Замовлення', () => {
       'orders.get': mkOrder(9001, over)
     })
     await renderTab('orders')
-    await click(screen.getByRole('button', { name: 'Відкрити' }))
-    expect(api.featureCall).toHaveBeenLastCalledWith('orders', 'get', { receiptId: 9001 })
+    await click(screen.getByRole('button', { name: 'Відкрити замовлення #9001' }))
+    expect(api.featureCall).toHaveBeenCalledWith('orders', 'get', { receiptId: 9001 })
   }
 
   it('the order: items with variations, totals, buyer + address, message, gift, shipments, refunds', async () => {
@@ -277,12 +293,17 @@ describe('Мій магазин → Замовлення', () => {
     expect(items).toHaveTextContent('Колір: Синій')
     expect(items).toHaveTextContent(price(1000))
     const totals = screen.getByTestId('order-totals')
-    expect(totals).toHaveTextContent('Товари' + price(2000))
-    expect(totals).toHaveTextContent('Знижка' + price(-200))
-    expect(totals).toHaveTextContent('Доставка' + price(300))
-    expect(totals).toHaveTextContent('Податок' + price(500))
-    expect(totals).toHaveTextContent('Разом' + price(2600))
-    expect(totals).not.toHaveTextContent('ПДВ')
+    expect(valueOf(totals, 'Товари')).toBe(price(2000))
+    // A typographic minus, like every other signed sum (Платіж, Фінанси).
+    expect(valueOf(totals, 'Знижка')).toBe(signed(-200))
+    expect(valueOf(totals, 'Підсумок')).toBe(price(1800))
+    expect(valueOf(totals, 'Доставка')).toBe(price(300))
+    expect(valueOf(totals, 'Податок')).toBe(price(500))
+    expect(valueOf(totals, 'Разом')).toBe(price(2600))
+    // Zero VAT / gift wrap are left out; every line explains itself.
+    expect(within(totals).queryByText('ПДВ')).toBeNull()
+    expect(within(totals).queryByText('Подарункове пакування')).toBeNull()
+    expect(within(totals).getByRole('button', { name: 'Що таке «Податок з продажу»?' })).toBeInTheDocument()
     expect(d).toHaveTextContent('buyer@example.com')
     expect([...screen.getByTestId('order-address').children].map((x) => x.textContent)).toEqual(['Olena K', 'Main st 1', '79000 Lviv', 'Ukraine'])
     expect(screen.getByTestId('buyer-message')).toHaveTextContent('Please wrap it')
@@ -290,7 +311,9 @@ describe('Мій магазин → Замовлення', () => {
     expect(d).toHaveTextContent('від: Ira')
     expect(screen.getByTestId('order-shipments')).toHaveTextContent('usps · 1Z')
     expect(d).toHaveTextContent(`${price(500)} · ${formatEtsyDate(T0)} — damaged`)
-    await click(screen.getByRole('button', { name: '← До списку' }))
+    // Paid, not shipped: the next step is said first.
+    expect(d).toHaveTextContent('Замовлення оплачене і чекає відправлення')
+    await click(screen.getByRole('button', { name: 'До списку' }))
     expect(screen.getByTestId('orders-tab')).toBeInTheDocument()
   })
 
@@ -304,10 +327,12 @@ describe('Мій магазин → Замовлення', () => {
     await openDetails('order-payments')
     expect(api.featureCall).toHaveBeenCalledWith('orders', 'payments', { receiptId: 9001 })
     const p = screen.getByTestId('payment-61')
-    expect(p).toHaveTextContent('Сплачено покупцем' + price(2600))
-    expect(p).toHaveTextContent('Комісії' + price(110))
-    expect(p).toHaveTextContent('Вам (чистими)' + price(2490))
-    expect(p).toHaveTextContent('Після повернень' + price(1990))
+    expect(valueOf(p, 'Сплачено покупцем')).toBe(price(2600))
+    expect(valueOf(p, 'Комісії')).toBe('−' + price(110))
+    expect(valueOf(p, 'Вам (чистими)')).toBe(price(2490))
+    expect(valueOf(p, 'Після повернень')).toBe(price(1990))
+    expect(within(p).queryByText('Зараховано після відправлення')).toBeNull()
+    expect(p).toHaveTextContent('зараховано')
     expect(p).toHaveTextContent(`Повернення ${price(500)} — damaged`)
 
     await openDetails('order-listings-section')
@@ -321,9 +346,9 @@ describe('Мій магазин → Замовлення', () => {
   it('a failing order load shows the error and keeps the way back', async () => {
     mockFeature({ 'orders.list': { total: 1, offset: 0, orders: [mkOrder(9001)] }, 'orders.get': { ok: false, error: 'Etsy не знайшов (HTTP 404).' } })
     await renderTab('orders')
-    await click(screen.getByRole('button', { name: 'Відкрити' }))
+    await click(screen.getByRole('button', { name: 'Відкрити замовлення #9001' }))
     expect(screen.getByRole('alert')).toHaveTextContent('HTTP 404')
-    await click(screen.getByRole('button', { name: '← До списку' }))
+    await click(screen.getByRole('button', { name: 'До списку' }))
     expect(screen.getByTestId('order-row-9001')).toBeInTheDocument()
   })
 
@@ -337,12 +362,13 @@ describe('Мій магазин → Замовлення', () => {
     fireEvent.click(screen.getByLabelText('Надіслати копію листа мені'))
 
     await click(screen.getByRole('button', { name: 'Позначити відправленим' }))
-    expect(screen.getByText(/Позначити замовлення #9001 відправленим\?/)).toHaveTextContent('з трек-номером RR1UA')
+    expect(confirmText()).toContain('Позначити замовлення #9001 відправленим?')
+    expect(confirmText()).toContain('з трек-номером RR1UA')
     await click(screen.getByRole('button', { name: 'Скасувати' }))
     expect(api.featureCall).not.toHaveBeenCalledWith('orders', 'ship', expect.anything())
 
     await click(screen.getByRole('button', { name: 'Позначити відправленим' }))
-    await click(confirmDialog())
+    await click(confirmDialog('Позначити відправленим'))
     expect(api.featureCall).toHaveBeenCalledWith('orders', 'ship', {
       receiptId: 9001,
       carrier: 'ukrposhta',
@@ -353,7 +379,7 @@ describe('Мій магазин → Замовлення', () => {
     expect(screen.getByRole('status')).toHaveTextContent('покупцю надіслано лист')
     expect(screen.getByTestId('order-shipments')).toHaveTextContent('ukrposhta · RR1UA')
     expect(screen.getByLabelText('Трек-номер')).toHaveValue('')
-    await click(screen.getByRole('button', { name: '← До списку' }))
+    await click(screen.getByRole('button', { name: 'До списку' }))
     expect(screen.getByTestId('order-row-9001')).toHaveTextContent('відправлено')
     expect(screen.getByTestId('order-row-9001')).not.toHaveTextContent('не відправлено')
   })
@@ -366,7 +392,7 @@ describe('Мій магазин → Замовлення', () => {
     fireEvent.change(screen.getByLabelText('Трек-номер'), { target: { value: '1Z' } })
     mockFeature({ 'orders.ship': { ok: false, error: 'Etsy відхилив відправлення (HTTP 409).' } })
     await click(screen.getByRole('button', { name: 'Позначити відправленим' }))
-    await click(confirmDialog())
+    await click(confirmDialog('Позначити відправленим'))
     expect(screen.getByRole('alert')).toHaveTextContent('HTTP 409')
   })
 
@@ -378,19 +404,20 @@ describe('Мій магазин → Замовлення', () => {
     await click(screen.getByRole('button', { name: 'Скасувати' }))
     expect(api.featureCall).not.toHaveBeenCalledWith('orders', 'update', expect.anything())
     await click(within(flags).getByRole('button', { name: 'Зняти позначку «оплачено»' }))
-    await click(confirmDialog())
+    await click(confirmDialog('Зняти позначку «оплачено»'))
     expect(api.featureCall).toHaveBeenCalledWith('orders', 'update', { receiptId: 9001, wasPaid: false })
     expect(screen.getByRole('status')).toHaveTextContent('Позначку «оплачено» знято.')
     expect(within(flags).getByRole('button', { name: 'Позначити оплаченим' })).toBeInTheDocument()
 
     await click(within(flags).getByRole('button', { name: 'Відправлено без трек-номера' }))
-    expect(screen.getByText(/позначити відправленим без трек-номера\?/)).toBeInTheDocument()
-    await click(confirmDialog())
-    expect(api.featureCall).toHaveBeenLastCalledWith('orders', 'update', { receiptId: 9001, wasShipped: true })
+    expect(confirmText()).toContain('позначити відправленим без трек-номера?')
+    await click(confirmDialog('Відправлено без трек-номера'))
+    // (the ship form that came back reads the shop's carriers, so look at the updates only)
+    expect(api.featureCall.mock.calls.filter((c) => c[1] === 'update').at(-1)).toEqual(['orders', 'update', { receiptId: 9001, wasShipped: true }])
 
     mockFeature({ 'orders.update': { ok: false, error: 'Etsy не дозволив цю дію (HTTP 403)' } })
     await click(within(flags).getByRole('button', { name: 'Зняти позначку «відправлено»' }))
-    await click(confirmDialog())
+    await click(confirmDialog('Зняти позначку «відправлено»'))
     expect(screen.getByRole('alert')).toHaveTextContent('HTTP 403')
   })
 })
@@ -442,13 +469,29 @@ describe('Мій магазин → Фінанси', () => {
     expect(screen.getByLabelText('Від дати')).toHaveValue('2026-09-24')
     expect(screen.getByText('Записів за період: 2')).toBeInTheDocument()
     const totals = screen.getByTestId('ledger-totals')
-    expect(totals).toHaveTextContent('transaction1' + price(-20))
-    expect(totals).toHaveTextContent('PAYMENT1' + price(2490))
+    // Known Etsy types are named in Ukrainian only (Etsy's own code is a tooltip); amounts carry a sign.
+    expect(totals).toHaveTextContent('Комісія за продаж1' + signed(-20))
+    expect(totals).toHaveTextContent('Оплата замовлення1' + signed(2490))
+    expect(totals).not.toHaveTextContent('PAYMENT')
+    expect(within(totals).getByText('Оплата замовлення')).toHaveAttribute('title', 'Тип в Etsy: PAYMENT')
     const e = screen.getByTestId('entry-71')
     expect(e).toHaveTextContent(formatEtsyDate(T0 + 71))
-    expect(e).toHaveTextContent('Transaction fee')
-    expect(e).toHaveTextContent(price(-20))
-    expect(e).toHaveTextContent(price(10071))
+    // The Ukrainian type is the entry's title; Etsy's English description is the second line, after the date.
+    expect(e.querySelector('.fx-title')).toHaveTextContent(/^Комісія за продаж$/)
+    expect(e).toHaveTextContent(`Комісія за продаж${formatEtsyDate(T0 + 71)}Transaction fee`)
+    expect(e).toHaveTextContent(signed(-20))
+    expect(e).toHaveTextContent('баланс ' + price(10071))
+    expect(within(e).getByText(signed(-20))).toHaveClass('is-out')
+    expect(within(screen.getByTestId('entry-70')).getByText(signed(2490))).toHaveClass('is-in')
+    // The period in one look: money in, money out, the balance after the newest entry.
+    const sum = screen.getByTestId('ledger-summary')
+    expect(valueOf(sum, 'Надійшло')).toBe(signed(2490))
+    expect(valueOf(sum, 'Списано')).toBe(signed(-20))
+    expect(valueOf(sum, 'Заробили')).toBe(signed(2470))
+    // No payout in the period → no payout tile.
+    expect(within(sum).queryByText('Виплачено на картку')).toBeNull()
+    expect(valueOf(sum, 'Баланс')).toBe(price(10071))
+    expect(screen.getByRole('radio', { name: '30 дн.' })).toBeChecked()
     expect(within(screen.getByTestId('entry-70')).queryByRole('button', { name: 'Продаж' })).toBeNull()
   })
 
@@ -523,8 +566,10 @@ describe('Мій магазин → Фінанси', () => {
     await openDetails('finance-sales')
     expect(api.featureCall).toHaveBeenCalledWith('orders', 'sales', { minCreated: localDaySec('2026-09-24'), maxCreated: localDaySec('2026-10-24', true) })
     const s = screen.getByTestId('sales-by-listing')
-    expect(s).toHaveTextContent(`Продажів: 4, продано шт.: 7, виручка: ${price(5500)} + ${price(700, 'EUR')}`)
-    expect(s).toHaveTextContent('без скасованих і повністю повернутих (повернутих пропущено: 3)')
+    expect(valueOf(s, 'Продажів')).toBe('4')
+    expect(valueOf(s, 'Продано шт.')).toBe('7')
+    expect(valueOf(s, 'Виручка')).toBe(`${price(5500)} + ${price(700, 'EUR')}`)
+    expect(s).toHaveTextContent('крім скасованих і повністю повернутих (повернутих пропущено: 3)')
     expect(s).toHaveTextContent('Прочитано лише 2000 найновіших замовлень із 2600 — старіші замовлення цього періоду не враховано.')
     expect(s).toHaveTextContent('Planner25' + price(5000))
   })
@@ -551,10 +596,14 @@ describe('Own listing → Продажі', () => {
     await act(async () => {})
     expect(api.featureCall).toHaveBeenCalledWith('orders', 'listingSales', { listingId: 501 })
     const s = screen.getByTestId('listing-sales')
-    expect(s).toHaveTextContent('Продажів3')
-    expect(s).toHaveTextContent('Продано шт.7')
-    expect(s).toHaveTextContent('Виручка' + price(7000))
-    expect(s).toHaveTextContent(`${formatEtsyDate(T0 + 3)}3${price(1000)}Колір: Синій#9002`)
+    expect(valueOf(s, 'Продажів')).toBe('3')
+    expect(valueOf(s, 'Продано шт.')).toBe('7')
+    expect(valueOf(s, 'Виручка')).toBe(price(7000))
+    expect(valueOf(s, 'Останній продаж')).toBe(formatEtsyDate(T0 + 5))
+    const first = within(screen.getByRole('list', { name: 'Останні продажі' })).getAllByRole('listitem')[0]
+    expect(first).toHaveTextContent(`${formatEtsyDate(T0 + 3)} · замовлення #9002`)
+    expect(first).toHaveTextContent(`3 шт. × ${price(1000)}`)
+    expect(first).toHaveTextContent('Колір: Синій')
     expect(s).toHaveTextContent('зокрема зі скасованих і повернутих замовлень')
     expect(screen.getByRole('heading', { name: 'Останні продажі' })).toBeInTheDocument()
   })
@@ -563,7 +612,7 @@ describe('Own listing → Продажі', () => {
     mockFeature({ 'orders.listingSales': sales({ total: 0, recent: [], quantity: 0, revenue: [] }) })
     const r = render(<Section listing={mkMyListing(501)} onChanged={() => {}} />)
     await act(async () => {})
-    expect(screen.getByText('Продажів цього лістингу ще не було.')).toBeInTheDocument()
+    expect(screen.getByText('Продажів цього товару ще не було.')).toBeInTheDocument()
     r.unmount()
 
     mockFeature({ 'orders.listingSales': sales({ total: 2500, scanned: 2000, truncated: true }) })
@@ -577,5 +626,272 @@ describe('Own listing → Продажі', () => {
     render(<Section listing={mkMyListing(501)} onChanged={() => {}} />)
     await act(async () => {})
     expect(screen.getByRole('alert')).toHaveTextContent('Увійдіть в Etsy')
+  })
+})
+
+describe('Мій магазин → Замовлення: quick views, next step, address', () => {
+  it('"Треба відправити" = paid, not shipped, not canceled — applied at once; "Скинути фільтри" goes back to all', async () => {
+    mockFeature({ 'orders.list': { total: 0, offset: 0, orders: [] } })
+    await renderTab('orders')
+    expect(screen.getByRole('radio', { name: 'Усі' })).toBeChecked()
+    await click(screen.getByRole('radio', { name: /Треба відправити/ }))
+    expect(api.featureCall).toHaveBeenLastCalledWith('orders', 'list', {
+      sortOn: 'created',
+      sortOrder: 'desc',
+      limit: 25,
+      offset: 0,
+      wasPaid: true,
+      wasShipped: false,
+      wasCanceled: false
+    })
+    expect(screen.getByRole('radio', { name: /Треба відправити/ })).toBeChecked()
+    // The full filters show the same choice.
+    expect(screen.getByLabelText('Оплата')).toHaveValue('yes')
+    expect(screen.getByLabelText('Відправка')).toHaveValue('no')
+    expect(screen.getByText('Спробуйте інший фільтр.')).toBeInTheDocument()
+    await click(screen.getByRole('button', { name: 'Скинути фільтри' }))
+    expect(api.featureCall).toHaveBeenLastCalledWith('orders', 'list', { sortOn: 'created', sortOrder: 'desc', limit: 25, offset: 0 })
+    expect(screen.getByRole('radio', { name: 'Усі' })).toBeChecked()
+    expect(screen.getByText('Коли хтось купить у вашому магазині, замовлення з’явиться тут.')).toBeInTheDocument()
+  })
+
+  it('a custom filter checks no quick view until it matches one', async () => {
+    mockFeature({ 'orders.list': { total: 0, offset: 0, orders: [] } })
+    await renderTab('orders')
+    fireEvent.change(screen.getByLabelText('Доставка'), { target: { value: 'yes' } })
+    expect(screen.getByTestId('orders-filters')).toHaveTextContent('є незастосовані зміни')
+    await click(screen.getByRole('button', { name: 'Показати' }))
+    for (const name of ['Усі', /Треба відправити/, 'Відправлено', 'Скасовано']) expect(screen.getByRole('radio', { name })).not.toBeChecked()
+    expect(screen.getByTestId('orders-filters')).not.toHaveTextContent('є незастосовані зміни')
+  })
+
+  async function openOne(over: Partial<Order>) {
+    mockFeature({ 'orders.list': { total: 1, offset: 0, orders: [mkOrder(9001, over)] }, 'orders.get': mkOrder(9001, over) })
+    await renderTab('orders')
+    await click(screen.getByRole('button', { name: 'Відкрити замовлення #9001' }))
+  }
+
+  it('says what to do next: unpaid → wait, shipped → nothing, canceled → nothing to send', async () => {
+    await openOne({ isPaid: false, status: 'open' })
+    expect(screen.getByTestId('order-detail')).toHaveTextContent('Покупець ще не заплатив')
+    cleanupAll()
+    await openOne({ isShipped: true, status: 'completed' })
+    expect(screen.getByTestId('order-detail')).toHaveTextContent('Замовлення відправлене')
+    expect(screen.getByTestId('order-detail')).toHaveTextContent('виконано')
+    cleanupAll()
+    await openOne({ status: 'canceled' })
+    expect(screen.getByTestId('order-detail')).toHaveTextContent('Замовлення скасоване')
+  })
+
+  it('"Як відправити" moves to the ship form; the address can be copied', async () => {
+    const scrolled = vi.fn()
+    Element.prototype.scrollIntoView = scrolled
+    await openOne({})
+    await click(screen.getByRole('button', { name: 'Як відправити' }))
+    expect(scrolled).toHaveBeenCalled()
+    expect(screen.getByLabelText('Перевізник')).toHaveFocus()
+    await click(screen.getByRole('button', { name: 'Копіювати адресу' }))
+    expect(api.copyText).toHaveBeenCalledWith('Olena K\nMain st 1\n79000 Lviv\nUkraine')
+    expect(screen.getByRole('button', { name: 'Скопійовано' })).toBeInTheDocument()
+  })
+
+  it('the copy feedback goes back to "Копіювати адресу" after 2 s', async () => {
+    await openOne({})
+    vi.useFakeTimers()
+    try {
+      await click(screen.getByRole('button', { name: 'Копіювати адресу' }))
+      expect(screen.getByRole('button', { name: 'Скопійовано' })).toBeInTheDocument()
+      await act(async () => {
+        vi.advanceTimersByTime(1900)
+      })
+      expect(screen.getByRole('button', { name: 'Скопійовано' })).toBeInTheDocument()
+      await act(async () => {
+        vi.advanceTimersByTime(200)
+      })
+      expect(screen.getByRole('button', { name: 'Копіювати адресу' })).toBeInTheDocument()
+      // A refused copy says so, and comes back too.
+      api.copyText.mockResolvedValueOnce(false)
+      await click(screen.getByRole('button', { name: 'Копіювати адресу' }))
+      expect(screen.getByRole('button', { name: 'Не вдалося скопіювати' })).toBeInTheDocument()
+      await act(async () => {
+        vi.advanceTimersByTime(2000)
+      })
+      expect(screen.getByRole('button', { name: 'Копіювати адресу' })).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a cancelled or unpaid order offers no ship form — only behind "Все одно позначити відправленим…" with a warning', async () => {
+    for (const [over, warn] of [
+      [{ status: 'canceled' }, 'Замовлення скасоване'],
+      [{ status: 'fully refunded' }, 'Замовлення скасоване'],
+      [{ isPaid: false, status: 'open' }, 'Замовлення ще не оплачене']
+    ] as const) {
+      await openOne(over)
+      expect(screen.queryByTestId('ship-form')).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Позначити відправленим' })).toBeNull()
+      expect(screen.getByTestId('ship-anyway')).toHaveTextContent('Все одно позначити відправленим…')
+      await openDetails('ship-anyway')
+      expect(screen.getByTestId('ship-anyway')).toHaveTextContent(warn)
+      expect(within(screen.getByTestId('ship-anyway')).getByTestId('ship-form')).toBeInTheDocument()
+      cleanupAll()
+    }
+    // Paid (shipped or not): the form is right there.
+    await openOne({ isShipped: true, status: 'completed' })
+    expect(screen.getByTestId('ship-form')).toHaveTextContent('Замовлення вже позначене відправленим')
+    expect(screen.queryByTestId('ship-anyway')).toBeNull()
+  })
+
+  it('the carrier is chosen from Etsy\'s list for the shop\'s origin country (or "Інша служба" = other)', async () => {
+    mockFeature({
+      'shopConfig.shippingProfiles': [{ id: 21, title: 'Main', originCountry: 'UA', destinations: [], upgrades: [] }],
+      'shopConfig.carriers': [
+        { id: 2, name: 'Ukrposhta', domesticClasses: [], internationalClasses: [] },
+        { id: 3, name: 'Nova Poshta', domesticClasses: [], internationalClasses: [] }
+      ],
+      'orders.ship': mkOrder(9001, { isShipped: true })
+    })
+    await openOne({})
+    expect(api.featureCall).toHaveBeenCalledWith('shopConfig', 'carriers', { country: 'UA' })
+    const carrier = screen.getByLabelText('Перевізник') as HTMLSelectElement
+    expect(carrier.tagName).toBe('SELECT')
+    expect([...carrier.options].map((o) => o.text)).toEqual(['— не вказано —', 'Ukrposhta', 'Nova Poshta', 'Інша служба (немає в списку)'])
+    fireEvent.change(carrier, { target: { value: 'Nova Poshta' } })
+    fireEvent.change(screen.getByLabelText('Трек-номер'), { target: { value: '2045' } })
+    await click(screen.getByRole('button', { name: 'Позначити відправленим' }))
+    await click(confirmDialog('Позначити відправленим'))
+    expect(api.featureCall).toHaveBeenCalledWith('orders', 'ship', { receiptId: 9001, carrier: 'Nova Poshta', trackingCode: '2045', noteToBuyer: undefined, sendBcc: false })
+    cleanupAll()
+
+    await openOne({})
+    fireEvent.change(screen.getByLabelText('Перевізник'), { target: { value: 'other' } })
+    fireEvent.change(screen.getByLabelText('Трек-номер'), { target: { value: 'X1' } })
+    await click(screen.getByRole('button', { name: 'Позначити відправленим' }))
+    await click(confirmDialog('Позначити відправленим'))
+    expect(api.featureCall).toHaveBeenLastCalledWith('orders', 'ship', expect.objectContaining({ carrier: 'other', trackingCode: 'X1' }))
+  })
+
+  it('the own tracked shop\'s shipping-from country picks the carriers (no profile read)', async () => {
+    useStore.setState({
+      etsyAuth: { loggedIn: true, redirectUri: '', pending: false, encrypted: true, shopId: 77 },
+      shops: [{ id: 77, profile: { shippingFromCountryIso: 'PL', countryIso: 'UA' } } as never]
+    })
+    mockFeature({ 'shopConfig.carriers': [{ id: 5, name: 'InPost', domesticClasses: [], internationalClasses: [] }] })
+    await openOne({})
+    expect(api.featureCall).toHaveBeenCalledWith('shopConfig', 'carriers', { country: 'PL' })
+    expect(api.featureCall).not.toHaveBeenCalledWith('shopConfig', 'shippingProfiles', expect.anything())
+    expect(within(screen.getByLabelText('Перевізник')).getByRole('option', { name: 'InPost' })).toBeInTheDocument()
+  })
+
+  it('the ship form explains what happens; the copy switch is a toggle', async () => {
+    await openOne({})
+    const form = screen.getByTestId('ship-form')
+    expect(form).toHaveTextContent('Etsy одразу надішле покупцю лист')
+    const copy = within(form).getByRole('switch', { name: 'Надіслати копію листа мені' })
+    expect(copy).not.toBeChecked()
+    await click(copy)
+    expect(copy).toBeChecked()
+  })
+})
+
+describe('Мій магазин → Фінанси: quick periods, types, narrow tables', () => {
+  const NOW = new Date(2026, 9, 24, 15, 0).getTime()
+  const page = (over: Partial<LedgerPage> = {}): LedgerPage => ({
+    minCreated: 1,
+    maxCreated: 2,
+    total: 1,
+    entries: [
+      {
+        entryId: 5,
+        ledgerId: 1,
+        sequence: 1,
+        amount: usd(-15000),
+        balance: usd(100),
+        description: 'Deposit',
+        type: 'SOMETHING_NEW',
+        referenceType: null,
+        referenceId: null,
+        parentEntryId: null,
+        createdAt: T0,
+        adjustments: []
+      }
+    ],
+    totals: [{ type: 'SOMETHING_NEW', count: 1, sum: usd(-15000) }],
+    truncated: false,
+    ...over
+  })
+  async function renderFinance() {
+    const C = ui.myShopTabs!.find((t) => t.id === 'orders-finance')!.Component as (p: { now?: number }) => JSX.Element
+    render(<C now={NOW} />)
+    await act(async () => {})
+  }
+
+  it('a quick period sets the dates and loads at once', async () => {
+    mockFeature({ 'orders.ledger': page() })
+    await renderFinance()
+    await click(screen.getByRole('radio', { name: '7 дн.' }))
+    expect(api.featureCall).toHaveBeenLastCalledWith('orders', 'ledger', { minCreated: localDaySec('2026-10-17'), maxCreated: localDaySec('2026-10-24', true) })
+    expect(screen.getByLabelText('Від дати')).toHaveValue('2026-10-17')
+    expect(screen.getByRole('radio', { name: '7 дн.' })).toBeChecked()
+    // Own dates: no quick period is checked.
+    fireEvent.change(screen.getByLabelText('Від дати'), { target: { value: '2026-10-02' } })
+    expect(screen.getByRole('radio', { name: '7 дн.' })).not.toBeChecked()
+  })
+
+  it('an unknown Etsy type is shown as Etsy wrote it; nothing came in → +0', async () => {
+    mockFeature({ 'orders.ledger': page() })
+    await renderFinance()
+    expect(screen.getByTestId('ledger-totals')).toHaveTextContent('SOMETHING_NEW1' + signed(-15000))
+    expect(valueOf(screen.getByTestId('ledger-summary'), 'Надійшло')).toBe('0')
+    // No Ukrainian name: the entry's own description is its title.
+    expect(screen.getByTestId('entry-5').querySelector('.fx-title')).toHaveTextContent(/^Deposit$/)
+  })
+
+  it('payouts to the own card are a tile of their own, not a cost: "Списано" = fees etc., "Заробили" = in − out', async () => {
+    const e = (entryId: number, amount: number, type: string, description: string): LedgerEntry => ({
+      ...page().entries[0],
+      entryId,
+      sequence: entryId,
+      amount: usd(amount),
+      type,
+      description,
+      createdAt: T0 + entryId
+    })
+    mockFeature({
+      'orders.ledger': page({
+        total: 4,
+        entries: [e(4, -15000, 'DISBURSE2', 'Deposit to your bank account'), e(3, -722, 'transaction', 'Transaction fee'), e(2, 3740, 'PAYMENT', 'Payment'), e(1, -20, 'prolist', 'Etsy Ads')],
+        totals: []
+      })
+    })
+    await renderFinance()
+    const sum = screen.getByTestId('ledger-summary')
+    expect(valueOf(sum, 'Надійшло')).toBe(signed(3740))
+    expect(valueOf(sum, 'Списано')).toBe(signed(-742))
+    expect(valueOf(sum, 'Заробили')).toBe(signed(2998))
+    expect(valueOf(sum, 'Виплачено на картку')).toBe(price(15000))
+    expect(within(sum).getByText('Виплачено на картку').closest('.ui-stat')).toHaveTextContent('ваші гроші, не витрата')
+    expect(screen.getByTestId('entry-4').querySelector('.fx-title')).toHaveTextContent(/^Виплата на ваш рахунок$/)
+  })
+
+  it('a narrow pane turns the tables into cards (each value keeps its column name)', async () => {
+    const layout = fakeLayout({ 'fx-table-wrap': 900 })
+    try {
+      mockFeature({ 'orders.ledger': page() })
+      await renderFinance()
+      const table = screen.getByTestId('ledger-totals')
+      expect(table).not.toHaveClass('is-stacked')
+      // The 3-column totals fit long: they stack only below 480 px.
+      layout.resize('fx-table-wrap', 500)
+      expect(table).not.toHaveClass('is-stacked')
+      layout.resize('fx-table-wrap', 460)
+      expect(table).toHaveClass('is-stacked')
+      expect(within(table).getAllByRole('cell')[2]).toHaveAttribute('data-label', 'Сума')
+      layout.resize('fx-table-wrap', 800)
+      expect(table).not.toHaveClass('is-stacked')
+    } finally {
+      layout.restore()
+    }
   })
 })

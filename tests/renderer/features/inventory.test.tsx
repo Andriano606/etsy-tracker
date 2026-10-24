@@ -2,7 +2,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { ConfirmModal } from '../../../src/renderer/src/components/ConfirmModal'
+import { useStore } from '../../../src/renderer/src/store'
 import { InventorySection, PricesTab, VariationImagesSection, ui } from '../../../src/renderer/src/features/inventory'
+import { panelMeta } from '../../../src/renderer/src/features/LazyDetails'
 import type {
   InventoryOverviewPage,
   InventoryOverviewRow,
@@ -44,6 +46,8 @@ const SIMPLE: ListingInventory = {
   readinessStateOnProperty: []
 }
 
+/** The question the in-app confirmation is asking right now (null = none open). */
+const asked = () => useStore.getState().confirmRequest?.message ?? null
 const featureCalls = (action: string) => api.featureCall.mock.calls.filter((c) => c[0] === 'inventory' && c[1] === action)
 
 /** Answer the in-app confirmation (ConfirmModal). */
@@ -63,11 +67,16 @@ async function click(el: HTMLElement) {
 describe('ui registration', () => {
   it('a "Мій магазин" tab and two own-listing sections', () => {
     expect(ui.myShopTabs!.map((t) => t.label)).toEqual(['Ціни й залишки'])
-    expect(ui.ownListingSections!.map((s) => s.label)).toEqual(['Ціна, кількість і варіації', 'Фото варіацій'])
+    expect(ui.ownListingSections!.map((s) => s.label)).toEqual(['Ціна, кількість і варіанти', 'Фото варіантів'])
+    // The host shows an icon + a one-line "what is inside" for each (panelMeta).
+    expect(ui.ownListingSections!.map((s) => panelMeta(s))).toEqual([
+      { icon: 'money', description: expect.stringMatching(/варіанти \(розмір, колір\)/) },
+      { icon: 'layers', description: expect.stringMatching(/Яке фото покупець побачить/) }
+    ])
   })
 })
 
-describe('Ціна, кількість і варіації', () => {
+describe('Ціна, кількість і варіанти', () => {
   async function renderSection(listingId = 1001, onChanged = vi.fn()) {
     render(
       <>
@@ -87,12 +96,50 @@ describe('Ціна, кількість і варіації', () => {
     const table = screen.getByRole('table')
     expect(within(table).getByRole('columnheader', { name: 'Ціна, USD' })).toBeInTheDocument()
     expect(within(table).getByText('M')).toBeInTheDocument()
-    expect(screen.getByLabelText('Ціна: M')).toHaveValue('12')
-    expect(screen.getByLabelText('SKU: L')).toHaveValue('SKU-L')
+    // Prices are shown like the tiles: 2 decimals, a comma.
+    expect(screen.getByLabelText('Ціна: M')).toHaveValue('12,00')
+    expect(screen.getByLabelText('Артикул: L')).toHaveValue('SKU-L')
     expect(screen.getByLabelText('Кількість: S')).toHaveValue('5')
-    expect(screen.getByLabelText('Показувати: S')).toBeChecked()
-    expect(screen.getAllByRole('checkbox', { name: 'Size' }).map((c) => (c as HTMLInputElement).checked)).toEqual([true, false, true])
+    expect(screen.getByRole('switch', { name: 'Показувати: S' })).toBeChecked()
+    // "Що залежить від варіанта": one switch per value × property.
+    const group = screen.getByRole('group', { name: 'Що залежить від варіанта' })
+    expect(
+      ['Ціна', 'Кількість', 'Артикул'].map((v) => (within(group).getByRole('switch', { name: `${v} залежить від «Size»` }) as HTMLInputElement).checked)
+    ).toEqual([true, false, true])
     expect(screen.getByRole('button', { name: 'Зберегти на Etsy' })).toBeDisabled()
+    expect(screen.queryByText('Є незбережені зміни')).toBeNull()
+  })
+
+  it('a summary of the variants: count, price range, total in stock — each with an explanation', async () => {
+    mockFeature({ 'inventory.get': SIZED })
+    await renderSection()
+    const facts = screen.getByLabelText('Коротко про варіанти')
+    expect(facts).toHaveTextContent('Варіантів3')
+    expect(facts).toHaveTextContent(/10,00\sUSD – 14,00\sUSD/)
+    expect(facts).toHaveTextContent('У наявності')
+    expect(within(facts).getByRole('button', { name: 'Що таке «Діапазон цін»?' })).toBeInTheDocument()
+    expect(within(facts).getByRole('button', { name: 'Що таке «Усього в наявності»?' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Що таке «Залежить від варіанта»?' })).toBeInTheDocument()
+  })
+
+  it('an edit marks the changed field and shows "Є незбережені зміни" until saved or cancelled', async () => {
+    mockFeature({ 'inventory.get': SIZED })
+    await renderSection()
+    fireEvent.change(screen.getByLabelText('Ціна: M'), { target: { value: '13' } })
+    expect(screen.getByLabelText('Ціна: M')).toHaveClass('is-changed')
+    expect(screen.getByLabelText('Ціна: S')).not.toHaveClass('is-changed')
+    expect(screen.getByText('Є незбережені зміни')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Скасувати зміни' }))
+    expect(screen.queryByText('Є незбережені зміни')).toBeNull()
+    expect(screen.getByLabelText('Ціна: M')).not.toHaveClass('is-changed')
+  })
+
+  it('a disabled variant is shown dimmed (its row gets is-off)', async () => {
+    mockFeature({ 'inventory.get': SIZED })
+    await renderSection()
+    fireEvent.click(screen.getByRole('switch', { name: 'Показувати: L' }))
+    expect(screen.getByLabelText('Ціна: L').closest('tr')).toHaveClass('is-off')
+    expect(screen.getByLabelText('Ціна: S').closest('tr')).not.toHaveClass('is-off')
   })
 
   it('a price that varies by size changes one row; a quantity that does not changes every row; saved after confirming', async () => {
@@ -100,12 +147,12 @@ describe('Ціна, кількість і варіації', () => {
     mockFeature({ 'inventory.get': SIZED, 'inventory.update': saved })
     const onChanged = await renderSection()
     fireEvent.change(screen.getByLabelText('Ціна: M'), { target: { value: '13' } })
-    expect(screen.getByLabelText('Ціна: S')).toHaveValue('10')
+    expect(screen.getByLabelText('Ціна: S')).toHaveValue('10,00')
     fireEvent.change(screen.getByLabelText('Кількість: S'), { target: { value: '9' } })
     expect(screen.getByLabelText('Кількість: L')).toHaveValue('9')
     fireEvent.click(screen.getByLabelText('Показувати: L'))
     await click(screen.getByRole('button', { name: 'Зберегти на Etsy' }))
-    expect(screen.getByText(/Зберегти ціни, кількість і SKU \(3 варіанти\) на Etsy\?/)).toBeInTheDocument()
+    expect(asked()).toMatch(/^Зберегти ціни, кількість і артикули \(3 варіанти\) на Etsy\?\nEtsy замінить дані всіх варіантів товару/)
     await confirm(true)
     const [[, , args]] = featureCalls('update')
     expect(args).toEqual({
@@ -127,7 +174,7 @@ describe('Ціна, кількість і варіації', () => {
       }
     })
     expect(screen.getByText('Збережено на Etsy.')).toBeInTheDocument()
-    expect(screen.getByLabelText('Ціна: S')).toHaveValue('9')
+    expect(screen.getByLabelText('Ціна: S')).toHaveValue('9,00')
     expect(onChanged).toHaveBeenCalledWith(expect.objectContaining({ listingId: 1001, priceAmount: 900, priceDivisor: 100, quantity: 27 }))
   })
 
@@ -139,7 +186,7 @@ describe('Ціна, кількість і варіації', () => {
     await confirm(false)
     expect(featureCalls('update')).toHaveLength(0)
     fireEvent.click(screen.getByRole('button', { name: 'Скасувати зміни' }))
-    expect(screen.getByLabelText('Ціна: M')).toHaveValue('12')
+    expect(screen.getByLabelText('Ціна: M')).toHaveValue('12,00')
   })
 
   it('invalid values are listed and block saving', async () => {
@@ -153,10 +200,37 @@ describe('Ціна, кількість і варіації', () => {
     expect(screen.getByRole('button', { name: 'Зберегти на Etsy' })).toBeDisabled()
   })
 
+  it('an invalid field is marked itself (aria-invalid + its error as the description); a problem in the list focuses its field', async () => {
+    mockFeature({ 'inventory.get': SIZED })
+    await renderSection()
+    fireEvent.change(screen.getByLabelText('Ціна: M'), { target: { value: '13,999' } })
+    const price = screen.getByLabelText('Ціна: M')
+    expect(price).toHaveAttribute('aria-invalid', 'true')
+    expect(price).toHaveClass('is-invalid')
+    expect(price).toHaveAccessibleDescription('Помилка: ціна — додатне число, не більше 2 знаків після коми.')
+    expect(screen.getByLabelText('Ціна: S')).not.toHaveAttribute('aria-invalid')
+    expect(screen.getByLabelText('Кількість: M')).not.toHaveAttribute('aria-invalid')
+    fireEvent.change(screen.getByLabelText('Кількість: S'), { target: { value: '-1' } })
+    const link = within(screen.getByTestId('inventory-problems')).getByRole('button', { name: /Варіант «S»: кількість/ })
+    fireEvent.click(link)
+    expect(screen.getByLabelText('Кількість: S')).toHaveFocus()
+    // The quantity doesn't vary by size, so all three rows got -1. Each problem once (not repeated by the general list):
+    const items = [...screen.getByTestId('inventory-problems').querySelectorAll('li')].map((li) => li.textContent)
+    expect(items).toEqual([
+      'Варіант «S»: кількість — ціле число від 0 до 999.',
+      'Варіант «M»: ціна — додатне число, не більше 2 знаків після коми.',
+      'Варіант «M»: кількість — ціле число від 0 до 999.',
+      'Варіант «L»: кількість — ціле число від 0 до 999.'
+    ])
+    // A comma is fine: "13,5" is a valid price.
+    fireEvent.change(screen.getByLabelText('Ціна: M'), { target: { value: '13,5' } })
+    expect(screen.getByLabelText('Ціна: M')).not.toHaveAttribute('aria-invalid')
+  })
+
   it('price no longer varying by size: prices must match — editing one row then sets them all', async () => {
     mockFeature({ 'inventory.get': SIZED })
     await renderSection()
-    fireEvent.click(screen.getAllByRole('checkbox', { name: 'Size' })[0])
+    fireEvent.click(screen.getByRole('switch', { name: 'Ціна залежить від «Size»' }))
     expect(screen.getByTestId('inventory-problems')).toHaveTextContent('Ціна: значення мають збігатися в усіх варіантах')
     fireEvent.change(screen.getByLabelText('Ціна: L'), { target: { value: '11' } })
     expect(screen.getByLabelText('Ціна: S')).toHaveValue('11')
@@ -167,8 +241,14 @@ describe('Ціна, кількість і варіації', () => {
   it('a listing without variations: one row, no "залежить від"', async () => {
     mockFeature({ 'inventory.get': SIMPLE })
     await renderSection(1002)
-    expect(screen.getByLabelText('Ціна')).toHaveValue('5')
+    expect(screen.getByLabelText('Ціна')).toHaveValue('5,00')
+    expect(screen.getByLabelText('Артикул')).toBeInTheDocument()
+    // No "Варіантів 1" next to "У товару немає варіантів".
+    const facts = screen.getByLabelText('Коротко про товар')
+    expect(facts).not.toHaveTextContent('Варіантів')
+    expect(facts).toHaveTextContent('У наявності')
     expect(screen.queryByText(/залежить від/)).toBeNull()
+    expect(screen.queryByRole('group', { name: 'Що залежить від варіанта' })).toBeNull()
     expect(screen.getAllByRole('row')).toHaveLength(2)
   })
 
@@ -176,6 +256,17 @@ describe('Ціна, кількість і варіації', () => {
     mockFeature({ 'inventory.get': { ok: false, error: 'Увійдіть в Etsy' } })
     await renderSection()
     expect(screen.getByRole('alert')).toHaveTextContent('Увійдіть в Etsy')
+  })
+
+  it('a load error has "Спробувати ще", which loads again', async () => {
+    let n = 0
+    mockFeature({ 'inventory.get': () => (++n === 1 ? { ok: false, error: 'Немає з’єднання з Etsy.' } : SIZED) })
+    await renderSection()
+    expect(screen.getByRole('alert')).toHaveTextContent('Немає з’єднання з Etsy.')
+    await click(screen.getByRole('button', { name: 'Спробувати ще' }))
+    expect(featureCalls('get')).toHaveLength(2)
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByLabelText('Ціна: M')).toHaveValue('12,00')
   })
 
   it('a refused save shows Etsy’s reason and keeps the edits', async () => {
@@ -200,7 +291,7 @@ const VARIATIONS: VariationImagesData = {
   assigned: [{ propertyId: 513, valueId: 901, value: 'S', imageId: 5002 }]
 }
 
-describe('Фото варіацій', () => {
+describe('Фото варіантів', () => {
   async function renderSection() {
     render(
       <>
@@ -220,14 +311,17 @@ describe('Фото варіацій', () => {
     })
     await renderSection()
     expect(api.featureCall).toHaveBeenCalledWith('inventory', 'variationImages', { listingId: 1001 })
-    expect(screen.getByRole('button', { name: '«S»: фото 2' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByRole('button', { name: '«M»: без фото' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByRole('button', { name: '«M»: фото 3' })).toHaveTextContent('3')
-    const save = screen.getByRole('button', { name: 'Зберегти фото варіацій' })
+    expect(screen.getByRole('radio', { name: '«S»: фото 2' })).toBeChecked()
+    expect(screen.getByRole('radio', { name: '«M»: без фото' })).toBeChecked()
+    expect(screen.getByRole('radio', { name: '«M»: фото 3' })).toHaveTextContent('3')
+    // One choice per value: a radio group; a chosen «без фото» gets the check mark too.
+    expect(screen.getByRole('radiogroup', { name: 'Фото для «M»' })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: '«M»: без фото' }).querySelector('.inv-thumb-check')).not.toBeNull()
+    const save = screen.getByRole('button', { name: 'Зберегти фото варіантів' })
     expect(save).toBeDisabled()
-    fireEvent.click(screen.getByRole('button', { name: '«M»: фото 1' }))
+    fireEvent.click(screen.getByRole('radio', { name: '«M»: фото 1' }))
     await click(save)
-    expect(screen.getByText(/замінить усі прив’язки фото/)).toBeInTheDocument()
+    expect(asked()).toMatch(/замінить усі прив’язки фото/)
     await confirm(true)
     expect(featureCalls('saveVariationImages')[0][2]).toEqual({
       listingId: 1001,
@@ -236,18 +330,18 @@ describe('Фото варіацій', () => {
         { propertyId: 513, valueId: 902, imageId: 5001 }
       ]
     })
-    expect(screen.getByText('Фото варіацій збережено на Etsy.')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Зберегти фото варіацій' })).toBeDisabled()
+    expect(screen.getByText('Фото варіантів збережено на Etsy.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Зберегти фото варіантів' })).toBeDisabled()
   })
 
   it('cancel sends nothing; a refused save is shown', async () => {
     mockFeature({ 'inventory.variationImages': VARIATIONS, 'inventory.saveVariationImages': { ok: false, error: 'Etsy не дозволив цю дію (HTTP 403)' } })
     await renderSection()
-    fireEvent.click(screen.getByRole('button', { name: '«S»: без фото' }))
-    await click(screen.getByRole('button', { name: 'Зберегти фото варіацій' }))
+    fireEvent.click(screen.getByRole('radio', { name: '«S»: без фото' }))
+    await click(screen.getByRole('button', { name: 'Зберегти фото варіантів' }))
     await confirm(false)
     expect(featureCalls('saveVariationImages')).toHaveLength(0)
-    await click(screen.getByRole('button', { name: 'Зберегти фото варіацій' }))
+    await click(screen.getByRole('button', { name: 'Зберегти фото варіантів' }))
     await confirm(true)
     expect(featureCalls('saveVariationImages')[0][2]).toEqual({ listingId: 1001, items: [] })
     expect(screen.getByRole('alert')).toHaveTextContent('HTTP 403')
@@ -263,21 +357,53 @@ describe('Фото варіацій', () => {
     await renderSection()
     expect(screen.getByRole('radio', { name: 'Size' })).toBeChecked()
     fireEvent.click(screen.getByRole('radio', { name: 'Color' }))
-    expect(screen.getByRole('button', { name: '«Red»: без фото' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('radio', { name: '«Red»: без фото' })).toBeChecked()
     expect(screen.queryByText('S')).toBeNull()
-    expect(screen.getByRole('button', { name: 'Зберегти фото варіацій' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Зберегти фото варіантів' })).toBeEnabled()
+  })
+
+  it('a load error has "Спробувати ще"', async () => {
+    let n = 0
+    mockFeature({ 'inventory.variationImages': () => (++n === 1 ? { ok: false, error: 'Немає з’єднання з Etsy.' } : VARIATIONS) })
+    await renderSection()
+    await click(screen.getByRole('button', { name: 'Спробувати ще' }))
+    expect(screen.getByRole('radio', { name: '«S»: фото 2' })).toBeChecked()
   })
 
   it('no variations', async () => {
     mockFeature({ 'inventory.variationImages': { ...VARIATIONS, properties: [] } })
     await renderSection()
-    expect(screen.getByText('У цього лістингу немає варіацій.')).toBeInTheDocument()
+    expect(screen.getByText('У цього товару немає варіантів.')).toBeInTheDocument()
   })
 
   it('no photos', async () => {
     mockFeature({ 'inventory.variationImages': { ...VARIATIONS, photos: [] } })
     await renderSection()
-    expect(screen.getByText('У цього лістингу немає фото.')).toBeInTheDocument()
+    expect(screen.getByText('У цього товару немає фото.')).toBeInTheDocument()
+  })
+
+  it('keyboard: one tab stop per value (the chosen photo); arrows/Home/End move the choice and the focus', async () => {
+    mockFeature({ 'inventory.variationImages': VARIATIONS })
+    await renderSection()
+    const s = (n: string) => screen.getByRole('radio', { name: `«S»: ${n}` })
+    expect(['без фото', 'фото 1', 'фото 2', 'фото 3'].map((n) => s(n).tabIndex)).toEqual([-1, -1, 0, -1])
+    // «M» has nothing linked: «без фото» is its tab stop.
+    expect(screen.getByRole('radio', { name: '«M»: без фото' }).tabIndex).toBe(0)
+    const group = screen.getByRole('radiogroup', { name: 'Фото для «S»' })
+    s('фото 2').focus()
+    fireEvent.keyDown(group, { key: 'ArrowRight' })
+    expect(s('фото 3')).toBeChecked()
+    expect(s('фото 3')).toHaveFocus()
+    expect(s('фото 3').tabIndex).toBe(0)
+    fireEvent.keyDown(group, { key: 'ArrowRight' })
+    expect(s('без фото')).toBeChecked()
+    fireEvent.keyDown(group, { key: 'ArrowLeft' })
+    expect(s('фото 3')).toBeChecked()
+    fireEvent.keyDown(group, { key: 'Home' })
+    expect(s('без фото')).toHaveFocus()
+    fireEvent.keyDown(group, { key: 'End' })
+    expect(s('фото 3')).toBeChecked()
+    expect(screen.getByRole('button', { name: 'Зберегти фото варіантів' })).toBeEnabled()
   })
 
   it('a load error', async () => {
@@ -329,7 +455,7 @@ describe('Мій магазин → Ціни й залишки', () => {
         <ConfirmModal />
       </>
     )
-    expect(screen.getByText('Завантаження…')).toBeInTheDocument()
+    expect(screen.getByText('Завантаження цін і залишків…')).toBeInTheDocument()
     await act(async () => {})
   }
 
@@ -341,8 +467,13 @@ describe('Мій магазин → Ціни й залишки', () => {
     expect(sized).toHaveTextContent(/10,00\sUSD – 14,00\sUSD/)
     expect(sized).toHaveTextContent('15')
     expect(within(sized).queryByRole('button')).toBeNull()
+    expect(sized).toHaveTextContent('Змінюйте в редакторі')
+    expect(within(sized).getByText('в редакторі')).toHaveAccessibleDescription(/У товару 3 варіанти: відкрийте вкладку «Товари»/)
+    expect(within(sized).getByText('3')).toBeInTheDocument()
     const simple = screen.getByTestId('prices-row-1002')
     expect(simple).toHaveTextContent(/5,00\sUSD/)
+    // A listing without variants says so instead of "1 variant".
+    expect(simple.querySelector('td[data-label="Варіантів"]')).toHaveTextContent('немає')
     expect(simple).not.toHaveTextContent('–')
     expect(within(simple).getByRole('button', { name: 'Змінити ціну й кількість: Simple planner' })).toBeInTheDocument()
   })
@@ -356,11 +487,11 @@ describe('Мій магазин → Ціни й залишки', () => {
     await renderTab()
     fireEvent.click(screen.getByRole('button', { name: 'Змінити ціну й кількість: Simple planner' }))
     const edit = screen.getByTestId('quick-edit-1002')
-    expect(within(edit).getByLabelText('Ціна, USD')).toHaveValue('5')
+    expect(within(edit).getByLabelText('Ціна, USD')).toHaveValue('5,00')
     fireEvent.change(within(edit).getByLabelText('Ціна, USD'), { target: { value: '7,5' } })
     fireEvent.change(within(edit).getByLabelText('Кількість'), { target: { value: '4' } })
     await click(within(edit).getByRole('button', { name: 'Зберегти' }))
-    expect(screen.getByText(/Змінити «Simple planner» на Etsy\?/)).toHaveTextContent(/Ціна: 7,50\sUSD, кількість: 4/)
+    expect(asked()).toMatch(/^Змінити «Simple planner» на Etsy\?\nЦіна: 7,50\sUSD, кількість: 4\./)
     await confirm(true)
     expect(featureCalls('quickUpdate')[0][2]).toEqual({ listingId: 1002, price: 7.5, quantity: 4 })
     expect(screen.queryByTestId('quick-edit-1002')).toBeNull()
@@ -438,15 +569,25 @@ describe('Мій магазин → Ціни й залишки', () => {
     }
   })
 
+  it('a listing sold out (0 in stock) is flagged; the load error of the list has "Спробувати ще"', async () => {
+    let n = 0
+    mockFeature({
+      'inventory.overview': () => (++n === 1 ? { ok: false, error: 'Немає з’єднання.' } : { ...PAGE, rows: [row({ totalQuantity: 0 })], total: 1 })
+    })
+    await renderTab()
+    await click(screen.getByRole('button', { name: 'Спробувати ще' }))
+    expect(screen.getByTestId('prices-row-1001')).toHaveTextContent('0 · розпродано')
+  })
+
   it('no active listings', async () => {
     mockFeature({ 'inventory.overview': { total: 0, offset: 0, rows: [] } })
     await renderTab()
-    expect(screen.getByText('Активних лістингів немає.')).toBeInTheDocument()
+    expect(screen.getByText('Активних товарів немає.')).toBeInTheDocument()
   })
 
   it('a load error is shown', async () => {
-    mockFeature({ 'inventory.overview': { ok: false, error: 'Для цього потрібен дозвіл: читання лістингів.' } })
+    mockFeature({ 'inventory.overview': { ok: false, error: 'Для цього потрібен дозвіл: читання товарів.' } })
     await renderTab()
-    expect(screen.getByRole('alert')).toHaveTextContent('читання лістингів')
+    expect(screen.getByRole('alert')).toHaveTextContent('читання товарів')
   })
 })

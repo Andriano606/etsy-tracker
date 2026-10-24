@@ -2,8 +2,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { ui } from '../../../src/renderer/src/features/listingMeta'
+import { panelMeta } from '../../../src/renderer/src/features/LazyDetails'
 import { ConfirmModal } from '../../../src/renderer/src/components/ConfirmModal'
 import { useDeletedListings } from '../../../src/renderer/src/features/listingMeta/deleted'
+import { useStore } from '../../../src/renderer/src/store'
 import type { CategoryProperty, ListingAttributes, PersonalizationQuestion } from '../../../src/shared/features/listingMeta'
 import type { MyListing } from '../../../src/shared/types'
 import { mockFeature, setupRenderer, type Api } from '../helpers'
@@ -54,6 +56,8 @@ const change = (el: HTMLElement, value: string) =>
   act(async () => {
     fireEvent.change(el, { target: { value } })
   })
+/** The question the in-app confirmation is asking right now (null = none open). */
+const asked = () => useStore.getState().confirmRequest?.message ?? null
 const calls = (action: string) => api.featureCall.mock.calls.filter((c) => c[0] === 'listingMeta' && c[1] === action).map((c) => c[2])
 
 it('registers the four own-listing sections in order', () => {
@@ -61,8 +65,11 @@ it('registers the four own-listing sections in order', () => {
     ['attributes', 'Атрибути'],
     ['personalization', 'Персоналізація'],
     ['translations', 'Переклади'],
-    ['danger', 'Небезпечна зона']
+    ['danger', 'Видалити товар з Etsy']
   ])
+  // Each has an icon + a one-line "what is inside" for its summary row (read by the host via panelMeta).
+  expect(ui.ownListingSections!.map((s) => panelMeta(s).icon)).toEqual(['list', 'edit', 'globe', 'trash'])
+  for (const s of ui.ownListingSections!) expect(panelMeta(s).description).toMatch(/\S.{20,}/)
 })
 
 // =============================================================== attributes
@@ -124,7 +131,9 @@ describe('Атрибути', () => {
     const rows = within(box).getAllByTestId(/^lm-attr-\d+$/)
     expect(rows.map((r) => r.dataset.testid)).toEqual(['lm-attr-200', 'lm-attr-300', 'lm-attr-400'])
     expect(rows[0]).toHaveTextContent('обов’язковий')
-    expect(rows[0]).toHaveTextContent('зараз: Black')
+    expect(rows[0]).toHaveTextContent('Зараз на Etsy: Black')
+    expect(rows[2]).toHaveTextContent('Не заповнено')
+    expect(box).toHaveTextContent('Заповнено 1 з 3')
     expect(screen.getByLabelText('Значення')).toHaveValue('Black')
     expect(rows[1]).toHaveTextContent('Завжди вибрано: Letter')
     expect(rows[1]).toHaveTextContent('кілька значень (до 2)')
@@ -134,7 +143,7 @@ describe('Атрибути', () => {
     let resolve!: (v: unknown) => void
     mockFeature({ 'listingMeta.attributes': () => new Promise((r) => (resolve = r)) })
     await show('attributes')
-    expect(screen.getByText('Завантаження…')).toBeInTheDocument()
+    expect(screen.getByText('Завантаження атрибутів…')).toBeInTheDocument()
     await act(async () => resolve({ ok: false, error: 'Увійдіть в Etsy' }))
     expect(screen.getByRole('alert')).toHaveTextContent('Увійдіть в Etsy')
   })
@@ -152,7 +161,7 @@ describe('Атрибути', () => {
     await click(save)
     expect(calls('saveAttribute')).toEqual([{ listingId: 1234, propertyId: 200, valueIds: [2], values: ['Teal & Orange'], scaleId: null }])
     expect(row).toHaveTextContent('Збережено.')
-    expect(row).toHaveTextContent('зараз: Teal & Orange')
+    expect(row).toHaveTextContent('Зараз на Etsy: Teal & Orange')
   })
 
   it('scales + several values: a scale filters the values; too many values or no scale is flagged', async () => {
@@ -226,7 +235,7 @@ describe('Атрибути', () => {
     await show('attributes')
     const row = screen.getByTestId('lm-attr-200')
     await click(within(row).getByRole('button', { name: 'Прибрати' }))
-    expect(screen.getByText(/Прибрати атрибут «Основний колір»/)).toBeInTheDocument()
+    expect(asked()).toMatch(/^Прибрати атрибут «Основний колір»/)
     await click(screen.getByRole('button', { name: 'Скасувати' }))
     expect(calls('removeAttribute')).toEqual([])
     await click(within(row).getByRole('button', { name: 'Прибрати' }))
@@ -267,13 +276,64 @@ describe('Атрибути', () => {
     await show('attributes')
     expect(screen.getByText('Виберіть категорію вручну.')).toBeInTheDocument()
     expect(screen.getByTestId('lm-other-props')).toHaveTextContent('Primary color')
-    await change(screen.getByLabelText('Категорія лістингу'), 'plan')
+    await change(screen.getByLabelText('Категорія товару'), 'plan')
     await click(screen.getByRole('option', { name: 'Paper › Planners' }))
     expect(calls('attributes')).toEqual([
       { listingId: 1234, taxonomyId: null },
       { listingId: 1234, taxonomyId: 7 }
     ])
     expect(screen.getByTestId('lm-attributes')).toHaveTextContent('Категорія: Paper › Planners')
+  })
+
+  it('the category picker is a combobox: ↑/↓ move through the results, Enter picks', async () => {
+    mockFeature({
+      'listingMeta.attributes': (a: any) =>
+        a.taxonomyId ? attrs({ taxonomyId: a.taxonomyId, categoryPath: 'Paper' }) : attrs({ taxonomyId: null, categoryPath: null, definitions: null }),
+      'listingMeta.categories': [
+        { id: 1, path: 'Paper' },
+        { id: 7, path: 'Paper › Planners' }
+      ]
+    })
+    await show('attributes')
+    const box = screen.getByRole('combobox', { name: 'Категорія товару' })
+    expect(box).toHaveAttribute('aria-expanded', 'false')
+    await change(box, 'pap')
+    expect(box).toHaveAttribute('aria-expanded', 'true')
+    const list = screen.getByRole('listbox', { name: 'Категорії' })
+    expect(box).toHaveAttribute('aria-controls', list.id)
+    // Options sit directly in the listbox (no <button> between).
+    expect(within(list).getAllByRole('option').map((o) => o.parentElement)).toEqual([list, list])
+    expect(box).not.toHaveAttribute('aria-activedescendant')
+    fireEvent.keyDown(box, { key: 'ArrowDown' })
+    fireEvent.keyDown(box, { key: 'ArrowDown' })
+    const planners = screen.getByRole('option', { name: 'Paper › Planners' })
+    expect(box).toHaveAttribute('aria-activedescendant', planners.id)
+    expect(planners).toHaveAttribute('aria-selected', 'true')
+    fireEvent.keyDown(box, { key: 'ArrowUp' })
+    expect(screen.getByRole('option', { name: 'Paper' })).toHaveAttribute('aria-selected', 'true')
+    fireEvent.keyDown(box, { key: 'ArrowDown' })
+    await act(async () => {
+      fireEvent.keyDown(box, { key: 'Enter' })
+    })
+    expect(calls('attributes')).toEqual([
+      { listingId: 1234, taxonomyId: null },
+      { listingId: 1234, taxonomyId: 7 }
+    ])
+  })
+
+  it('several values are checkable chips; a load error has "Спробувати ще"', async () => {
+    let n = 0
+    mockFeature({ 'listingMeta.attributes': () => (++n === 1 ? { ok: false, error: 'Немає з’єднання.' } : attrs()) })
+    await show('attributes')
+    await click(screen.getByRole('button', { name: 'Спробувати ще' }))
+    const row = screen.getByTestId('lm-attr-300')
+    await change(within(row).getByLabelText('Шкала'), '5')
+    const letter = within(row).getByRole('checkbox', { name: 'Letter' })
+    expect(letter).not.toBeChecked()
+    await click(letter)
+    expect(letter).toBeChecked()
+    expect(letter.closest('label')).toHaveClass('is-on')
+    expect(within(row).getByText('Не збережено').closest('.ui-badge')).toBeInTheDocument()
   })
 
   it('the category list failing to load is shown', async () => {
@@ -310,7 +370,7 @@ describe('Персоналізація', () => {
     const q = screen.getByTestId('lm-q0')
     expect(within(q).getByLabelText(/Текст питання/)).toHaveValue('Ваше ім’я')
     expect(within(q).getByLabelText('Максимум символів')).toHaveValue('40')
-    expect(within(q).getByLabelText('Доплата, USD (необов’язково)')).toHaveValue('2.5')
+    expect(within(q).getByLabelText('Доплата, USD (необов’язково)')).toHaveValue('2,50')
     const save = screen.getByRole('button', { name: 'Зберегти персоналізацію' })
     expect(save).toBeDisabled()
     await change(within(q).getByLabelText(/Текст питання/), 'Ім’я на обкладинці')
@@ -324,7 +384,7 @@ describe('Персоналізація', () => {
     mockFeature({ 'listingMeta.personalization': [], 'listingMeta.savePersonalization': (a: any) => a.questions })
     await show('personalization')
     expect(screen.getByText(/Персоналізації немає/)).toBeInTheDocument()
-    await click(screen.getByRole('button', { name: '＋ Додати питання' }))
+    await click(screen.getByRole('button', { name: 'Додати питання' }))
     const q = screen.getByTestId('lm-q0')
     const save = screen.getByRole('button', { name: 'Зберегти персоналізацію' })
     expect(screen.getByText('Питання 1: текст не може бути порожнім.')).toBeInTheDocument()
@@ -333,12 +393,16 @@ describe('Персоналізація', () => {
     await change(within(q).getByLabelText(/Інструкції/), 'Будь-який')
     await change(within(q).getByLabelText('Тип'), 'dropdown')
     expect(within(q).queryByLabelText(/Інструкції/)).not.toBeInTheDocument()
-    expect(screen.getByText('Питання 1: додайте хоча б один варіант.')).toBeInTheDocument()
-    await click(within(q).getByRole('button', { name: '＋ Варіант' }))
-    await click(within(q).getByRole('button', { name: '＋ Варіант' }))
-    await change(within(q).getByLabelText('Варіант 1'), 'Teal')
-    await change(within(q).getByLabelText('Варіант 2'), 'Orange')
-    await click(within(q).getByRole('checkbox', { name: 'Обов’язкове' }))
+    expect(screen.getByText('Питання 1: додайте хоча б одну відповідь.')).toBeInTheDocument()
+    // Answer options are "відповіді" — not "варіанти" (that word is for product variants).
+    expect(q).toHaveTextContent('Варіанти відповіді')
+    expect(within(q).queryByRole('button', { name: 'Додати варіант' })).toBeNull()
+    await click(within(q).getByRole('button', { name: 'Додати відповідь' }))
+    await click(within(q).getByRole('button', { name: 'Додати відповідь' }))
+    await change(within(q).getByLabelText('Відповідь 1 питання 1'), 'Teal')
+    await change(within(q).getByLabelText('Відповідь 2 питання 1'), 'Orange')
+    expect(within(q).getByRole('button', { name: 'Прибрати: відповідь 2' })).toBeInTheDocument()
+    await click(within(q).getByRole('switch', { name: 'Обов’язкове' }))
     expect(save).toBeEnabled()
     await click(save)
     expect(calls('savePersonalization')[0]).toEqual({
@@ -366,29 +430,30 @@ describe('Персоналізація', () => {
   it('upload questions: max files; labeled upload needs one label per file; options can be removed', async () => {
     mockFeature({ 'listingMeta.personalization': [] })
     await show('personalization')
-    await click(screen.getByRole('button', { name: '＋ Додати питання' }))
+    await click(screen.getByRole('button', { name: 'Додати питання' }))
     const q = screen.getByTestId('lm-q0')
     await change(within(q).getByLabelText(/Текст питання/), 'Фото')
     await change(within(q).getByLabelText('Тип'), 'labeled_upload')
     await change(within(q).getByLabelText('Максимум файлів'), '2')
-    await click(within(q).getByRole('button', { name: '＋ Варіант' }))
-    await change(within(q).getByLabelText('Варіант 1'), 'Спереду')
+    expect(q).toHaveTextContent('Підписи файлів')
+    await click(within(q).getByRole('button', { name: 'Додати підпис' }))
+    await change(within(q).getByLabelText('Підпис 1 питання 1'), 'Спереду')
     expect(screen.getByText('Питання 1: кількість підписів має дорівнювати максимуму файлів.')).toBeInTheDocument()
-    await click(within(q).getByRole('button', { name: '＋ Варіант' }))
-    await change(within(q).getByLabelText('Варіант 2'), 'Ззаду')
+    await click(within(q).getByRole('button', { name: 'Додати підпис' }))
+    await change(within(q).getByLabelText('Підпис 2 питання 1'), 'Ззаду')
     expect(screen.getByRole('button', { name: 'Зберегти персоналізацію' })).toBeEnabled()
-    await click(within(q).getByRole('button', { name: 'Прибрати варіант 2' }))
-    expect(within(q).queryByLabelText('Варіант 2')).not.toBeInTheDocument()
+    await click(within(q).getByRole('button', { name: 'Прибрати: підпис 2' }))
+    expect(within(q).queryByLabelText('Підпис 2 питання 1')).not.toBeInTheDocument()
     expect(within(q).queryByLabelText('Максимум символів')).not.toBeInTheDocument()
   })
 
   it('at most 5 questions; "Видалити питання" removes one from the form', async () => {
     mockFeature({ 'listingMeta.personalization': Array.from({ length: 5 }, (_, i) => ({ ...textQ, id: i + 1 })) })
     await show('personalization')
-    expect(screen.getByRole('button', { name: '＋ Додати питання' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Додати питання' })).toBeDisabled()
     await click(within(screen.getByTestId('lm-q4')).getByRole('button', { name: 'Видалити питання' }))
     expect(screen.queryByTestId('lm-q4')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '＋ Додати питання' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Додати питання' })).toBeEnabled()
   })
 
   it('a save that drops saved questions asks first (Etsy replaces them all): cancel = nothing, confirm = save', async () => {
@@ -398,7 +463,7 @@ describe('Персоналізація', () => {
     await click(within(screen.getByTestId('lm-q1')).getByRole('button', { name: 'Видалити питання' }))
     const save = screen.getByRole('button', { name: 'Зберегти персоналізацію' })
     await click(save)
-    expect(screen.getByText('Зберегти персоналізацію? Etsy замінить усі питання — 1 збережене питання буде видалено: «Дата».')).toBeInTheDocument()
+    expect(asked()).toBe('Зберегти персоналізацію? Etsy замінить усі питання — 1 збережене питання буде видалено: «Дата».')
     await click(screen.getByRole('button', { name: 'Скасувати' }))
     expect(calls('savePersonalization')).toEqual([])
     await click(save)
@@ -437,10 +502,28 @@ describe('Персоналізація', () => {
     expect(screen.queryByRole('button', { name: 'Прибрати персоналізацію' })).not.toBeInTheDocument()
   })
 
-  it('load and save errors are alerts', async () => {
-    mockFeature({ 'listingMeta.personalization': { ok: false, error: 'Не знайдено.' } })
+  it('load and save errors are alerts; a load error has "Спробувати ще"', async () => {
+    let n = 0
+    mockFeature({ 'listingMeta.personalization': () => (++n === 1 ? { ok: false, error: 'Не знайдено.' } : [textQ]) })
     await show('personalization')
     expect(screen.getByRole('alert')).toHaveTextContent('Не знайдено.')
+    await click(screen.getByRole('button', { name: 'Спробувати ще' }))
+    expect(within(screen.getByTestId('lm-q0')).getByLabelText(/Текст питання/)).toHaveValue('Ваше ім’я')
+  })
+
+  it('every question explains itself: the type in words, "Обов’язкове" as a switch, a counter of questions', async () => {
+    mockFeature({ 'listingMeta.personalization': [textQ] })
+    await show('personalization')
+    const q = screen.getByTestId('lm-q0')
+    expect(q).toHaveTextContent('Покупець впише текст у поле')
+    expect(within(q).getByRole('switch', { name: 'Обов’язкове' })).not.toBeChecked()
+    expect(within(q).getByRole('button', { name: 'Що таке «Тип питання»?' })).toBeInTheDocument()
+    expect(within(q).getByLabelText(/Текст питання/)).toHaveAccessibleDescription('Що побачить покупець, наприклад «Ім’я для обкладинки».')
+    expect(screen.getByText('1 з 5')).toBeInTheDocument()
+    await change(within(q).getByLabelText('Тип'), 'dropdown')
+    expect(q).toHaveTextContent('Покупець вибере одну відповідь зі списку')
+    // The same warn badge as in the other editor sections.
+    expect(screen.getByText('Є незбережені зміни').closest('.ui-badge')).toBeInTheDocument()
   })
 
   it('a save error keeps the form', async () => {
@@ -503,9 +586,21 @@ describe('Переклади', () => {
   it('clearing the tags of a translation that has some warns that they stay (Etsy has no way to clear them)', async () => {
     mockFeature({ 'listingMeta.translation': { listingId: 1234, language: 'en', title: 'T', description: 'D', tags: ['budget'] } })
     await show('translations')
-    expect(screen.queryByText(/Прибрати всі теги перекладу/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Etsy не дозволяє прибрати всі теги перекладу/)).not.toBeInTheDocument()
     await change(screen.getByLabelText(/Теги через кому/), '')
-    expect(screen.getByText('Прибрати всі теги перекладу Etsy API не дозволяє — без тегів наявні лишаться як є.')).toBeInTheDocument()
+    expect(screen.getByText('Etsy не дозволяє прибрати всі теги перекладу — якщо поле порожнє, наявні теги лишаться як є.')).toBeInTheDocument()
+  })
+
+  it('an existing translation is marked; a load error has "Спробувати ще"', async () => {
+    let n = 0
+    mockFeature({
+      'listingMeta.translation': () => (++n === 1 ? { ok: false, error: 'Увійдіть в Etsy' } : { listingId: 1234, language: 'en', title: 'T', description: 'D', tags: [] })
+    })
+    await show('translations')
+    expect(screen.queryByText('Переклад є на Etsy')).toBeNull()
+    await click(screen.getByRole('button', { name: 'Спробувати ще' }))
+    expect(screen.getByText('Переклад є на Etsy')).toBeInTheDocument()
+    expect(screen.getByLabelText(/Назва/)).toHaveValue('T')
   })
 
   it('load and save errors are alerts', async () => {
@@ -525,12 +620,12 @@ describe('Переклади', () => {
 
 // =============================================================== danger zone
 
-describe('Небезпечна зона', () => {
+describe('Видалити товар з Etsy', () => {
   it('the delete button needs the exact title, then a confirmation; success → onChanged() + a note', async () => {
     mockFeature({ 'listingMeta.deleteListing': true })
     const onChanged = await show('danger')
-    const del = screen.getByRole('button', { name: 'Видалити лістинг назавжди' })
-    const input = screen.getByLabelText(/введіть назву лістингу точно/)
+    const del = screen.getByRole('button', { name: 'Видалити товар назавжди' })
+    const input = screen.getByLabelText(/введіть назву товару точно/)
     expect(del).toBeDisabled()
     await change(input, 'budget planner & tracker')
     expect(del).toBeDisabled()
@@ -539,15 +634,31 @@ describe('Небезпечна зона', () => {
     await change(input, 'Budget Planner & Tracker')
     expect(del).toBeEnabled()
     await click(del)
-    expect(screen.getByText(/Видалити лістинг «Budget Planner & Tracker» з Etsy назавжди\?/)).toBeInTheDocument()
+    expect(asked()).toMatch(/^Видалити товар «Budget Planner & Tracker» з Etsy назавжди\?/)
     await click(screen.getByRole('button', { name: 'Скасувати' }))
     expect(calls('deleteListing')).toEqual([])
     await click(del)
     await click(screen.getByRole('button', { name: 'Підтвердити' }))
     expect(calls('deleteListing')).toEqual([{ listingId: 1234 }])
     expect(onChanged).toHaveBeenCalledWith()
-    expect(screen.getByText('Лістинг «Budget Planner & Tracker» видалено з Etsy.')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Видалити лістинг назавжди' })).not.toBeInTheDocument()
+    expect(screen.getByText('Товар «Budget Planner & Tracker» видалено з Etsy.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Видалити товар назавжди' })).not.toBeInTheDocument()
+  })
+
+  it('says what deleting means (and the gentler option), shows the title to type and whether it matches', async () => {
+    await show('danger')
+    const zone = screen.getByTestId('lm-danger')
+    expect(zone).toHaveTextContent('відновити його не можна')
+    expect(zone).toHaveTextContent('Зробіть його неактивним')
+    // "лістинг" appears only explained, inside the title.
+    expect(within(zone).getByRole('heading', { name: 'Видалити товар (лістинг) з Etsy' })).toBeInTheDocument()
+    expect(within(zone).getByText('товар (лістинг)')).toHaveAccessibleDescription(/На Etsy це називають «listing»/)
+    const input = screen.getByLabelText(/введіть назву товару точно/)
+    expect(input).toHaveAccessibleDescription('Назва: «Budget Planner & Tracker»')
+    await change(input, 'Budget')
+    expect(zone).toHaveTextContent('Поки не збігається')
+    await change(input, mine.title)
+    expect(zone).toHaveTextContent('Назва збігається')
   })
 
   it('after a delete the other sections of that listing stop offering edits', async () => {
@@ -563,20 +674,20 @@ describe('Небезпечна зона', () => {
       )
     })
     expect(screen.getByTestId('lm-attributes')).toBeInTheDocument()
-    await change(screen.getByLabelText(/введіть назву лістингу точно/), mine.title)
-    await click(screen.getByRole('button', { name: 'Видалити лістинг назавжди' }))
+    await change(screen.getByLabelText(/введіть назву товару точно/), mine.title)
+    await click(screen.getByRole('button', { name: 'Видалити товар назавжди' }))
     await click(screen.getByRole('button', { name: 'Підтвердити' }))
-    expect(screen.getAllByText('Лістинг видалено з Etsy — редагувати нічого.')).toHaveLength(3)
+    expect(screen.getAllByText('Товар видалено з Etsy — редагувати нічого.')).toHaveLength(3)
     for (const id of ['lm-attributes', 'lm-personalization', 'lm-translations']) expect(screen.queryByTestId(id)).not.toBeInTheDocument()
   })
 
   it('an Etsy refusal is an alert and nothing is reported as changed', async () => {
-    mockFeature({ 'listingMeta.deleteListing': { ok: false, error: 'Для цього потрібен дозвіл: видалення лістингів.' } })
+    mockFeature({ 'listingMeta.deleteListing': { ok: false, error: 'Для цього потрібен дозвіл: видалення товарів.' } })
     const onChanged = await show('danger')
-    await change(screen.getByLabelText(/введіть назву лістингу точно/), mine.title)
-    await click(screen.getByRole('button', { name: 'Видалити лістинг назавжди' }))
+    await change(screen.getByLabelText(/введіть назву товару точно/), mine.title)
+    await click(screen.getByRole('button', { name: 'Видалити товар назавжди' }))
     await click(screen.getByRole('button', { name: 'Підтвердити' }))
-    expect(screen.getByRole('alert')).toHaveTextContent('видалення лістингів')
+    expect(screen.getByRole('alert')).toHaveTextContent('видалення товарів')
     expect(onChanged).not.toHaveBeenCalled()
   })
 })

@@ -2,10 +2,12 @@
 // state (Etsy processes an upload for a while), delete, upload / replace.
 
 import { MAX_VIDEO_BYTES, VIDEO_STATE_LABEL, VIDEO_UPLOADS_PER_DAY, type MediaVideo, type VideoState } from '@shared/features/media'
+import { Badge, Button, EmptyState, InfoTip, type BadgeTone } from '../../ui'
 import { featureCall } from '../call'
 import type { MediaOps } from './MediaSection'
 
 const stateLabel = (s: string | null): string => (s ? (VIDEO_STATE_LABEL[s as VideoState] ?? s) : 'невідомий')
+const STATE_TONE: Record<VideoState, BadgeTone> = { active: 'accent', inactive: 'warn', deleted: 'neutral', flagged: 'danger' }
 
 export function VideoBlock({ videos, ops }: { videos: MediaVideo[]; ops: MediaOps }): JSX.Element {
   const video = videos.find((v) => v.state !== 'deleted') ?? null
@@ -23,45 +25,61 @@ export function VideoBlock({ videos, ops }: { videos: MediaVideo[]; ops: MediaOp
       'uploadVideo',
       { token: f.token },
       `Відео «${f.name}» завантажено. Etsy ще може його обробляти — перевірте стан за хвилину.`,
-      video ? `Замінити відео лістингу на «${f.name}»? Поточне відео буде знято після того, як нове завантажиться.` : ops.liveConfirm(`Завантажити відео «${f.name}»?`)
+      video ? `Замінити відео товару на «${f.name}»? Поточне відео буде знято після того, як нове завантажиться.` : ops.liveConfirm(`Завантажити відео «${f.name}»?`)
     )
   }
 
   return (
-    <div data-testid="media-video">
-      <h4>Відео</h4>
+    <section className="media-block" data-testid="media-video" aria-labelledby="media-video-title">
+      <div className="media-block-head">
+        <h4 id="media-video-title" className="media-block-title">
+          Відео
+        </h4>
+        <InfoTip glossary="features.media.video" />
+        <Badge>{video ? '1 з 1' : '0 з 1'}</Badge>
+        <span className="media-block-spacer" />
+        <Button size="sm" icon="upload" disabled={ops.busy} onClick={() => void upload()}>
+          {video ? 'Замінити відео' : 'Завантажити відео'}
+        </Button>
+      </div>
+      <p className="media-limits">
+        Одне відео на товар: 5–15 секунд, до {MAX_VIDEO_BYTES / 1024 / 1024} МБ, звук не відтворюється; не більше {VIDEO_UPLOADS_PER_DAY}{' '}
+        завантажень на добу.
+      </p>
       {video ? (
         <div className="media-video">
           {video.thumbnailUrl ? <img src={video.thumbnailUrl} alt="Кадр відео" /> : <div className="media-thumb-empty" />}
-          <div>
-            <div>Стан: {stateLabel(video.state)}</div>
-            {video.width && video.height ? <div className="hint">{`${video.width}×${video.height}`}</div> : null}
+          <div className="media-video-info">
+            <div className="media-video-state">
+              <span>Стан: </span>
+              <Badge tone={STATE_TONE[video.state as VideoState] ?? 'neutral'}>{stateLabel(video.state)}</Badge>
+              <InfoTip glossary="features.compete.videoState" size={13} />
+            </div>
+            {video.width && video.height ? <div className="media-meta">{`${video.width}×${video.height} пікс.`}</div> : null}
+            {video.state === 'inactive' && (
+              <p className="media-limits">Щойно завантажене відео Etsy обробляє кілька хвилин — натисніть «Перевірити стан» трохи згодом.</p>
+            )}
             <div className="media-actions">
-              <button className="btn small" disabled={ops.busy} onClick={() => void recheck(video)}>
+              <Button size="sm" icon="refresh" disabled={ops.busy} onClick={() => void recheck(video)}>
                 Перевірити стан
-              </button>
-              <button
-                className="btn small danger"
+              </Button>
+              <Button
+                size="sm"
+                variant="danger"
+                icon="trash"
                 disabled={ops.busy}
-                onClick={() => void ops.run('deleteVideo', { videoId: video.id }, 'Відео видалено.', 'Видалити відео з лістингу?')}
+                onClick={() => void ops.run('deleteVideo', { videoId: video.id }, 'Відео видалено.', 'Видалити відео з товару?')}
               >
                 Видалити відео
-              </button>
+              </Button>
             </div>
           </div>
         </div>
       ) : (
-        <div className="hint">Відео немає.</div>
+        <EmptyState compact icon="video" title="Відео немає.">
+          Відео допомагає покупцю роздивитися товар. Воно необов’язкове.
+        </EmptyState>
       )}
-      <div className="settings-actions">
-        <button className="btn small" disabled={ops.busy} onClick={() => void upload()}>
-          {video ? 'Замінити відео' : 'Завантажити відео'}
-        </button>
-      </div>
-      <div className="hint">
-        Одне відео на лістинг: 5–15 секунд, до {MAX_VIDEO_BYTES / 1024 / 1024} МБ; не більше {VIDEO_UPLOADS_PER_DAY} завантажень
-        на добу.
-      </div>
-    </div>
+    </section>
   )
 }

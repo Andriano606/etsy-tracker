@@ -1,78 +1,345 @@
-/* Feature "orders": Замовлення / Фінанси tabs, "Продажі" section. */
+/* Feature "orders": Замовлення / Фінанси tabs, "Продажі" section (the layout kit is in shopConfig.css, "fx-"). */
 
-.orders-filters > .field select {
-  min-width: 0;
-  width: 100%;
-}
 .order-badges {
   display: inline-flex;
   flex-wrap: wrap;
   gap: 4px;
+  min-width: 0;
 }
-.order-badge {
-  display: inline-block;
-  padding: 0 6px;
-  border-radius: 999px;
-  font-size: 10.5px;
-  line-height: 17px;
-  white-space: nowrap;
-  color: var(--text-body);
-  background: var(--bg-3);
-  border: 1px solid var(--border);
+.fx-table.is-stacked .order-badges {
+  justify-content: flex-end;
 }
-.order-badge.ok {
-  color: var(--green);
+
+/* ---- list: quick views + filters */
+.ord-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
 }
-.order-badge.warn {
-  color: oklch(0.85 0.13 80);
-}
-.order-detail h4 {
-  margin: 14px 0 6px;
-  font-size: 13px;
-}
-.order-detail .data-table {
-  margin-bottom: 12px;
-}
-.orders-fact {
-  display: contents;
-}
-.orders-grand dt,
-.orders-grand dd {
+.ord-filters > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 4px 0;
   color: var(--text);
+  font-size: var(--fs-sm);
   font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+.ord-filters > summary::-webkit-details-marker {
+  display: none;
+}
+.ord-filters > summary::before {
+  content: '';
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin: 0 4px 0 2px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform var(--dur) var(--ease);
+}
+.ord-filters[open] > summary::before {
+  transform: rotate(45deg);
+}
+.ord-filters > .fx-card {
+  margin-top: var(--sp-2);
+}
+.ord-filter-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(170px, 100%), 1fr));
+}
+.ord-count {
+  font-size: var(--fs-xs);
+}
+.ord-buyer {
+  min-width: 0;
+  color: var(--text-body);
+}
+
+/* ---- one order */
+.ord-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--sp-4);
+  min-width: 0;
+}
+@container (min-width: 720px) {
+  .ord-grid {
+    grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+    align-items: start;
+  }
+}
+.ord-items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ord-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-2) 0;
+  font-size: var(--fs-sm);
+}
+.ord-item + .ord-item {
+  border-top: 1px solid var(--hairline);
+}
+.ord-item-sum {
+  flex: none;
+  white-space: nowrap;
+  color: var(--text);
+}
+.ord-vars {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+.ord-var {
+  padding: 1px 8px;
+  border-radius: var(--r-pill);
+  background: var(--bg-3);
+  color: var(--text-body);
+  font-size: var(--fs-xs);
+}
+.ord-totals {
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--border);
+}
+.ord-address {
+  line-height: var(--lh);
+}
+.ord-break {
+  overflow-wrap: anywhere;
 }
 .orders-text {
   white-space: pre-wrap;
   font-family: inherit;
+  overflow-wrap: anywhere;
 }
-.orders-message {
-  margin: 0 0 12px;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--bg);
-  font-size: 12.5px;
+.ord-message {
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 3px solid var(--info);
+  border-radius: var(--r-sm);
+  background: var(--info-soft);
+  color: var(--text-body);
+  font-size: var(--fs-sm);
+  line-height: var(--lh);
 }
-.orders-sub-title {
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--text);
+.ord-message-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   margin-bottom: 4px;
+  color: var(--text);
+  font-weight: 600;
 }
-.orders-ship {
-  margin-top: 14px;
-  padding-top: 8px;
+.ord-lazy {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.ord-lazy > .feature-details {
+  margin-top: 0;
+}
+.ord-ship-anchor {
+  scroll-margin-top: var(--sp-4);
+}
+.ord-listing > .min-w-0 {
+  flex: 1 1 240px;
+}
+
+/* ---- payments */
+.ord-payments {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.ord-payment {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.ord-payment + .ord-payment {
+  padding-top: var(--sp-3);
   border-top: 1px solid var(--hairline);
 }
-.orders-payment + .orders-payment {
-  margin-top: 10px;
+.ord-payment-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px var(--sp-2);
+  font-size: var(--fs-sm);
 }
-.orders-actions {
-  white-space: nowrap;
+.ord-payment .fx-facts {
+  max-width: 460px;
 }
-.orders-actions .btn.small + .btn.small {
-  margin-left: 4px;
+
+/* ---- finance */
+.ord-period {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--sp-3);
+  min-width: 0;
 }
-.orders-subrow > td {
+.ord-period > .ui-field {
+  flex: 0 1 150px;
+  min-width: 130px;
+  margin-bottom: 0;
+}
+.ord-period > .ui-field:first-child {
+  flex: none;
+  min-width: 0;
+}
+.ord-sub {
+  color: var(--text-body);
+  font-size: var(--fs-sm);
+  line-height: var(--lh);
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+/* ---- the orders list: one two-line row per order, wrapping on narrow panes */
+.ord-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
   background: var(--bg);
+}
+.ord-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, auto) auto;
+  grid-template-areas: 'main sum status open';
+  align-items: center;
+  gap: var(--sp-2) var(--sp-4);
+  padding: 10px var(--sp-3);
+  font-size: var(--fs-sm);
+}
+.ord-row + .ord-row {
+  border-top: 1px solid var(--hairline);
+}
+.ord-row:hover {
+  background: rgba(255, 255, 255, 0.018);
+}
+.ord-row-main {
+  grid-area: main;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ord-row-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.ord-row-title .fx-title {
+  flex: none;
+}
+.ord-row-sum {
+  grid-area: sum;
+  color: var(--text);
+  font-weight: 500;
+  white-space: nowrap;
+  text-align: right;
+}
+.ord-row-status {
+  grid-area: status;
+  min-width: 0;
+}
+.ord-row-open {
+  grid-area: open;
+}
+@container (max-width: 640px) {
+  .ord-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      'main sum'
+      'status open';
+  }
+}
+
+/* ---- ledger entries: two lines each (what + when/type/details | amount + balance) */
+.ord-ledger {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg);
+}
+.ord-entry {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--sp-1) var(--sp-4);
+  padding: 10px var(--sp-3);
+  font-size: var(--fs-sm);
+}
+.ord-entry + .ord-entry {
+  border-top: 1px solid var(--hairline);
+}
+.ord-entry.is-open {
+  background: var(--bg-3);
+}
+.ord-entry-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px var(--sp-2);
+  margin-top: 2px;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+.ord-entry-links {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px var(--sp-1);
+}
+.ord-link {
+  padding: 1px 6px;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 500;
+}
+.ord-link:hover,
+.ord-link.is-on {
+  background: var(--accent-soft);
+}
+.ord-link:focus-visible {
+  outline: 2px solid var(--focus-color);
+  outline-offset: 1px;
+}
+.ord-entry-sum {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.ord-entry-open {
+  grid-column: 1 / -1;
+  min-width: 0;
+  margin-top: var(--sp-2);
+  padding: var(--sp-3);
+  border-radius: var(--r-sm);
+  background: var(--bg-2);
+}
+.ord-sales .ord-sales-vars {
+  flex-basis: 100%;
 }

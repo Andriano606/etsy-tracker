@@ -2,7 +2,7 @@
 // remove, save (replaces them all on Etsy: a save that drops saved questions
 // asks first); "Прибрати персоналізацію" asks first.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type InputHTMLAttributes } from 'react'
 import {
   DROPDOWN_LABEL_MAX,
   MAX_QUESTIONS,
@@ -16,9 +16,32 @@ import {
 } from '@shared/features/listingMeta'
 import type { MyListing } from '@shared/types'
 import { useStore } from '../../store'
+import { Badge, Button, Callout, EmptyState, Field, GLOSSARY, InfoTip, Loading, Term, Toggle } from '../../ui'
 import { featureCall } from '../call'
 
 const numOrNull = (s: string): number | null => (s.trim() === '' ? null : Number(s.replace(',', '.')))
+/** 2.5 → "2,50" (how prices read everywhere else in the app). */
+const priceText = (n: number | null): string => (n == null ? '' : Number.isFinite(n) ? n.toFixed(2).replace('.', ',') : String(n))
+
+/** A money input that keeps what is typed ("2," mid-typing) and reports the number. */
+function MoneyInput({
+  value,
+  onChange,
+  ...rest
+}: { value: number | null; onChange: (n: number | null) => void } & Omit<InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange'>): JSX.Element {
+  const [text, setText] = useState(() => priceText(value))
+  return (
+    <input
+      {...rest}
+      inputMode="decimal"
+      value={text}
+      onChange={(e) => {
+        setText(e.target.value)
+        onChange(numOrNull(e.target.value))
+      }}
+    />
+  )
+}
 const isUpload = (t: PersonalizationType): boolean => t === 'unlabeled_upload' || t === 'labeled_upload'
 const hasOptions = (t: PersonalizationType): boolean => t === 'dropdown' || t === 'labeled_upload'
 
@@ -35,6 +58,14 @@ function withType({ unsupportedType: _u, ...q }: PersonalizationQuestion, type: 
   }
 }
 
+/** What the buyer does for each question type (under the type picker). */
+const TYPE_HINT: Record<PersonalizationType, string> = {
+  text_input: 'Покупець впише текст у поле — наприклад, ім’я чи дату.',
+  dropdown: 'Покупець вибере одну відповідь зі списку, який ви задасте нижче.',
+  unlabeled_upload: 'Покупець завантажить файли (наприклад, фото для друку).',
+  labeled_upload: 'Покупець завантажить файли, кожен під вашим підписом («Фото спереду», «Фото ззаду»).'
+}
+
 function QuestionEditor({
   index,
   q,
@@ -49,29 +80,47 @@ function QuestionEditor({
   const id = `lm-q${index}`
   const set = (patch: Partial<PersonalizationQuestion>): void => onChange({ ...q, ...patch })
   const labelMax = q.type === 'dropdown' ? DROPDOWN_LABEL_MAX : UPLOAD_LABEL_MAX
+  // "Варіанти відповіді" of a list vs. the labels of uploads — never "варіант" (that word is for product variants).
+  const opt =
+    q.type === 'dropdown'
+      ? { title: 'Варіанти відповіді', one: 'Відповідь', add: 'Додати відповідь', each: `кожна до ${labelMax} символів` }
+      : { title: 'Підписи файлів', one: 'Підпис', add: 'Додати підпис', each: `кожен до ${labelMax} символів` }
+  const textLen = q.text.trim().length
   return (
     <fieldset className="lm-question" data-testid={id}>
-      <legend>Питання {index + 1}</legend>
-      {q.unsupportedType && (
-        <div className="hint warn">
-          Тип «{q.unsupportedType}» цей редактор не підтримує. Щоб не змінити питання ненароком, зберегти можна лише після вибору
-          іншого типу або видалення питання.
-        </div>
-      )}
-      <div className="field">
-        <label htmlFor={`${id}-text`}>
-          Текст питання ({q.text.trim().length}/{QUESTION_TEXT_MAX})
-        </label>
-        <input id={`${id}-text`} value={q.text} onChange={(e) => set({ text: e.target.value })} />
+      <legend className="sr-only">Питання {index + 1}</legend>
+      <div className="lm-question-head" aria-hidden="true">
+        <span className="lm-question-n num">{index + 1}</span>
+        <span className="lm-question-title truncate" title={q.text || undefined}>
+          {q.text.trim() || 'Нове питання'}
+        </span>
       </div>
-      <div className="field-row">
-        <div className="field">
-          <label htmlFor={`${id}-type`}>Тип</label>
-          <select
-            id={`${id}-type`}
-            value={q.unsupportedType ? '' : q.type}
-            onChange={(e) => onChange(withType(q, e.target.value as PersonalizationType))}
-          >
+      <div className="lm-question-remove">
+        <Button size="sm" variant="ghost" icon="trash" onClick={onRemove}>
+          Видалити питання
+        </Button>
+      </div>
+      {q.unsupportedType && (
+        <Callout tone="warn" role="note" compact>
+          Тип «{q.unsupportedType}» цей редактор не підтримує. Щоб не змінити питання ненароком, зберегти можна лише після вибору іншого типу
+          або видалення питання.
+        </Callout>
+      )}
+      <div className="ui-form-grid">
+        <Field
+          label="Текст питання"
+          id={`${id}-text`}
+          aside={
+            <span className={textLen > QUESTION_TEXT_MAX ? 'lm-over' : undefined}>
+              {textLen}/{QUESTION_TEXT_MAX}
+            </span>
+          }
+          hint="Що побачить покупець, наприклад «Ім’я для обкладинки»."
+        >
+          <input value={q.text} onChange={(e) => set({ text: e.target.value })} />
+        </Field>
+        <Field label="Тип" id={`${id}-type`} glossary="features.listingMeta.questionType" hint={q.unsupportedType ? undefined : TYPE_HINT[q.type]}>
+          <select value={q.unsupportedType ? '' : q.type} onChange={(e) => onChange(withType(q, e.target.value as PersonalizationType))}>
             {q.unsupportedType && (
               <option value="" disabled>
                 {q.unsupportedType} (не підтримується)
@@ -83,89 +132,73 @@ function QuestionEditor({
               </option>
             ))}
           </select>
-        </div>
+        </Field>
         {q.type === 'text_input' && (
-          <div className="field">
-            <label htmlFor={`${id}-chars`}>Максимум символів</label>
-            <input
-              id={`${id}-chars`}
-              inputMode="numeric"
-              value={q.maxChars ?? ''}
-              onChange={(e) => set({ maxChars: numOrNull(e.target.value) })}
-            />
-          </div>
+          <Field label="Максимум символів" id={`${id}-chars`} hint="Порожньо — без обмеження.">
+            <input inputMode="numeric" value={q.maxChars ?? ''} onChange={(e) => set({ maxChars: numOrNull(e.target.value) })} />
+          </Field>
         )}
         {isUpload(q.type) && (
-          <div className="field">
-            <label htmlFor={`${id}-files`}>Максимум файлів</label>
-            <input
-              id={`${id}-files`}
-              inputMode="numeric"
-              value={q.maxFiles ?? ''}
-              onChange={(e) => set({ maxFiles: numOrNull(e.target.value) })}
-            />
-          </div>
+          <Field label="Максимум файлів" id={`${id}-files`} hint="Скільки файлів покупець може завантажити.">
+            <input inputMode="numeric" value={q.maxFiles ?? ''} onChange={(e) => set({ maxFiles: numOrNull(e.target.value) })} />
+          </Field>
+        )}
+        {q.type === 'text_input' && !q.required && (
+          <Field label={`Доплата${q.addOnCurrency ? `, ${q.addOnCurrency}` : ''} (необов’язково)`} id={`${id}-price`} glossary="features.compete.addOnPrice">
+            <MoneyInput value={q.addOnPrice} onChange={(n) => set({ addOnPrice: n })} />
+          </Field>
         )}
       </div>
-      <label className="check">
-        <input
-          type="checkbox"
-          checked={q.required}
-          onChange={(e) => set({ required: e.target.checked, addOnPrice: e.target.checked ? null : q.addOnPrice })}
-        />
-        Обов’язкове
-      </label>
       {q.type !== 'dropdown' && (
-        <div className="field">
-          <label htmlFor={`${id}-instr`}>Інструкції для покупця (необов’язково)</label>
-          <textarea
-            id={`${id}-instr`}
-            rows={2}
-            value={q.instructions ?? ''}
-            onChange={(e) => set({ instructions: e.target.value || null })}
-          />
-        </div>
-      )}
-      {q.type === 'text_input' && !q.required && (
-        <div className="field">
-          <label htmlFor={`${id}-price`}>Доплата{q.addOnCurrency ? `, ${q.addOnCurrency}` : ''} (необов’язково)</label>
-          <input
-            id={`${id}-price`}
-            inputMode="decimal"
-            value={q.addOnPrice ?? ''}
-            onChange={(e) => set({ addOnPrice: numOrNull(e.target.value) })}
-          />
-        </div>
+        <Field label="Інструкції для покупця (необов’язково)" id={`${id}-instr`} hint={GLOSSARY['features.listingMeta.instructions'].short}>
+          <textarea rows={2} value={q.instructions ?? ''} onChange={(e) => set({ instructions: e.target.value || null })} />
+        </Field>
       )}
       {hasOptions(q.type) && (
-        <div className="field">
-          <label>{q.type === 'dropdown' ? 'Варіанти' : 'Підписи файлів'} (до {labelMax} символів)</label>
-          <ol className="lm-options">
-            {q.options.map((o, i) => (
-              <li key={i}>
-                <input
-                  aria-label={`Варіант ${i + 1}`}
-                  value={o.label}
-                  onChange={(e) => set({ options: q.options.map((x, j) => (j === i ? { ...x, label: e.target.value } : x)) })}
-                />
-                <button
-                  className="btn small"
-                  aria-label={`Прибрати варіант ${i + 1}`}
-                  onClick={() => set({ options: q.options.filter((_, j) => j !== i) })}
-                >
-                  ✕
-                </button>
-              </li>
-            ))}
-          </ol>
-          <button className="btn small" onClick={() => set({ options: [...q.options, { id: null, label: '' }] })}>
-            ＋ Варіант
-          </button>
+        <div className="lm-options-box">
+          <div className="lm-options-head">
+            <span className="lm-options-title">{opt.title}</span>
+            <InfoTip glossary="features.listingMeta.answerOptions" size={13} />
+            <span className="lm-hint">{opt.each}</span>
+          </div>
+          {q.options.length > 0 && (
+            <ol className="lm-options">
+              {q.options.map((o, i) => (
+                <li key={i}>
+                  <span className="lm-option-n num" aria-hidden="true">
+                    {i + 1}.
+                  </span>
+                  <input
+                    aria-label={`${opt.one} ${i + 1} питання ${index + 1}`}
+                    value={o.label}
+                    onChange={(e) => set({ options: q.options.map((x, j) => (j === i ? { ...x, label: e.target.value } : x)) })}
+                  />
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    icon="close"
+                    iconOnly
+                    label={`Прибрати: ${opt.one.toLowerCase()} ${i + 1}`}
+                    onClick={() => set({ options: q.options.filter((_, j) => j !== i) })}
+                  />
+                </li>
+              ))}
+            </ol>
+          )}
+          <Button size="sm" icon="plus" onClick={() => set({ options: [...q.options, { id: null, label: '' }] })}>
+            {opt.add}
+          </Button>
         </div>
       )}
-      <button className="btn small" onClick={onRemove}>
-        Видалити питання
-      </button>
+      <Toggle
+        className="lm-required"
+        switchFirst
+        label="Обов’язкове"
+        glossary="features.listingMeta.requiredQuestion"
+        hint={q.type === 'text_input' ? 'Обов’язкове питання не може мати доплати.' : undefined}
+        checked={q.required}
+        onChange={(c) => set({ required: c, addOnPrice: c ? null : q.addOnPrice })}
+      />
     </fieldset>
   )
 }
@@ -181,6 +214,7 @@ export function PersonalizationSection({ listing }: { listing: MyListing; onChan
   const [error, setError] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [attempt, setAttempt] = useState(0)
   const listingId = listing.listingId
 
   useEffect(() => {
@@ -194,16 +228,26 @@ export function PersonalizationSection({ listing }: { listing: MyListing; onChan
     return () => {
       alive = false
     }
-  }, [listingId])
+  }, [listingId, attempt])
 
   if (loadError) {
     return (
-      <div className="test-result err" role="alert">
+      <Callout
+        tone="error"
+        action={
+          <Button size="sm" icon="refresh" onClick={() => {
+              setLoadError(null)
+              setAttempt((n) => n + 1)
+            }}>
+            Спробувати ще
+          </Button>
+        }
+      >
         {loadError}
-      </div>
+      </Callout>
     )
   }
-  if (!saved) return <div className="hint">Завантаження…</div>
+  if (!saved) return <Loading>Завантаження персоналізації…</Loading>
 
   const dirty = JSON.stringify(qs) !== JSON.stringify(saved)
   const problems = dirty ? personalizationProblems(qs) : []
@@ -235,7 +279,7 @@ export function PersonalizationSection({ listing }: { listing: MyListing; onChan
   }
 
   async function removeAll(): Promise<void> {
-    if (!(await requestConfirm('Прибрати всю персоналізацію цього лістингу на Etsy? Покупці більше не зможуть нічого вказати.'))) return
+    if (!(await requestConfirm('Прибрати всю персоналізацію цього товару на Etsy? Покупці більше не зможуть нічого вказати.'))) return
     setBusy(true)
     setError(null)
     const r = await featureCall('listingMeta', 'removePersonalization', { listingId })
@@ -247,13 +291,23 @@ export function PersonalizationSection({ listing }: { listing: MyListing; onChan
   }
 
   return (
-    <div data-testid="lm-personalization">
+    <div className="lm-section" data-testid="lm-personalization">
+      <p className="lm-intro">
+        <Term glossary="personalization">Персоналізація</Term> — питання, які Etsy поставить покупцю під час замовлення: ім’я для гравіювання,
+        колір, фото для друку. Відповіді ви побачите в замовленні. До {MAX_QUESTIONS} питань; Etsy зберігає їх усі разом.
+      </p>
       {qs.length === 0 && (
-        <div className="hint">
-          {saved.length
-            ? 'Усі питання прибрано з форми — щоб прибрати їх і на Etsy, натисніть «Прибрати персоналізацію».'
-            : 'Персоналізації немає — покупця ні про що не питають.'}
-        </div>
+        <EmptyState
+          compact
+          icon="edit"
+          title={
+            saved.length
+              ? 'Усі питання прибрано з форми — щоб прибрати їх і на Etsy, натисніть «Прибрати персоналізацію».'
+              : 'Персоналізації немає — покупця ні про що не питають.'
+          }
+        >
+          {saved.length ? null : 'Додайте питання, якщо товар робиться під покупця (ім’я, дата, напис).'}
+        </EmptyState>
       )}
       {qs.map((q, i) => (
         <QuestionEditor
@@ -264,38 +318,45 @@ export function PersonalizationSection({ listing }: { listing: MyListing; onChan
           onRemove={() => edit(qs.filter((_, j) => j !== i))}
         />
       ))}
+      <div className="lm-actions">
+        <Button icon="plus" disabled={qs.length >= MAX_QUESTIONS} onClick={() => edit([...qs, newQuestion()])}>
+          Додати питання
+        </Button>
+        <span className="lm-hint num">
+          {qs.length} з {MAX_QUESTIONS}
+        </span>
+      </div>
       {problems.length > 0 && qs.length > 0 && (
-        <div className="hint warn">
-          <ul className="plain-list">
+        <Callout tone="warn" role="note" compact title="Перш ніж зберегти, виправте:">
+          <ul className="lm-problems">
             {problems.map((p) => (
               <li key={p}>{p}</li>
             ))}
           </ul>
-        </div>
+        </Callout>
       )}
-      <div className="settings-actions">
-        <button className="btn small" disabled={qs.length >= MAX_QUESTIONS} onClick={() => edit([...qs, newQuestion()])}>
-          ＋ Додати питання
-        </button>
-        <button
-          className="btn small primary"
-          disabled={busy || !dirty || qs.length === 0 || problems.length > 0}
-          onClick={() => void save()}
-        >
+      {error && <Callout tone="error">{error}</Callout>}
+      {note && (
+        <Callout tone="success" compact>
+          {note}
+        </Callout>
+      )}
+      <div className="lm-actions lm-footer">
+        <Button variant="primary" icon="upload" busy={busy} disabled={!dirty || qs.length === 0 || problems.length > 0} onClick={() => void save()}>
           Зберегти персоналізацію
-        </button>
+        </Button>
+        {dirty && !busy && (
+          <Badge tone="warn" icon="edit">
+            Є незбережені зміни
+          </Badge>
+        )}
+        <span className="lm-spacer" />
         {saved.length > 0 && (
-          <button className="btn small danger" disabled={busy} onClick={() => void removeAll()}>
+          <Button variant="danger" icon="trash" disabled={busy} onClick={() => void removeAll()}>
             Прибрати персоналізацію
-          </button>
+          </Button>
         )}
       </div>
-      {error && (
-        <div className="test-result err" role="alert">
-          {error}
-        </div>
-      )}
-      {note && <div className="test-result ok">{note}</div>}
     </div>
   )
 }

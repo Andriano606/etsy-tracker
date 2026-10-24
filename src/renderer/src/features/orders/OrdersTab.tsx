@@ -1,4 +1,5 @@
-// "Мій магазин" → "Замовлення": filters (paid / shipped / delivered / canceled,
+// "Мій магазин" → "Замовлення": quick views (all / to ship / shipped /
+// canceled), the full filters (paid / shipped / delivered / canceled,
 // creation dates, order), the list (getShopReceipts, 25 per page) and one
 // order's detail.
 
@@ -6,7 +7,9 @@ import { useRef, useState } from 'react'
 import type { Order, OrdersPage } from '@shared/features/orders'
 import { localDaySec } from '@shared/features/orders'
 import { formatEtsyDate } from '@shared/format'
+import { Button, EmptyState, Field, Segmented, Select } from '../../ui'
 import { featureCall } from '../call'
+import { Card, Intro } from '../shopConfig/kit'
 import { Alert, Loading, fmtMoney, useOrders } from './common'
 import { OrderBadges, OrderDetail } from './OrderDetail'
 
@@ -33,6 +36,22 @@ const SORTS: Record<Sort, { sortOn: string; sortOrder: string }> = {
   updated: { sortOn: 'updated', sortOrder: 'desc' }
 }
 
+type Preset = 'all' | 'toShip' | 'shipped' | 'canceled'
+
+/** The quick views: the status filters each sets (dates and order stay). */
+const PRESETS: Record<Preset, Pick<OrderForm, 'paid' | 'shipped' | 'delivered' | 'canceled'>> = {
+  all: { paid: '', shipped: '', delivered: '', canceled: '' },
+  toShip: { paid: 'yes', shipped: 'no', delivered: '', canceled: 'no' },
+  shipped: { paid: '', shipped: 'yes', delivered: '', canceled: 'no' },
+  canceled: { paid: '', shipped: '', delivered: '', canceled: 'yes' }
+}
+
+const presetOf = (f: OrderForm): Preset | '' =>
+  (Object.keys(PRESETS) as Preset[]).find((k) => {
+    const p = PRESETS[k]
+    return p.paid === f.paid && p.shipped === f.shipped && p.delivered === f.delivered && p.canceled === f.canceled
+  }) ?? ''
+
 /** The form → the `orders.list` args (OrderFilters); dates are local days. */
 export function orderQuery(f: OrderForm, offset = 0): Record<string, unknown> {
   const q: Record<string, unknown> = { ...SORTS[f.sort], limit: ORDERS_PAGE, offset }
@@ -46,16 +65,31 @@ export function orderQuery(f: OrderForm, offset = 0): Record<string, unknown> {
   return q
 }
 
-function TriSelect({ id, label, value, yes, no, onChange }: { id: string; label: string; value: Tri; yes: string; no: string; onChange: (v: Tri) => void }): JSX.Element {
+function TriSelect({
+  id,
+  label,
+  value,
+  yes,
+  no,
+  onChange,
+  glossary
+}: {
+  id: string
+  label: string
+  value: Tri
+  yes: string
+  no: string
+  onChange: (v: Tri) => void
+  glossary: 'features.orders.paid' | 'features.orders.shipped' | 'features.orders.delivered' | 'features.orders.canceled'
+}): JSX.Element {
   return (
-    <div className="field">
-      <label htmlFor={id}>{label}</label>
-      <select id={id} value={value} onChange={(e) => onChange(e.target.value as Tri)}>
+    <Field label={label} id={id} glossary={glossary}>
+      <Select value={value} onChange={(v) => onChange(v as Tri)} fullWidth>
         <option value="">усі</option>
         <option value="yes">{yes}</option>
         <option value="no">{no}</option>
-      </select>
-    </div>
+      </Select>
+    </Field>
   )
 }
 
@@ -70,16 +104,24 @@ export function OrdersTab(): JSX.Element {
   const [loadingMore, setLoadingMore] = useState(false)
   const [open, setOpen] = useState<number | null>(null)
   const [patched, setPatched] = useState<Record<number, Order>>({})
+  const [applied, setApplied] = useState<OrderForm>(EMPTY)
   const set = <K extends keyof OrderForm>(k: K, v: OrderForm[K]): void => setForm((f) => ({ ...f, [k]: v }))
 
-  const apply = (): void => {
+  const applyForm = (f: OrderForm): void => {
     generation.current++
     setMore([])
     setMoreError(null)
     setLoadingMore(false)
-    const q = orderQuery(form)
+    setApplied(f)
+    const q = orderQuery(f)
     if (JSON.stringify(q) === JSON.stringify(query)) page.reload()
     else setQuery(q)
+  }
+  const apply = (): void => applyForm(form)
+  const preset = (p: Preset): void => {
+    const f = { ...form, ...PRESETS[p] }
+    setForm(f)
+    applyForm(f)
   }
 
   const loadMore = async (): Promise<void> => {
@@ -107,84 +149,145 @@ export function OrdersTab(): JSX.Element {
 
   const orders = [...(page.value?.orders ?? []), ...more].map((o) => patched[o.receiptId] ?? o)
   const total = page.value?.total ?? 0
+  const dirty = JSON.stringify(form) !== JSON.stringify(applied)
   return (
-    <div data-testid="orders-tab">
-      <div className="field-row orders-filters">
-        <TriSelect id="orders-paid" label="Оплата" value={form.paid} yes="оплачені" no="неоплачені" onChange={(v) => set('paid', v)} />
-        <TriSelect id="orders-shipped" label="Відправка" value={form.shipped} yes="відправлені" no="не відправлені" onChange={(v) => set('shipped', v)} />
-        <TriSelect id="orders-delivered" label="Доставка" value={form.delivered} yes="доставлені" no="не доставлені" onChange={(v) => set('delivered', v)} />
-        <TriSelect id="orders-canceled" label="Скасовані" value={form.canceled} yes="лише скасовані" no="без скасованих" onChange={(v) => set('canceled', v)} />
-      </div>
-      <div className="field-row orders-filters">
-        <div className="field">
-          <label htmlFor="orders-from">Від дати</label>
-          <input id="orders-from" type="date" value={form.from} onChange={(e) => set('from', e.target.value)} />
-        </div>
-        <div className="field">
-          <label htmlFor="orders-to">До дати</label>
-          <input id="orders-to" type="date" value={form.to} onChange={(e) => set('to', e.target.value)} />
-        </div>
-        <div className="field">
-          <label htmlFor="orders-sort">Порядок</label>
-          <select id="orders-sort" value={form.sort} onChange={(e) => set('sort', e.target.value as Sort)}>
-            <option value="new">спершу нові</option>
-            <option value="old">спершу старі</option>
-            <option value="updated">нещодавно змінені</option>
-          </select>
-        </div>
-      </div>
-      <div className="settings-actions">
-        <button className="btn primary" onClick={apply}>
-          Показати
-        </button>
+    <div className="fx-page" data-testid="orders-tab">
+      <Intro title="Замовлення" glossary="orders" icon="receipt">
+        Усі покупки у вашому магазині: хто купив, що, на яку суму і чи відправлено. Відкрийте замовлення, щоб побачити адресу і позначити його
+        відправленим.
+      </Intro>
+
+      <div className="ord-toolbar">
+        <Segmented
+          label="Швидкий вибір"
+          size="sm"
+          value={presetOf(applied) as Preset}
+          onChange={preset}
+          options={[
+            { value: 'all', label: 'Усі' },
+            { value: 'toShip', label: 'Треба відправити', icon: 'truck', hint: 'Оплачені, ще не відправлені й не скасовані — їх чекають покупці.' },
+            { value: 'shipped', label: 'Відправлено' },
+            { value: 'canceled', label: 'Скасовано' }
+          ]}
+        />
       </div>
 
-      <Alert text={page.error} />
-      {page.loading && <Loading />}
+      <details className="ord-filters" data-testid="orders-filters">
+        <summary>
+          Фільтри і порядок
+          {dirty && <span className="fx-meta"> · є незастосовані зміни</span>}
+        </summary>
+        <Card tone="form">
+          <div className="ui-form-grid ord-filter-grid">
+            <TriSelect id="orders-paid" label="Оплата" glossary="features.orders.paid" value={form.paid} yes="оплачені" no="неоплачені" onChange={(v) => set('paid', v)} />
+            <TriSelect
+              id="orders-shipped"
+              label="Відправка"
+              glossary="features.orders.shipped"
+              value={form.shipped}
+              yes="відправлені"
+              no="не відправлені"
+              onChange={(v) => set('shipped', v)}
+            />
+            <TriSelect
+              id="orders-delivered"
+              label="Доставка"
+              glossary="features.orders.delivered"
+              value={form.delivered}
+              yes="доставлені"
+              no="не доставлені"
+              onChange={(v) => set('delivered', v)}
+            />
+            <TriSelect
+              id="orders-canceled"
+              label="Скасовані"
+              glossary="features.orders.canceled"
+              value={form.canceled}
+              yes="лише скасовані"
+              no="без скасованих"
+              onChange={(v) => set('canceled', v)}
+            />
+            <Field label="Від дати" id="orders-from" hint="Коли замовлення оформили.">
+              <input type="date" value={form.from} onChange={(e) => set('from', e.target.value)} />
+            </Field>
+            <Field label="До дати" id="orders-to">
+              <input type="date" value={form.to} onChange={(e) => set('to', e.target.value)} />
+            </Field>
+            <Field label="Порядок" id="orders-sort">
+              <Select value={form.sort} onChange={(v) => set('sort', v as Sort)} fullWidth>
+                <option value="new">спершу нові</option>
+                <option value="old">спершу старі</option>
+                <option value="updated">нещодавно змінені</option>
+              </Select>
+            </Field>
+          </div>
+          <div className="fx-card-foot">
+            <Button variant="primary" icon="filter" onClick={apply}>
+              Показати
+            </Button>
+            <Button
+              variant="ghost"
+              disabled={JSON.stringify(form) === JSON.stringify(EMPTY)}
+              onClick={() => {
+                setForm(EMPTY)
+                applyForm(EMPTY)
+              }}
+            >
+              Скинути фільтри
+            </Button>
+          </div>
+        </Card>
+      </details>
+
+      <Alert text={page.error} title="Не вдалося завантажити замовлення" />
+      {page.loading && <Loading>Завантаження замовлень…</Loading>}
       {page.value && !page.loading && (
         <>
-          <div className="hint">Знайдено замовлень: {total}</div>
+          <div className="ord-count fx-muted">Знайдено замовлень: {total}</div>
           {orders.length === 0 ? (
-            <div className="hint">Замовлень немає.</div>
+            <EmptyState compact icon="receipt" title="Замовлень немає.">
+              {presetOf(applied) === 'all' && !applied.from && !applied.to ? 'Коли хтось купить у вашому магазині, замовлення з’явиться тут.' : 'Спробуйте інший фільтр.'}
+            </EmptyState>
           ) : (
-            <table className="data-table" data-testid="orders-list">
-              <thead>
-                <tr>
-                  <th>Дата</th>
-                  <th>Замовлення</th>
-                  <th>Покупець</th>
-                  <th>Товарів</th>
-                  <th>Сума</th>
-                  <th>Стан</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {orders.map((o) => (
-                  <tr key={o.receiptId} data-testid={`order-row-${o.receiptId}`}>
-                    <td>{formatEtsyDate(o.createdAt)}</td>
-                    <td>#{o.receiptId}</td>
-                    <td>{o.buyerName ?? '—'}</td>
-                    <td>{o.itemCount}</td>
-                    <td>{fmtMoney(o.totals.grandTotal)}</td>
-                    <td>
-                      <OrderBadges o={o} />
-                    </td>
-                    <td>
-                      <button className="btn small" onClick={() => setOpen(o.receiptId)}>
-                        Відкрити
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <ul className="ord-list" aria-label="Замовлення" data-testid="orders-list">
+              {orders.map((o) => (
+                <li key={o.receiptId} className="ord-row" data-testid={`order-row-${o.receiptId}`}>
+                  <div className="ord-row-main min-w-0">
+                    <div className="ord-row-title">
+                      <span className="fx-title">#{o.receiptId}</span>
+                      <span className="truncate ord-buyer" title={o.buyerName ?? undefined}>
+                        {o.buyerName ?? '—'}
+                      </span>
+                    </div>
+                    <div className="fx-meta">
+                      <span className="num">{formatEtsyDate(o.createdAt)}</span> · товарів: <span className="num">{o.itemCount}</span>
+                    </div>
+                  </div>
+                  <div className="ord-row-sum num">{fmtMoney(o.totals.grandTotal)}</div>
+                  <div className="ord-row-status">
+                    <OrderBadges o={o} />
+                  </div>
+                  <Button
+                    size="sm"
+                    icon="chevron-right"
+                    className="ord-row-open"
+                    aria-label={`Відкрити замовлення #${o.receiptId}`}
+                    onClick={() => setOpen(o.receiptId)}
+                  >
+                    Відкрити
+                  </Button>
+                </li>
+              ))}
+            </ul>
           )}
           {orders.length < total && (
-            <div className="settings-actions">
-              <button className="btn" disabled={loadingMore} onClick={() => void loadMore()}>
+            <div className="fx-center">
+              <Button busy={loadingMore} onClick={() => void loadMore()}>
                 {loadingMore ? 'Завантаження…' : 'Показати ще'}
-              </button>
+              </Button>
+              <span className="fx-meta">
+                показано {orders.length} з {total}
+              </span>
             </div>
           )}
           <Alert text={moreError} />

@@ -5,7 +5,7 @@ describe('changedFields / changedLabel', () => {
   it('groups TrackedFields keys and orders them for display', () => {
     const n = { images: [1], description: 'x', priceAmount: 1, priceDivisor: 100, currency: 'UAH', processingMax: 3 }
     expect(changedFields(n)).toEqual(['price', 'description', 'images', 'processing'])
-    expect(changedLabel(n)).toBe('ціна, опис, фото, час виготовлення')
+    expect(changedLabel(n)).toBe('ціна, опис, фото, час на підготовку')
   })
   it('a field set to null still counts as changed', () => {
     expect(changedLabel({ shopSectionId: null })).toBe('розділ магазину')

@@ -406,10 +406,10 @@ export interface InventoryOverviewPage {
 
 /** The MCP tools of this feature, in Ukrainian for the MCP modal. */
 export const INVENTORY_TOOL_SUMMARY: ReadonlyArray<{ name: string; text: string; write?: boolean }> = [
-  { name: 'get_my_product_inventory', text: 'варіанти мого лістингу: властивості, SKU, ціни, кількість, увімкнені' },
-  { name: 'get_my_inventory_overview', text: 'ціни й залишки моїх лістингів: діапазон цін, загальна кількість' },
-  { name: 'update_my_product_price', text: 'змінити ціну / кількість / SKU лістингу без варіацій', write: true },
-  { name: 'update_my_product_inventory', text: 'замінити всі варіанти лістингу (ціни, кількість, SKU, властивості)', write: true },
+  { name: 'get_my_product_inventory', text: 'варіанти мого товару: властивості, артикули, ціни, кількість, що продається' },
+  { name: 'get_my_inventory_overview', text: 'ціни й залишки моїх товарів: діапазон цін, загальна кількість' },
+  { name: 'update_my_product_price', text: 'змінити ціну / кількість / артикул товару без варіантів', write: true },
+  { name: 'update_my_product_inventory', text: 'замінити всі варіанти товару (ціни, кількість, артикули, властивості)', write: true },
   { name: 'get_my_variation_photos', text: 'які фото прив’язані до значень варіацій' },
   { name: 'set_my_variation_photos', text: 'прив’язати фото до значень варіацій', write: true }
 ]

@@ -1,14 +1,19 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { CategoryProperties, MarketSearch, ui } from '../../../src/renderer/src/features/market'
 import type { MarketListing, MarketSearchResult } from '../../../src/shared/features/market'
 import { formatPrice as fmt } from '../../../src/shared/format'
-import { mockFeature, setupRenderer, type Api } from '../helpers'
+import { GLOSSARY } from '../../../src/shared/glossary'
+import { useStore } from '../../../src/renderer/src/store'
+import { mkShop, mockFeature, setupRenderer, type Api } from '../helpers'
 
 let api: Api
 beforeEach(() => {
   api = setupRenderer()
+})
+afterEach(() => {
+  delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView
 })
 
 const mk = (id: number, over: Partial<MarketListing> = {}): MarketListing => ({
@@ -88,7 +93,44 @@ async function search() {
 
 describe('Пошук по всьому Etsy', () => {
   it('is a sidebar window', () => {
-    expect(ui.topModals).toEqual([{ id: 'market', button: '🔎 Пошук по Etsy', title: 'Пошук по всьому Etsy', Component: MarketSearch }])
+    expect(ui.topModals).toEqual([
+      {
+        id: 'market',
+        button: '🔎 Пошук по Etsy',
+        title: 'Пошук по всьому Etsy',
+        description: expect.stringMatching(/^Товари всіх магазинів Etsy/),
+        Component: MarketSearch
+      }
+    ])
+  })
+
+  it('before the first search: an explanation of what the window is for; the fields explain themselves', () => {
+    render(<MarketSearch />)
+    expect(screen.getByText('Шукайте серед усіх товарів Etsy')).toBeInTheDocument()
+    expect(screen.queryByTestId('market-summary')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Що таке «Ключові слова»?' })).toHaveAccessibleDescription(GLOSSARY['features.market.keywords'].short)
+    expect(screen.getByRole('button', { name: 'Що таке «Порядок результатів»?' })).toHaveAccessibleDescription(GLOSSARY['features.market.sort'].short)
+    expect(screen.getByRole('button', { name: 'Що таке «Розташування магазину»?' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Що таке «Категорія»?' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Категорія')).toHaveAccessibleDescription(/звужує пошук/)
+  })
+
+  it('"Очистити" empties the form (not the results); disabled while the form is empty', async () => {
+    mockFeature({ 'market.search': page([mk(1)]) })
+    render(<MarketSearch />)
+    const clear = screen.getByRole('button', { name: 'Очистити' })
+    expect(clear).toBeDisabled()
+    typeIn('Ключові слова', 'mug')
+    typeIn('Ціна до', '9')
+    fireEvent.change(screen.getByLabelText('Сортування'), { target: { value: 'newest' } })
+    await search()
+    expect(clear).toBeEnabled()
+    fireEvent.click(clear)
+    expect(screen.getByLabelText('Ключові слова')).toHaveValue('')
+    expect(screen.getByLabelText('Ціна до')).toHaveValue(null)
+    expect(screen.getByLabelText('Сортування')).toHaveValue('relevance')
+    expect(clear).toBeDisabled()
+    expect(screen.getAllByTestId('market-result')).toHaveLength(1)
   })
 
   it('searches with the form, shows cards and the price summary', async () => {
@@ -113,21 +155,25 @@ describe('Пошук по всьому Etsy', () => {
     })
     const cards = screen.getAllByTestId('market-result')
     expect(cards).toHaveLength(3)
-    expect(cards[0]).toHaveTextContent('Planner 1')
+    expect(within(cards[0]).getByRole('heading', { name: 'Planner 1' })).toHaveAttribute('title', 'Planner 1')
     expect(cards[0]).toHaveTextContent(formatPrice(1000, 100, 'USD'))
-    expect(cards[0]).toHaveTextContent('❤ 1 201')
-    expect(cards[0]).toHaveTextContent('👁 31')
-    expect(cards[0]).toHaveTextContent('Магазин #7001')
+    expect(within(cards[0]).getByText(/^В обраному/).parentElement).toHaveTextContent('В обраному: 1 201')
+    expect(within(cards[0]).getByText(/^В обраному/).parentElement).toHaveAccessibleDescription(GLOSSARY.favorites.short)
+    expect(within(cards[0]).getByText(/^Переглядів/).parentElement).toHaveTextContent('Переглядів: 31')
+    expect(within(cards[0]).getByText(/^Переглядів/).parentElement).toHaveAccessibleDescription(GLOSSARY.views.short)
+    expect(within(cards[0]).getByText('Магазин #7001')).toHaveAccessibleDescription(GLOSSARY['features.market.shopNumber'].short)
+    expect(within(cards[0]).getByRole('button', { name: 'Що це за ціна?' })).toHaveAccessibleDescription(GLOSSARY.basePrice.short)
     expect(cards[0].querySelector('img')).toHaveAttribute('src', 'https://i.etsystatic.com/1/il_570xN.1.jpg')
     expect(cards[2]).toHaveTextContent('Без фото')
-    expect(cards[2]).not.toHaveTextContent('❤')
-    expect(cards[2]).not.toHaveTextContent('👁')
+    expect(cards[2]).not.toHaveTextContent('В обраному')
+    expect(cards[2]).not.toHaveTextContent('Переглядів')
     const summary = screen.getByTestId('market-summary')
-    expect(summary).toHaveTextContent('Знайдено на Etsy: 12 345 · завантажено 3')
-    expect(summary).toHaveTextContent(
-      `USD (2): від ${formatPrice(10, 1, 'USD')} · медіана ${formatPrice(15, 1, 'USD')} · до ${formatPrice(20, 1, 'USD')}`
-    )
-    expect(summary).toHaveTextContent(`EUR (1): від ${formatPrice(30, 1, 'EUR')}`)
+    expect(within(summary).getByText('Знайдено на Etsy')).toHaveAccessibleDescription(GLOSSARY['features.market.found'].short)
+    expect(summary.firstElementChild).toHaveTextContent(new RegExp(`Знайдено на Etsy.*: 12 345 · завантажено 3$`))
+    const [usd, eur] = within(summary).getAllByText(/^(USD|EUR) \(/)
+    expect(usd).toHaveTextContent(new RegExp(`^USD \\(2\\): від ${formatPrice(10, 1, 'USD')} · медіана.* ${formatPrice(15, 1, 'USD')} · до ${formatPrice(20, 1, 'USD')}$`))
+    expect(within(usd).getByText('медіана')).toHaveAccessibleDescription(GLOSSARY['features.market.median'].short)
+    expect(eur).toHaveTextContent(`EUR (1): від ${formatPrice(30, 1, 'EUR')}`)
     expect(screen.getByRole('button', { name: 'Показати ще' })).toBeInTheDocument()
     expect(screen.queryByText(/Etsy не сортує/)).toBeNull()
   })
@@ -135,9 +181,12 @@ describe('Пошук по всьому Etsy', () => {
   it('a price range alone: the hint says the sort needs a search option; an unsorted answer says so', async () => {
     mockFeature({ 'market.search': page([mk(1)], { sorted: false }) })
     render(<MarketSearch />)
-    expect(screen.getByText(/Сортування діє лише разом із ключовими словами/)).toBeInTheDocument()
-    expect(screen.getByText(/не задокументовано/)).toBeInTheDocument()
-    expect(screen.queryByText(/у валюті продавця, без перерахунку;/)).toBeNull()
+    // What sorting needs and what the price range compares are explained by the fields' ⓘ.
+    expect(screen.getByLabelText('Сортування').closest('.ui-field')!.querySelector('.ui-infotip')).toHaveAccessibleDescription(
+      /Діє лише разом із ключовими словами, категорією чи розташуванням/
+    )
+    expect(screen.getByRole('button', { name: 'Що таке «Ціна від і до»?' })).toHaveAccessibleDescription(/у якій валюті їх порівнює/)
+    expect(screen.getByText('Заповніть хоча б одне поле. Ціни в результатах — у валюті продавця, без перерахунку.')).toBeInTheDocument()
     typeIn('Ціна до', '20')
     await search()
     expect(api.featureCall).toHaveBeenCalledWith('market', 'search', expect.objectContaining({ keywords: null, maxPrice: '20', offset: 0 }))
@@ -225,11 +274,15 @@ describe('Пошук по всьому Etsy', () => {
       details.dispatchEvent(new Event('toggle'))
     })
     expect(api.featureCall).toHaveBeenCalledWith('market', 'properties', { taxonomyId: 111 })
-    const props = screen.getByTestId('market-properties')
-    expect(props).toHaveTextContent('Primary color · обов’язкова · кілька значень (до 2) · шкали: Inches')
-    expect(props).toHaveTextContent('Red, Blue')
-    expect(props).toHaveTextContent('Occasion')
-    expect(props).toHaveTextContent('Довільне значення.')
+    const [color, occasion] = within(screen.getByTestId('market-properties')).getAllByTestId('market-property')
+    expect(color).toHaveTextContent('Primary color')
+    expect(within(color).getByText('обов’язкова')).toHaveAccessibleDescription(GLOSSARY['features.market.requiredProperty'].short)
+    expect(within(color).getByText('кілька значень (до 2)')).toHaveAccessibleDescription(GLOSSARY['features.market.multivalued'].short)
+    expect(within(color).getByText('шкали: Inches')).toHaveAccessibleDescription(GLOSSARY['features.market.scale'].short)
+    expect(color).toHaveTextContent('Red, Blue')
+    expect(occasion).toHaveTextContent('Occasion')
+    expect(occasion).not.toHaveTextContent('обов’язкова')
+    expect(occasion).toHaveTextContent('Довільне значення — продавець вписує своє.')
 
     await search()
     expect(api.featureCall).toHaveBeenLastCalledWith('market', 'search', expect.objectContaining({ taxonomyId: 111, keywords: null }))
@@ -363,5 +416,127 @@ describe('Пошук по всьому Etsy', () => {
     await act(async () => resolve(page([mk(1)])))
     expect(screen.queryByText('Завантаження…')).toBeNull()
     expect(screen.getAllByTestId('market-result')).toHaveLength(1)
+  })
+
+  it('a shop the user already tracks: its name, "ви стежите" and "Відкрити в програмі" instead of following it again', async () => {
+    useStore.setState({ shops: [mkShop({ id: 7001, shopName: 'FoxPrints' })], featureModal: 'market' })
+    mockFeature({ 'market.search': page([mk(1), mk(2)]) })
+    render(<MarketSearch />)
+    typeIn('Ключові слова', 'mug')
+    await search()
+    const [tracked, other] = screen.getAllByTestId('market-result')
+    expect(tracked).toHaveTextContent('FoxPrints')
+    expect(tracked).not.toHaveTextContent('Магазин #7001')
+    expect(within(tracked).getByText('ви стежите')).toHaveAccessibleDescription(/уже у вашому списку зліва/)
+    expect(within(tracked).queryByRole('button', { name: 'Стежити за магазином' })).toBeNull()
+    expect(within(other).getByText('Магазин #7002')).toBeInTheDocument()
+    expect(within(other).getByRole('button', { name: 'Стежити за магазином' })).toBeEnabled()
+    await act(async () => {
+      fireEvent.click(within(tracked).getByRole('button', { name: 'Відкрити в програмі' }))
+    })
+    expect(api.featureCall).not.toHaveBeenCalledWith('market', 'shopName', expect.anything())
+    expect(api.addShop).not.toHaveBeenCalled()
+    expect(useStore.getState().featureModal).toBeNull()
+    expect(useStore.getState().activeShopId).toBe(7001)
+  })
+
+  it('the category input is a combobox: ↓/↑ walk the suggestions, Enter picks, Escape closes the list only', async () => {
+    mockFeature({ 'market.categories': CATS, 'market.properties': [] })
+    render(<MarketSearch />)
+    const input = screen.getByRole('combobox', { name: 'Категорія' })
+    expect(input).toHaveAttribute('aria-expanded', 'false')
+    await act(async () => {
+      typeIn('Категорія', 'mug')
+    })
+    expect(input).toHaveAttribute('aria-expanded', 'true')
+    const list = screen.getByRole('listbox', { name: 'Категорії' })
+    expect(input).toHaveAttribute('aria-controls', list.id)
+    const options = within(list).getAllByRole('option')
+    expect(options.map((o) => o.getAttribute('aria-selected'))).toEqual(['false', 'false'])
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    expect(input).toHaveAttribute('aria-activedescendant', options[1].id)
+    expect(options[1]).toHaveAttribute('aria-selected', 'true')
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    expect(input).toHaveAttribute('aria-activedescendant', options[0].id)
+    fireEvent.keyDown(input, { key: 'ArrowUp' })
+    expect(input).toHaveAttribute('aria-activedescendant', options[1].id)
+    // Escape closes the suggestions; the event is marked handled, so the window stays open.
+    const esc = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    act(() => {
+      input.dispatchEvent(esc)
+    })
+    expect(esc.defaultPrevented).toBe(true)
+    expect(screen.queryByRole('listbox')).toBeNull()
+    expect(input).toHaveAttribute('aria-expanded', 'false')
+    await act(async () => {
+      typeIn('Категорія', 'mugs')
+    })
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Категорія' }), { key: 'ArrowUp' })
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Категорія' }), { key: 'Enter' })
+    expect(screen.getByLabelText('Категорія')).toHaveValue('Home & Living › Kitchen › Mug rugs')
+    expect(screen.getByTestId('market-category-properties')).toHaveTextContent(GLOSSARY['features.market.categoryProperties'].short)
+  })
+
+  it('a failed search offers "Спробувати ще" (the same query again)', async () => {
+    mockFeature({ 'market.search': { ok: false, error: 'Немає з’єднання з Etsy.' } })
+    render(<MarketSearch />)
+    typeIn('Ключові слова', 'mug')
+    await search()
+    expect(screen.getByRole('alert')).toHaveTextContent('Немає з’єднання з Etsy.')
+    mockFeature({ 'market.search': page([mk(1)]) })
+    typeIn('Ключові слова', 'changed but not submitted')
+    await act(async () => {
+      fireEvent.click(within(screen.getByRole('alert')).getByRole('button', { name: 'Спробувати ще' }))
+    })
+    expect(api.featureCall).toHaveBeenLastCalledWith('market', 'search', expect.objectContaining({ keywords: 'mug', offset: 0 }))
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getAllByTestId('market-result')).toHaveLength(1)
+  })
+
+  it('a failed "Показати ще" retries that page', async () => {
+    mockFeature({ 'market.search': (a: Record<string, unknown>) => (a.offset === 0 ? page([mk(1)], { count: 30 }) : { ok: false, error: 'HTTP 500' }) })
+    render(<MarketSearch />)
+    typeIn('Ключові слова', 'mug')
+    await search()
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Показати ще' }))
+    })
+    expect(screen.getByRole('alert')).toHaveTextContent('HTTP 500')
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Спробувати ще' }))
+    })
+    expect(api.featureCall).toHaveBeenLastCalledWith('market', 'search', expect.objectContaining({ offset: 24 }))
+    expect(screen.getAllByTestId('market-result')).toHaveLength(1)
+  })
+
+  it('a new search brings its results into view (the form fills a small window); "Показати ще" does not jump', async () => {
+    const scroll = vi.fn()
+    Element.prototype.scrollIntoView = scroll
+    mockFeature({ 'market.search': (a: Record<string, unknown>) => page([mk(a.offset === 0 ? 1 : 2)], { count: 30, offset: a.offset as number }) })
+    render(<MarketSearch />)
+    typeIn('Ключові слова', 'mug')
+    await search()
+    expect(scroll).toHaveBeenCalledTimes(1)
+    expect(scroll.mock.instances[0]).toBe(screen.getByTestId('market-summary').parentElement)
+    expect(scroll).toHaveBeenCalledWith(expect.objectContaining({ block: 'start' }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Показати ще' }))
+    })
+    expect(screen.getAllByTestId('market-result')).toHaveLength(2)
+    expect(scroll).toHaveBeenCalledTimes(1)
+  })
+
+  it('category properties failing → "Спробувати ще" loads them again', async () => {
+    mockFeature({ 'market.properties': { ok: false, error: 'HTTP 503' } })
+    render(<CategoryProperties taxonomyId={6} />)
+    await act(async () => {})
+    expect(screen.getByRole('alert')).toHaveTextContent('HTTP 503')
+    mockFeature({ 'market.properties': PROPS })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Спробувати ще' }))
+    })
+    expect(api.featureCall).toHaveBeenCalledTimes(2)
+    expect(screen.getAllByTestId('market-property')).toHaveLength(2)
   })
 })

@@ -95,7 +95,7 @@ describe('personalizationProblems', () => {
     expect(personalizationProblems([q({ options: [{ id: null, label: 'A' }] })])).toEqual([
       'Питання 1: варіанти бувають лише у списку і файлів з підписами.'
     ])
-    expect(personalizationProblems([q({ type: 'dropdown', options: [] })])).toEqual(['Питання 1: додайте хоча б один варіант.'])
+    expect(personalizationProblems([q({ type: 'dropdown', options: [] })])).toEqual(['Питання 1: додайте хоча б одну відповідь.'])
     expect(personalizationProblems([q({ type: 'dropdown', options: [{ id: null, label: '' }, { id: null, label: 'x'.repeat(21) }] })])).toEqual([
       'Питання 1: варіант не може бути порожнім.',
       `Питання 1: варіант «${'x'.repeat(21)}» довший за 20 символів.`

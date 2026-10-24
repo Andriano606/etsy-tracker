@@ -196,7 +196,7 @@ export async function scanAll(ctx: IpcContext): Promise<ScanOutcome[]> {
     notifyShopsChanged(ctx)
     const last = out[out.length - 1]
     if (last.ok) {
-      startImageSync(ctx, s.id)
+      startImageSync(ctx, s.id, false, true)
       startReviewSync(ctx, s.id, last.scan.id)
     }
     // A bad key fails every shop the same way — stop instead of repeating it.
@@ -209,8 +209,13 @@ export async function scanAll(ctx: IpcContext): Promise<ScanOutcome[]> {
  * After a successful scan: copy its new/changed images to MinIO in the
  * background. Never awaited by the scan and never able to fail it.
  */
-export function startImageSync(ctx: Pick<IpcContext, 'images'>, shopId: number | null, force = false): void {
-  ctx.images?.sync({ shopId, force }).catch(() => undefined)
+export function startImageSync(
+  ctx: Pick<IpcContext, 'images'>,
+  shopId: number | null,
+  force = false,
+  retryErrors = false
+): void {
+  ctx.images?.sync({ shopId, force, retryErrors }).catch(() => undefined)
 }
 
 /**
@@ -355,7 +360,8 @@ export function registerIpc(ctx: IpcContext): void {
     try {
       const res = await scanner.scanShop(shopId)
       if (res.ok) {
-        startImageSync(ctx, shopId)
+        // A scan refreshes everything: photos (failed ones retried too) and reviews follow it.
+        startImageSync(ctx, shopId, false, true)
         startReviewSync(ctx, shopId, res.scan.id)
       }
       return res
@@ -448,7 +454,7 @@ export function registerIpc(ctx: IpcContext): void {
     'myShop:listings',
     (_e, state: unknown, offset?: unknown): Promise<MyShopResult<MyListingsPage>> =>
       result(() => {
-        if (!isMyListingState(state)) throw new Error('Невідомий стан лістингів.')
+        if (!isMyListingState(state)) throw new Error('Невідомий стан товарів.')
         const off = Number(offset ?? 0)
         return listMyListings(own, state, Number.isSafeInteger(off) && off > 0 ? off : 0)
       })
@@ -467,7 +473,7 @@ export function registerIpc(ctx: IpcContext): void {
     const images = kind === 'images'
     const videos = kind === 'videos'
     const res = await openDialog({
-      title: images ? 'Фото для лістингу' : videos ? 'Відео для лістингу' : 'Файли для покупця',
+      title: images ? 'Фото для товару' : videos ? 'Відео для товару' : 'Файли для покупця',
       properties: videos ? ['openFile'] : ['openFile', 'multiSelections'],
       filters: images
         ? [{ name: 'Фото', extensions: IMAGE_EXTENSIONS }]
@@ -581,7 +587,7 @@ export function registerIpc(ctx: IpcContext): void {
     (_e, listingId: unknown, patch: MyListingPatch): Promise<MyShopResult<MyListing>> =>
       result(() => {
         const id = positiveId(listingId)
-        if (id == null) throw new Error('Некоректний id лістингу.')
+        if (id == null) throw new Error('Некоректний id товару.')
         return saveMyListing(own, id, patch ?? {})
       })
   )

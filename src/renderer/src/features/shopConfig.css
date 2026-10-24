@@ -1,46 +1,616 @@
-/* Feature "shopConfig" (Мій магазин → Розділи / Доставка / Обробка / Повернення / Свята / Партнери). */
+/* Feature "shopConfig" (Мій магазин → Розділи / Доставка / Обробка / Повернення / Свята / Партнери)
+   and the layout kit both own-shop features share (features/shopConfig/kit.tsx, classes "fx-"). */
 
-.sc-form {
-  margin-top: 12px;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg);
+/* ---------------------------------------------------------------- page */
+.fx-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  min-width: 0;
+  container-type: inline-size;
 }
-.sc-form h4,
-[data-testid='sc-destinations'] h4,
-[data-testid='sc-upgrades'] h4,
-[data-testid='sc-policy-listings'] h4 {
-  font-size: 13px;
-  margin: 14px 0 8px;
+.fx-page--compact {
+  gap: var(--sp-3);
+}
+.fx-intro {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-3) var(--sp-4);
+  min-width: 0;
+}
+.fx-intro-text {
+  flex: 1 1 440px;
+  min-width: 0;
+}
+.fx-intro-title {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-1);
+  color: var(--text);
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  line-height: var(--lh-tight);
+}
+.fx-intro-title > .ui-icon {
+  color: var(--accent);
+  flex: none;
+}
+.fx-intro-desc {
+  margin: 0;
+  max-width: 72ch;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  line-height: var(--lh);
+}
+.fx-intro-action {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+.fx-detail-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.fx-detail-title {
+  flex: 1 1 0;
+  min-width: 0;
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+.fx-subhead {
+  margin: 0 0 var(--sp-2);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.fx-block {
+  min-width: 0;
+}
+.fx-title {
+  color: var(--text);
+  font-weight: 500;
+}
+.fx-meta {
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-weight: 400;
+}
+.fx-muted {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  line-height: var(--lh);
+}
+.fx-example {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+  background: var(--bg-3);
+  color: var(--text-body);
+  font-size: var(--fs-sm);
+  line-height: var(--lh);
+}
+.fx-example strong {
   color: var(--text);
 }
-.sc-form h4:first-child {
-  margin-top: 0;
+.fx-center {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-3);
 }
-.sc-form .radio-row {
-  margin-bottom: 10px;
-}
-.sc-form label.check {
-  margin-bottom: 6px;
-  font-size: 13px;
-}
-td.sc-actions {
-  white-space: nowrap;
-  text-align: right;
-}
-td.sc-actions .btn.small:first-child {
-  margin-left: 0;
-}
-.data-table td input {
-  background: var(--bg);
+
+/* ---------------------------------------------------------------- cards */
+.fx-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  min-width: 0;
+  padding: var(--sp-4);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 4px 8px;
+  border-radius: var(--r-md);
+  background: var(--bg);
+  container-type: inline-size;
+}
+.fx-card--form {
+  border-color: var(--accent-line);
+}
+.fx-card--danger {
+  border-color: var(--danger-line);
+}
+.fx-card > .fx-card {
+  background: var(--bg-2);
+}
+.fx-card-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
   color: var(--text);
-  font-size: 12.5px;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  line-height: 1.35;
+}
+.fx-card-desc {
+  margin: calc(-1 * var(--sp-2)) 0 0;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  line-height: var(--lh);
+}
+.fx-card-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--hairline);
+}
+.fx-card .ui-field,
+.fx-card .ui-form-grid > .ui-field {
+  margin-bottom: 0;
+}
+.fx-card .ui-form-grid {
+  row-gap: var(--sp-3);
+}
+.fx-grid-2 {
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+}
+.fx-grid-3 {
+  grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr));
+}
+
+/* ---------------------------------------------------------------- form steps */
+.fx-step {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.fx-step + .fx-step {
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--hairline);
+}
+.fx-step-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-3);
+  padding: 0;
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.fx-step-n {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-pill);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+}
+.fx-step-title {
+  min-width: 0;
+}
+.fx-step-desc {
+  margin: calc(-1 * var(--sp-2)) 0 var(--sp-3) 30px;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  line-height: var(--lh);
+}
+.fx-step-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+.fx-delivery {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+.fx-delivery-mode {
+  min-width: 0;
+}
+
+/* ---------------------------------------------------------------- choice cards */
+.fx-choices {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+  gap: var(--sp-2);
+}
+.fx-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+  padding: var(--sp-3);
+  border: 1px solid var(--border-control);
+  border-radius: var(--r-md);
+  background: var(--bg-input);
+  cursor: pointer;
+  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+.fx-choice:hover {
+  border-color: var(--border-hover);
+}
+.fx-choice.is-on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.fx-choice:has(input:focus-visible) {
+  outline: 2px solid var(--focus-color);
+  outline-offset: 2px;
+}
+.fx-choice input {
+  flex: none;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+.fx-choice-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.fx-choice-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.fx-choice-desc {
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  line-height: var(--lh);
+}
+
+/* ---------------------------------------------------------------- inline forms, lists */
+.fx-inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+.fx-inline-form > .ui-field {
+  flex: 1 1 260px;
+  margin-bottom: 0;
+}
+.fx-inline-form > .btn,
+.fx-inline-form > .ui-tooltip-anchor {
+  margin-top: 24px;
+}
+.fx-inline-form select {
   width: 100%;
 }
-.sc-add {
-  margin-top: 12px;
+input.fx-inline-input {
+  width: 100%;
+  min-height: var(--control-h-sm);
+}
+.fx-toggles {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.fx-switch-list,
+.fx-list,
+.fx-cards {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.fx-switch-list {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg);
+}
+.fx-switch-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+  padding: 10px var(--sp-3);
+}
+.fx-switch-row + .fx-switch-row {
+  border-top: 1px solid var(--hairline);
+}
+.fx-switch-text {
+  flex: 1 1 0;
+}
+.fx-list-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-1) var(--sp-3);
+  min-width: 0;
+  padding: var(--sp-2) 0;
+  font-size: var(--fs-sm);
+  color: var(--text-body);
+}
+.fx-list-row + .fx-list-row {
+  border-top: 1px solid var(--hairline);
+}
+.fx-list-row > .truncate {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+.fx-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr));
+  gap: var(--sp-2);
+}
+.fx-mini-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+  padding: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  font-size: var(--fs-sm);
+}
+.fx-mini-icon {
+  flex: none;
+  color: var(--accent);
+}
+.fx-yesno {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-dim);
+}
+.fx-yesno.is-yes {
+  color: var(--accent);
+}
+.fx-where {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.fx-where > .ui-icon {
+  flex: none;
+  color: var(--text-dim);
+}
+.fx-amount.is-in {
+  color: var(--accent);
+}
+.fx-amount.is-out {
+  color: var(--danger-text);
+}
+
+/* ---------------------------------------------------------------- facts */
+.fx-facts {
+  display: grid;
+  grid-template-columns: minmax(110px, max-content) minmax(0, 1fr);
+  gap: var(--sp-2) 0;
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+.fx-fact {
+  display: contents;
+}
+.fx-facts dt {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  padding-right: var(--sp-4);
+  color: var(--text-dim);
+}
+.fx-facts dd {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-1);
+  min-width: 0;
+  margin: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.fx-facts--money dd {
+  align-items: flex-end;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.fx-fact.is-strong dt,
+.fx-fact.is-strong dd {
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--border);
+  color: var(--text);
+  font-weight: 600;
+}
+@container (max-width: 380px) {
+  .fx-facts:not(.fx-facts--money) {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 2px;
+  }
+  .fx-facts:not(.fx-facts--money) dd {
+    margin-bottom: var(--sp-2);
+  }
+}
+
+/* ---------------------------------------------------------------- the responsive table */
+.fx-table-wrap {
+  min-width: 0;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg);
+}
+.fx-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: var(--fs-sm);
+}
+.fx-table th {
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  text-align: left;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+.fx-th {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.fx-table td {
+  padding: 10px var(--sp-3);
+  border-bottom: 1px solid var(--hairline);
+  color: var(--text-body);
+  vertical-align: middle;
+}
+.fx-table tbody tr:last-child > td {
+  border-bottom: 0;
+}
+.fx-table tbody tr:hover > td {
+  background: rgba(255, 255, 255, 0.018);
+}
+.fx-table .fx-td-end {
+  text-align: right;
+}
+.fx-table .fx-td-primary {
+  min-width: 140px;
+  color: var(--text);
+}
+.fx-td-v {
+  min-width: 0;
+}
+.fx-td-primary .fx-td-v {
+  display: flex;
+  flex-direction: column;
+  /* Chips (Badge) keep their own width instead of stretching into a bar. */
+  align-items: flex-start;
+  gap: 2px;
+}
+.fx-td-primary .fx-td-v > .truncate,
+.fx-td-primary .fx-td-v > .clamp-2 {
+  max-width: 100%;
+}
+.fx-table td.fx-td-actions {
+  width: 1%;
+  white-space: nowrap;
+}
+.fx-row-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.fx-table tr.is-open > td {
+  background: var(--bg-3);
+}
+.fx-table tr.fx-subrow > td {
+  padding: var(--sp-3);
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+}
+
+/* Narrow (DataTable measures itself and sets .is-stacked): every row becomes a card —
+   "label  value" lines, the title on top, the buttons at the bottom. */
+.fx-table.is-stacked thead {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.fx-table.is-stacked,
+.fx-table.is-stacked tbody {
+  display: block;
+}
+.fx-table.is-stacked tr {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: var(--sp-2) var(--sp-4);
+  padding: var(--sp-3);
+  border-bottom: 1px solid var(--border);
+}
+.fx-table.is-stacked tbody tr:last-child {
+  border-bottom: 0;
+}
+.fx-table.is-stacked td {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+  max-width: none;
+  width: auto;
+  padding: 0;
+  border: 0;
+  text-align: left;
+  background: none;
+}
+.fx-table.is-stacked td::before {
+  content: attr(data-label);
+  color: var(--text-dim);
+  font-size: var(--fs-2xs);
+}
+.fx-table.is-stacked .fx-td-v {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.fx-table.is-stacked td.fx-td-primary,
+.fx-table.is-stacked td.fx-td-full,
+.fx-table.is-stacked td.fx-td-actions {
+  grid-column: 1 / -1;
+}
+.fx-table.is-stacked td.fx-td-primary {
+  font-size: var(--fs-md);
+}
+.fx-table.is-stacked td.fx-td-primary .fx-td-v {
+  width: 100%;
+}
+.fx-table.is-stacked td.fx-td-primary::before,
+.fx-table.is-stacked td.fx-td-full::before,
+.fx-table.is-stacked td.fx-td-actions::before {
+  content: none;
+}
+.fx-table.is-stacked td.fx-td-actions {
+  display: block;
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--hairline);
+  white-space: normal;
+}
+.fx-table.is-stacked .fx-row-actions {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+.fx-table.is-stacked tr.is-open,
+.fx-table.is-stacked tr.fx-subrow {
+  background: var(--bg-3);
+}
+
+/* Why a form can't be sent yet (shown under its fields, the button stays off). */
+.fx-field-error {
+  display: flex;
+  gap: 6px;
+  margin: calc(-1 * var(--sp-2)) 0 0;
+  color: var(--warn);
+  font-size: var(--fs-xs);
+  line-height: var(--lh);
 }

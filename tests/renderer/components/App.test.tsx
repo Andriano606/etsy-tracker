@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
+import { GLOSSARY } from '../../../src/shared/glossary'
 import type { Quota, ScanProgress, ShopSummary } from '../../../src/shared/types'
 import { App } from '../../../src/renderer/src/App'
 import { useStore } from '../../../src/renderer/src/store'
@@ -16,19 +17,28 @@ describe('App empty states', () => {
     api.getKeyStatus.mockResolvedValue(noKey)
     render(<App />)
     expect(await screen.findByTestId('no-key')).toBeInTheDocument()
-    expect(screen.getByText(/Почнімо з API-ключа Etsy/)).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /Почнімо з ключа доступу до Etsy/ })).toBeInTheDocument()
+    // Step by step: get the key, paste it in Settings, add a shop.
+    expect(screen.getByRole('heading', { name: /Крок 1\. Отримайте ключ доступу/ })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /Крок 2\. Вставте ключ у Налаштуваннях/ })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /Крок 3\. Додайте магазин/ })).toBeInTheDocument()
     expect(screen.getAllByText(/Keystring/).length).toBeGreaterThan(0)
     expect(screen.getByText('etsy.com/developers/register')).toBeInTheDocument()
-    fireEvent.click(screen.getByText('Відкрити налаштування'))
+    // Etsy words are explained where they appear.
+    expect(screen.getByText('Personal App')).toHaveAccessibleDescription(GLOSSARY['shell.personalApp'].short)
+    expect(screen.getByText('ключ доступу')).toHaveAccessibleDescription(GLOSSARY.apiKey.short)
+    fireEvent.click(screen.getByRole('button', { name: 'Відкрити налаштування' }))
     expect(useStore.getState().showSettings).toBe(true)
     expect(screen.getByRole('heading', { name: 'Налаштування' })).toBeInTheDocument()
   })
 
   it('with a key but no shops: prompts to add the first shop', async () => {
     render(<App />)
-    expect(await screen.findByTestId('no-shops')).toBeInTheDocument()
-    fireEvent.click(screen.getAllByText('+ Додати магазин')[1])
-    expect(screen.getByRole('heading', { name: 'Додати магазин' })).toBeInTheDocument()
+    const empty = await screen.findByTestId('no-shops')
+    expect(within(empty).getByText('Що буде далі')).toBeInTheDocument()
+    expect(within(empty).getByText('базове сканування')).toHaveAccessibleDescription(GLOSSARY.baseline.short)
+    fireEvent.click(within(empty).getByRole('button', { name: 'Додати магазин' }))
+    expect(screen.getByRole('dialog', { name: 'Додати магазин' })).toBeInTheDocument()
   })
 
   it('with shops: opens the first shop and shows the Etsy notice', async () => {
@@ -43,7 +53,7 @@ describe('App empty states', () => {
     api.getKeyStatus.mockResolvedValue(noKey)
     api.listShops.mockResolvedValue([mkShop()])
     render(<App />)
-    expect(await screen.findByText(/API-ключ Etsy не задано/)).toBeInTheDocument()
+    expect(await screen.findByText(/Etsy не задано/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Сканувати' })).toBeDisabled()
   })
 
@@ -69,13 +79,13 @@ describe('App empty states', () => {
     act(() => pushState({ shopId: 1, running: true }))
     expect(screen.getAllByLabelText('Сканування').length).toBeGreaterThan(0)
     act(() => pushProgress({ shopId: 1, phase: 'pages', done: 2, total: 5, label: 'Сторінка 2/5' }))
-    expect(screen.getAllByText('Сторінка 2/5').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Читаю список товарів: сторінка 2 з 5').length).toBeGreaterThan(0)
     act(() => pushState({ shopId: 1, running: false }))
     expect(screen.queryByLabelText('Сканування')).toBeNull()
-    expect(screen.queryByText('Сторінка 2/5')).toBeNull()
+    expect(screen.queryByText('Читаю список товарів: сторінка 2 з 5')).toBeNull()
 
     act(() => pushQuota({ limitPerDay: 10000, remainingToday: 4321, limitPerSecond: 10, remainingThisSecond: 9, at: 0 }))
-    expect(screen.getByText(/Запитів сьогодні: 4\s321 \/ 10\s000/)).toBeInTheDocument()
+    expect(screen.getByText(/Залишилось 4\s321 з 10\s000/)).toBeInTheDocument()
   })
 
   it('unsubscribes from main-process events on unmount', async () => {
@@ -88,6 +98,27 @@ describe('App empty states', () => {
     await screen.findByTestId('no-shops')
     unmount()
     for (const off of offs) expect(off).toHaveBeenCalled()
+  })
+})
+
+describe('App shell', () => {
+  it('a global error shows above the shop and closes with ×', async () => {
+    api.listShops.mockResolvedValue([mkShop({ lastOkScan: mkScan() })])
+    render(<App />)
+    await screen.findByRole('heading', { level: 1, name: /CeramicStudioUA/ })
+    act(() => useStore.getState().setError('Etsy не відповідає.'))
+    expect(screen.getByRole('alert')).toHaveTextContent('Etsy не відповідає.')
+    fireEvent.click(screen.getByRole('button', { name: 'Закрити повідомлення' }))
+    expect(screen.queryByText('Etsy не відповідає.')).toBeNull()
+    expect(useStore.getState().error).toBeNull()
+  })
+
+  it('shops but none selected: asks to pick one in the sidebar', async () => {
+    api.listShops.mockResolvedValue([mkShop()])
+    render(<App />)
+    await screen.findByRole('heading', { level: 1, name: /CeramicStudioUA/ })
+    await act(() => useStore.getState().selectShop(null))
+    expect(screen.getByText('Виберіть магазин зліва')).toBeInTheDocument()
   })
 })
 

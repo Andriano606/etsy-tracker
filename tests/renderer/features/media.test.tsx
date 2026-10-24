@@ -2,7 +2,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { ui } from '../../../src/renderer/src/features/media'
+import { localSize } from '../../../src/renderer/src/features/media/FileList'
+import { panelMeta } from '../../../src/renderer/src/features/LazyDetails'
 import { ConfirmModal } from '../../../src/renderer/src/components/ConfirmModal'
+import { useStore } from '../../../src/renderer/src/store'
 import type { ListingMedia, MediaPhoto } from '../../../src/shared/features/media'
 import type { MyListing } from '../../../src/shared/types'
 import { mockFeature, setupRenderer, type Api } from '../helpers'
@@ -81,39 +84,52 @@ const click = (el: HTMLElement) => act(async () => void fireEvent.click(el))
 const confirm = () => click(screen.getByRole('button', { name: 'Підтвердити' }))
 const cancel = () => click(screen.getByRole('button', { name: 'Скасувати' }))
 const inPhoto = (id: number) => within(screen.getByTestId(`media-photo-${id}`))
+/** The question the in-app confirmation is asking right now (null = none open). */
+const asked = () => useStore.getState().confirmRequest?.message ?? null
 const picks = (...files: Array<[string, number?]>) =>
   api.pickListingFiles.mockResolvedValueOnce(files.map(([name, size = 1000], i) => ({ token: `t${i + 1}`, name, size })))
 
 describe('Фото, відео й файли — loading', () => {
   it('is registered as an own-listing section', () => {
     expect(ui.ownListingSections!.map((s) => [s.id, s.label])).toEqual([['media', 'Фото, відео й файли']])
+    expect(panelMeta(ui.ownListingSections![0])).toEqual({ icon: 'photo', description: expect.stringMatching(/^Фото й відео на сторінці товару/) })
   })
 
   it('loads the media of the listing on mount and shows photos, video and files', async () => {
     let resolve: (v: ListingMedia) => void = () => {}
     mockFeature({ 'media.load': () => new Promise((r) => (resolve = r)) })
     await show()
-    expect(screen.getByText('Завантаження…')).toBeInTheDocument()
+    expect(screen.getByText('Завантаження фото, відео й файлів…')).toBeInTheDocument()
     expect(api.featureCall).toHaveBeenCalledWith('media', 'load', { listingId: L })
     await act(async () => resolve(media()))
     const sec = screen.getByTestId('media-section')
-    expect(within(sec).getByText('Фото: 3 з 10')).toBeInTheDocument()
+    const photos = screen.getByTestId('media-photos')
+    expect(within(photos).getByRole('heading', { name: 'Фото' })).toBeInTheDocument()
+    expect(photos).toHaveTextContent('3 з 10')
+    expect(sec).toContainElement(photos)
     expect(inPhoto(11).getByRole('img')).toHaveAttribute('src', cdn(11, '170x135'))
     expect(inPhoto(11).getByRole('img')).toHaveAttribute('alt', 'Alt 11')
-    expect(screen.getByTestId('media-photo-11')).toHaveTextContent('№1 · головне · 1500×2000')
-    expect(inPhoto(12).getByLabelText('Alt-текст фото №2')).toHaveValue('Alt 12')
-    expect(inPhoto(11).getByRole('button', { name: '↑ Вище' })).toBeDisabled()
+    expect(screen.getByTestId('media-photo-11')).toHaveTextContent('Головне')
+    expect(screen.getByTestId('media-photo-11')).toHaveTextContent('1500×2000 пікс.')
+    expect(screen.getByTestId('media-photo-12')).not.toHaveTextContent('Головне')
+    expect(inPhoto(12).getByRole('group', { name: 'Дії з фото №2' })).toBeInTheDocument()
+    expect(inPhoto(12).getByLabelText('Опис фото №2 для пошуку')).toHaveValue('Alt 12')
+    expect(inPhoto(11).getByRole('button', { name: 'Пересунути вище' })).toBeDisabled()
     expect(inPhoto(11).getByRole('button', { name: 'Зробити головним' })).toBeDisabled()
-    expect(inPhoto(12).getByRole('button', { name: '↑ Вище' })).toBeEnabled()
+    expect(inPhoto(12).getByRole('button', { name: 'Пересунути вище' })).toBeEnabled()
     const video = screen.getByTestId('media-video')
     expect(video).toHaveTextContent('Стан: неактивне (ще обробляється або вимкнене)')
     expect(within(video).getByRole('img')).toHaveAttribute('src', 'https://v.etsystatic.com/video/31/thumb.jpg')
     expect(within(video).getByRole('button', { name: 'Замінити відео' })).toBeInTheDocument()
     const files = screen.getByTestId('media-files')
-    expect(files).toHaveTextContent('Файли для покупця: 2 з 5')
+    expect(within(files).getByRole('heading', { name: 'Файли для покупця' })).toBeInTheDocument()
+    expect(files).toHaveTextContent('2 з 5')
+    expect(files).toHaveTextContent('PDF')
     expect(files).toHaveTextContent('planner.pdf')
     expect(files).toHaveTextContent('1,2 МБ')
-    expect(files).toHaveTextContent('20 KB')
+    // Etsy's own size label in Ukrainian units, like formatBytes.
+    expect(files).toHaveTextContent('20 КБ')
+    expect(files).not.toHaveTextContent('KB')
   })
 
   it('a refused part is hidden with its note; a load error has "Спробувати ще"', async () => {
@@ -139,14 +155,17 @@ describe('Фото', () => {
       'media.restorePhoto': media()
     })
     await show()
-    await click(inPhoto(12).getByRole('button', { name: 'Видалити' }))
-    expect(screen.getByText('Видалити фото №2 з лістингу?')).toBeInTheDocument()
+    await click(inPhoto(12).getByRole('button', { name: 'Видалити фото' }))
+    expect(asked()).toBe('Видалити фото №2 з товару?')
     await cancel()
     expect(calls('deletePhoto')).toHaveLength(0)
-    await click(inPhoto(12).getByRole('button', { name: 'Видалити' }))
+    await click(inPhoto(12).getByRole('button', { name: 'Видалити фото' }))
     await confirm()
     expect(calls('deletePhoto')[0][2]).toEqual({ listingId: L, imageId: 12 })
-    expect(screen.getByRole('status')).toHaveTextContent('Фото №2 видалено.')
+    // "Повернути" is in the (sticky) result note itself.
+    const note = screen.getByRole('status')
+    expect(note).toHaveTextContent('Фото №2 видалено. Etsy зберігає його копію, тож його можна повернути.')
+    expect(within(note).getByRole('button', { name: 'Повернути' })).toBeInTheDocument()
     expect(screen.queryByTestId('media-photo-12')).toBeNull()
     await click(screen.getByRole('button', { name: 'Повернути' }))
     expect(calls('restorePhoto')[0][2]).toEqual({ listingId: L, imageId: 12, position: 2, altText: 'Alt 12', watermarked: false })
@@ -154,25 +173,50 @@ describe('Фото', () => {
     expect(screen.queryByRole('button', { name: 'Повернути' })).toBeNull()
   })
 
+  it('a failed "Повернути" keeps offering it on the error note; it uses the watermark switch as it is then', async () => {
+    let n = 0
+    mockFeature({
+      'media.load': () => (n > 0 ? media({ photos: [photo(11, 1), photo(13, 2)] }) : media()),
+      'media.deletePhoto': () => {
+        n++
+        return media({ photos: [photo(11, 1), photo(13, 2)] })
+      },
+      'media.restorePhoto': () => (n++ === 1 ? { ok: false, error: 'Немає з’єднання з Etsy.' } : media())
+    })
+    await show()
+    await click(inPhoto(12).getByRole('button', { name: 'Видалити фото' }))
+    await confirm()
+    // Switched after the delete: the restore still sends the current value.
+    fireEvent.click(screen.getByLabelText('З водяним знаком'))
+    await click(screen.getByRole('button', { name: 'Повернути' }))
+    const err = screen.getByRole('alert')
+    expect(err).toHaveTextContent('Немає з’єднання з Etsy.')
+    await click(within(err).getByRole('button', { name: 'Повернути' }))
+    expect(calls('restorePhoto')).toHaveLength(2)
+    expect(calls('restorePhoto')[1][2]).toMatchObject({ imageId: 12, position: 2, watermarked: true })
+    expect(screen.getByRole('status')).toHaveTextContent('Фото повернуто.')
+    expect(screen.queryByRole('button', { name: 'Повернути' })).toBeNull()
+  })
+
   it('alt text: saved without asking on a draft; an active listing asks first', async () => {
     mockFeature({ 'media.load': media(), 'media.setAltText': media({ photos: [photo(11, 1), photo(12, 2, { altText: 'Лисиця' }), photo(13, 3)] }) })
     await show()
-    const input = inPhoto(12).getByLabelText('Alt-текст фото №2')
+    const input = inPhoto(12).getByLabelText('Опис фото №2 для пошуку')
     expect(input).toHaveAttribute('maxLength', '500')
     expect(inPhoto(12).getByRole('button', { name: 'Зберегти' })).toBeDisabled()
     fireEvent.change(input, { target: { value: 'Лисиця' } })
     await click(inPhoto(12).getByRole('button', { name: 'Зберегти' }))
     expect(calls('setAltText')[0][2]).toEqual({ listingId: L, imageId: 12, altText: 'Лисиця', watermarked: false })
-    expect(screen.getByRole('status')).toHaveTextContent('Alt-текст фото №2 збережено.')
-    expect(inPhoto(12).getByLabelText('Alt-текст фото №2')).toHaveValue('Лисиця')
+    expect(screen.getByRole('status')).toHaveTextContent('Опис фото №2 збережено.')
+    expect(inPhoto(12).getByLabelText('Опис фото №2 для пошуку')).toHaveValue('Лисиця')
   })
 
   it('alt text on an active listing: confirm mentions buyers; cancel sends nothing', async () => {
     mockFeature({ 'media.load': media(), 'media.setAltText': media() })
     await show(listing({ state: 'active' }))
-    fireEvent.change(inPhoto(11).getByLabelText('Alt-текст фото №1'), { target: { value: 'New' } })
+    fireEvent.change(inPhoto(11).getByLabelText('Опис фото №1 для пошуку'), { target: { value: 'New' } })
     await click(inPhoto(11).getByRole('button', { name: 'Зберегти' }))
-    expect(screen.getByText(/Змінити alt-текст фото №1\?\s+Лістинг активний — покупці побачать зміну одразу\./)).toBeInTheDocument()
+    expect(asked()).toBe('Змінити опис фото №1?\nТовар активний — покупці побачать зміну одразу.')
     await cancel()
     expect(calls('setAltText')).toHaveLength(0)
   })
@@ -181,14 +225,12 @@ describe('Фото', () => {
     mockFeature({ 'media.load': media(), 'media.replacePhoto': media({ photos: [photo(99, 1), photo(12, 2), photo(13, 3)] }) })
     const onChanged = await show()
     picks(['new.jpg'])
-    await click(inPhoto(11).getByRole('button', { name: 'Замінити' }))
+    await click(inPhoto(11).getByRole('button', { name: 'Замінити фото' }))
     expect(api.pickListingFiles).toHaveBeenCalledWith('images')
-    expect(
-      screen.getByText('Замінити фото №1 на «new.jpg»? Старе фото буде знято з лістингу, а alt-текст нового буде порожнім.')
-    ).toBeInTheDocument()
+    expect(asked()).toBe('Замінити фото №1 на «new.jpg»? Старе фото буде знято з товару, а опис нового буде порожнім.')
     await confirm()
     expect(calls('replacePhoto')[0][2]).toEqual({ listingId: L, position: 1, token: 't1', altText: '', watermarked: false })
-    expect(screen.getByRole('status')).toHaveTextContent('Фото №1 замінено. Додайте alt-текст для нового фото.')
+    expect(screen.getByRole('status')).toHaveTextContent('Фото №1 замінено. Додайте опис для нового фото.')
     expect(onChanged).toHaveBeenCalledWith(expect.objectContaining({ listingId: L, imageUrl: cdn(99, '170x135') }))
   })
 
@@ -196,10 +238,10 @@ describe('Фото', () => {
     mockFeature({ 'media.load': media() })
     await show()
     picks(['scan.webp'])
-    await click(inPhoto(11).getByRole('button', { name: 'Замінити' }))
+    await click(inPhoto(11).getByRole('button', { name: 'Замінити фото' }))
     expect(screen.getByRole('alert')).toHaveTextContent('«scan.webp»: фото має бути JPG, JPEG, PNG, GIF.')
-    await click(inPhoto(11).getByRole('button', { name: 'Замінити' }))
-    expect(screen.queryByText(/Замінити фото №1/)).toBeNull()
+    await click(inPhoto(11).getByRole('button', { name: 'Замінити фото' }))
+    expect(asked()).toBeNull()
     expect(api.featureCall.mock.calls.filter((c) => c[1] !== 'load')).toHaveLength(0)
   })
 
@@ -208,7 +250,7 @@ describe('Фото', () => {
     await show()
     fireEvent.click(screen.getByLabelText('З водяним знаком'))
     picks(['a.jpg'], ['b.png'])
-    await click(screen.getByRole('button', { name: '+ Додати фото' }))
+    await click(screen.getByRole('button', { name: 'Додати фото' }))
     expect(calls('addPhotos')[0][2]).toEqual({ listingId: L, tokens: ['t1', 't2'], watermarked: true })
     expect(screen.getByRole('status')).toHaveTextContent('Додано фото: 2.')
   })
@@ -218,24 +260,65 @@ describe('Фото', () => {
     mockFeature({ 'media.load': media({ photos: nine }) })
     await show()
     picks(['a.jpg'], ['b.jpg'])
-    await click(screen.getByRole('button', { name: '+ Додати фото' }))
+    await click(screen.getByRole('button', { name: 'Додати фото' }))
     expect(screen.getByRole('alert')).toHaveTextContent('до 10 фото: зараз 9, можна додати ще 1')
     expect(calls('addPhotos')).toHaveLength(0)
   })
 
-  it('at 10 photos "+ Додати фото" is disabled', async () => {
+  it('at 10 photos "Додати фото" is disabled and says why', async () => {
     mockFeature({ 'media.load': media({ photos: Array.from({ length: 10 }, (_, i) => photo(i + 1, i + 1)) }) })
     await show()
-    expect(screen.getByRole('button', { name: '+ Додати фото' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Додати фото' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Додати фото' })).toHaveAccessibleDescription('Уже 10 фото — це максимум')
   })
 
-  it('move: "Зробити головним" and "↑ Вище"', async () => {
+  it('no photos: an empty state says a listing needs one; "Додати фото" becomes the primary action', async () => {
+    mockFeature({ 'media.load': media({ photos: [] }) })
+    await show()
+    expect(screen.getByTestId('media-photos')).toHaveTextContent('Фото немає')
+    expect(screen.getByTestId('media-photos')).toHaveTextContent('Без фото товар не можна опублікувати.')
+    expect(screen.getByRole('button', { name: 'Додати фото' })).toHaveClass('primary')
+  })
+
+  it('the photo actions have names ("Замінити" has its text); the watermark is a switch in the header, explained by a tip', async () => {
+    mockFeature({ 'media.load': media() })
+    await show()
+    const actions = inPhoto(12).getByRole('group', { name: 'Дії з фото №2' })
+    expect(within(actions).getAllByRole('button').map((b) => b.getAttribute('aria-label'))).toEqual([
+      'Пересунути вище',
+      'Зробити головним',
+      'Замінити фото',
+      'Видалити фото'
+    ])
+    expect(within(actions).getByRole('button', { name: 'Замінити фото' })).toHaveTextContent('Замінити')
+    const mark = screen.getByRole('switch', { name: 'З водяним знаком' })
+    expect(mark).not.toBeChecked()
+    // Before the photos (every photo save sends it), not after up to 10 cards.
+    expect(mark.compareDocumentPosition(screen.getByTestId('media-photo-11')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Що таке «Водяний знак»?' })).toBeInTheDocument()
+    // The alt text: a multi-line field with a plain label, explained by its tip.
+    const alt = inPhoto(12).getByLabelText('Опис фото №2 для пошуку')
+    expect(alt.tagName).toBe('TEXTAREA')
+    expect(inPhoto(12).getByText('Опис фото для пошуку')).toBeInTheDocument()
+    expect(inPhoto(12).getByRole('button', { name: 'Що таке «Опис фото для пошуку»?' })).toBeInTheDocument()
+  })
+
+  it('a result note can be closed', async () => {
+    mockFeature({ 'media.load': media(), 'media.movePhoto': media() })
+    await show()
+    await click(inPhoto(13).getByRole('button', { name: 'Зробити головним' }))
+    expect(screen.getByRole('status')).toHaveTextContent('Фото стало головним.')
+    await click(screen.getByRole('button', { name: 'Закрити повідомлення' }))
+    expect(screen.queryByText('Фото стало головним.')).toBeNull()
+  })
+
+  it('move: "Зробити головним" and "Пересунути вище"', async () => {
     mockFeature({ 'media.load': media(), 'media.movePhoto': media() })
     await show()
     await click(inPhoto(13).getByRole('button', { name: 'Зробити головним' }))
     expect(calls('movePhoto')[0][2]).toEqual({ listingId: L, imageId: 13, toPosition: 1, watermarked: false })
     expect(screen.getByRole('status')).toHaveTextContent('Фото стало головним.')
-    await click(inPhoto(13).getByRole('button', { name: '↑ Вище' }))
+    await click(inPhoto(13).getByRole('button', { name: 'Пересунути вище' }))
     expect(calls('movePhoto')[1][2]).toEqual({ listingId: L, imageId: 13, toPosition: 2, watermarked: false })
   })
 
@@ -250,12 +333,12 @@ describe('Фото', () => {
     await show()
     expect(screen.getByText(/Etsy не повідомляє, чи фото позначене «з водяним\s+знаком»/)).toBeInTheDocument()
     fireEvent.click(screen.getByLabelText('З водяним знаком'))
-    fireEvent.change(inPhoto(12).getByLabelText('Alt-текст фото №2'), { target: { value: 'Лисиця' } })
+    fireEvent.change(inPhoto(12).getByLabelText('Опис фото №2 для пошуку'), { target: { value: 'Лисиця' } })
     await click(inPhoto(12).getByRole('button', { name: 'Зберегти' }))
     expect(calls('setAltText')[0][2]).toMatchObject({ imageId: 12, watermarked: true })
     await click(inPhoto(13).getByRole('button', { name: 'Зробити головним' }))
     expect(calls('movePhoto')[0][2]).toMatchObject({ imageId: 13, watermarked: true })
-    await click(inPhoto(12).getByRole('button', { name: 'Видалити' }))
+    await click(inPhoto(12).getByRole('button', { name: 'Видалити фото' }))
     await confirm()
     await click(screen.getByRole('button', { name: 'Повернути' }))
     expect(calls('restorePhoto')[0][2]).toMatchObject({ imageId: 12, watermarked: true })
@@ -282,11 +365,20 @@ describe('Відео', () => {
     expect(screen.getByTestId('media-video')).toHaveTextContent('Стан: активне')
   })
 
+  it('a video still being processed: the state is a badge with a hint to re-check later', async () => {
+    mockFeature({ 'media.load': media() })
+    await show()
+    const video = screen.getByTestId('media-video')
+    expect(video).toHaveTextContent('1 з 1')
+    expect(video).toHaveTextContent('Щойно завантажене відео Etsy обробляє кілька хвилин')
+    expect(within(video).getByRole('button', { name: 'Що таке «Стан відео»?' })).toBeInTheDocument()
+  })
+
   it('"Перевірити стан" failing shows the error', async () => {
-    mockFeature({ 'media.load': media(), 'media.video': { ok: false, error: 'Такого відео в цьому лістингу немає.' } })
+    mockFeature({ 'media.load': media(), 'media.video': { ok: false, error: 'немає такого відео в цьому лістингу немає.' } })
     await show()
     await click(screen.getByRole('button', { name: 'Перевірити стан' }))
-    expect(screen.getByRole('alert')).toHaveTextContent('Такого відео')
+    expect(screen.getByRole('alert')).toHaveTextContent('немає такого відео')
   })
 
   it('replace: confirm, progress from feature:event while uploading, then the note', async () => {
@@ -301,7 +393,7 @@ describe('Відео', () => {
     picks(['clip.mp4'])
     await click(screen.getByRole('button', { name: 'Замінити відео' }))
     expect(api.pickListingFiles).toHaveBeenCalledWith('videos')
-    expect(screen.getByText('Замінити відео лістингу на «clip.mp4»? Поточне відео буде знято після того, як нове завантажиться.')).toBeInTheDocument()
+    expect(asked()).toBe('Замінити відео товару на «clip.mp4»? Поточне відео буде знято після того, як нове завантажиться.')
     await confirm()
     expect(calls('uploadVideo')[0][2]).toEqual({ listingId: L, token: 't1' })
     expect(screen.getByText('Зачекайте…')).toBeInTheDocument()
@@ -331,7 +423,7 @@ describe('Відео', () => {
     mockFeature({ 'media.load': media(), 'media.deleteVideo': media({ videos: [] }) })
     await show()
     await click(screen.getByRole('button', { name: 'Видалити відео' }))
-    expect(screen.getByText('Видалити відео з лістингу?')).toBeInTheDocument()
+    expect(asked()).toBe('Видалити відео з товару?')
     await confirm()
     expect(calls('deleteVideo')[0][2]).toEqual({ listingId: L, videoId: 31 })
     expect(screen.getByTestId('media-video')).toHaveTextContent('Відео немає.')
@@ -339,15 +431,22 @@ describe('Відео', () => {
 })
 
 describe('Файли для покупця', () => {
+  it('Etsy’s size labels are shown in Ukrainian units', () => {
+    expect(localSize('20 KB')).toBe('20 КБ')
+    expect(localSize('1.5 MB')).toBe('1,5 МБ')
+    expect(localSize('512 B')).toBe('512 Б')
+    expect(localSize('about 2 MB')).toBe('about 2 MB')
+  })
+
   it('delete: confirm; the last file warns that the listing becomes physical', async () => {
     mockFeature({ 'media.load': media(), 'media.deleteFile': media({ files: [media().files![0]] }) })
     await show()
-    await click(within(screen.getByTestId('media-files')).getAllByRole('button', { name: 'Видалити' })[1])
-    expect(screen.getByText('Видалити файл «bonus.zip»?')).toBeInTheDocument()
+    await click(within(screen.getByTestId('media-files')).getByRole('button', { name: 'Видалити «bonus.zip»' }))
+    expect(asked()).toBe('Видалити файл «bonus.zip»?')
     await confirm()
     expect(calls('deleteFile')[0][2]).toEqual({ listingId: L, fileId: 52 })
-    await click(within(screen.getByTestId('media-files')).getByRole('button', { name: 'Видалити' }))
-    expect(screen.getByText(/Видалити файл «planner\.pdf»\?\s+Це останній файл: після видалення Etsy зробить лістинг фізичним/)).toBeInTheDocument()
+    await click(within(screen.getByTestId('media-files')).getByRole('button', { name: 'Видалити «planner.pdf»' }))
+    expect(asked()).toMatch(/^Видалити файл «planner\.pdf»\?\s+Це останній файл: після видалення Etsy зробить товар фізичним/)
     await cancel()
     expect(calls('deleteFile')).toHaveLength(1)
   })
@@ -356,9 +455,11 @@ describe('Файли для покупця', () => {
     mockFeature({ 'media.load': media(), 'media.replaceFile': media() })
     await show()
     picks(['planner-v2.pdf'])
-    await click(within(screen.getByTestId('media-files')).getAllByRole('button', { name: 'Замінити' })[0])
+    // Every file's buttons name the file (not several identical "Замінити").
+    expect(within(screen.getByTestId('media-files')).getByRole('button', { name: 'Замінити «bonus.zip»' })).toHaveTextContent('Замінити')
+    await click(within(screen.getByTestId('media-files')).getByRole('button', { name: 'Замінити «planner.pdf»' }))
     expect(api.pickListingFiles).toHaveBeenCalledWith('files')
-    expect(screen.getByText('Замінити «planner.pdf» на «planner-v2.pdf»? Покупці отримуватимуть новий файл.')).toBeInTheDocument()
+    expect(asked()).toBe('Замінити «planner.pdf» на «planner-v2.pdf»? Покупці отримуватимуть новий файл.')
     await confirm()
     expect(calls('replaceFile')[0][2]).toEqual({ listingId: L, fileId: 51, token: 't1' })
     expect(screen.getByRole('status')).toHaveTextContent('Файл «planner.pdf» замінено на «planner-v2.pdf».')
@@ -369,8 +470,8 @@ describe('Файли для покупця', () => {
     await show(listing({ type: 'physical' }))
     expect(screen.getByTestId('media-files')).toHaveTextContent('Файлів немає (фізичний товар).')
     picks(['guide.pdf'])
-    await click(screen.getByRole('button', { name: '+ Додати файли' }))
-    expect(screen.getByText(/Лістинг стане цифровим/)).toBeInTheDocument()
+    await click(screen.getByRole('button', { name: 'Додати файли' }))
+    expect(asked()).toMatch(/Товар стане цифровим/)
     await confirm()
     expect(calls('addFiles')[0][2]).toEqual({ listingId: L, tokens: ['t1'] })
     expect(screen.getByRole('status')).toHaveTextContent('Додано файлів: 1.')
@@ -381,10 +482,10 @@ describe('Файли для покупця', () => {
     mockFeature({ 'media.load': media({ files: four }), 'media.addFiles': { ok: false, error: 'Etsy відхилив запит (HTTP 400).' } })
     await show()
     picks(['a.pdf'], ['b.pdf'])
-    await click(screen.getByRole('button', { name: '+ Додати файли' }))
+    await click(screen.getByRole('button', { name: 'Додати файли' }))
     expect(screen.getByRole('alert')).toHaveTextContent('до 5 файлів: зараз 4, можна додати ще 1')
     picks(['a.pdf'])
-    await click(screen.getByRole('button', { name: '+ Додати файли' }))
+    await click(screen.getByRole('button', { name: 'Додати файли' }))
     expect(screen.getByRole('alert')).toHaveTextContent('HTTP 400')
   })
 
@@ -392,6 +493,6 @@ describe('Файли для покупця', () => {
     const five = [1, 2, 3, 4, 5].map((r) => ({ id: 50 + r, rank: r, name: `f${r}.pdf`, sizeBytes: 10, sizeLabel: null, type: null }))
     mockFeature({ 'media.load': media({ files: five }) })
     await show()
-    expect(screen.getByRole('button', { name: '+ Додати файли' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Додати файли' })).toBeDisabled()
   })
 })

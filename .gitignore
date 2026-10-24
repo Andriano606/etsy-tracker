@@ -9,3 +9,6 @@ dist/
 
 # Local docker-compose overrides (MinIO credentials)
 .env
+
+# UI harness output (real shop data + screenshots — never commit)
+.ui-harness/

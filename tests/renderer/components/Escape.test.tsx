@@ -5,8 +5,9 @@ import { App } from '../../../src/renderer/src/App'
 import { useStore } from '../../../src/renderer/src/store'
 import { mkChange, mkListing, mkScan, mkShop, setupRenderer, type Api } from '../helpers'
 
-// Escape must close modals even though focus stays on the button that opened
-// them (outside the modal), and only the topmost modal at a time.
+// Escape must close modals wherever the focus is (a modal moves it inside; an
+// older one leaves it on the button that opened it), and only the topmost modal
+// at a time. Closing gives the focus back to the opener.
 
 let api: Api
 beforeEach(() => {
@@ -23,16 +24,30 @@ async function renderApp() {
 }
 
 describe('Escape closes modals', () => {
-  it('a listing opened from a card closes with Escape while the card keeps focus', async () => {
+  it('a listing opened from a card closes with Escape and gives the focus back to the card', async () => {
     await renderApp()
     const card = screen.getAllByTestId('listing-card')[0]
     card.focus()
     fireEvent.click(card)
     expect(screen.getByTestId('listing-description')).toBeInTheDocument()
-    expect(document.activeElement).toBe(card)
+    const dialog = screen.getByTestId('listing-description').closest('[role="dialog"]')
+    // The focus is in the listing dialog (or, for a dialog that doesn't take it, still on the card).
+    expect(document.activeElement === card || !!dialog?.contains(document.activeElement)).toBe(true)
     escape()
     expect(useStore.getState().detailListing).toBeNull()
     expect(screen.queryByTestId('listing-description')).toBeNull()
+    expect(document.activeElement).toBe(card)
+  })
+
+  it('Add-shop takes the focus into its field and returns it to the sidebar button', async () => {
+    await renderApp()
+    const opener = screen.getByRole('button', { name: 'Додати магазин' })
+    opener.focus()
+    fireEvent.click(opener)
+    expect(screen.getByLabelText('Посилання на магазин Etsy або його назва')).toHaveFocus()
+    escape()
+    expect(screen.queryByRole('dialog', { name: 'Додати магазин' })).toBeNull()
+    expect(opener).toHaveFocus()
   })
 
   it('Settings and Add-shop close with Escape', async () => {

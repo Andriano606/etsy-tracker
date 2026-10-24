@@ -19,5 +19,11 @@ export const ui: FeatureUi = {
     { id: 'shopConfig-holidays', label: 'Свята', Component: HolidaysTab },
     { id: 'shopConfig-partners', label: 'Партнери', Component: PartnersTab }
   ],
-  ownListingSections: [{ id: 'shopConfig-section', label: 'Розділ магазину', Component: ListingSectionPanel }]
+  ownListingSections: [
+    Object.assign(
+      { id: 'shopConfig-section', label: 'Розділ магазину', Component: ListingSectionPanel },
+      // Read by the host (panelMeta) for the section's summary row.
+      { icon: 'folder' as const, description: 'На якій «полиці» вашого магазину покупці знайдуть цей товар.' }
+    )
+  ]
 }

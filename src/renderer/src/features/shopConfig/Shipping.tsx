@@ -1,6 +1,7 @@
 // "Доставка" (Мій магазин): shipping profiles → one profile (origin,
-// processing time) with its destinations and upgrades; every form is the OAS
-// request body of its call, carriers come from getShippingCarriers.
+// processing time) with its destinations and upgrades ("прискорена доставка");
+// every form is the OAS request body of its call, carriers come from
+// getShippingCarriers (read once per opened profile).
 
 import { useState } from 'react'
 import {
@@ -8,19 +9,20 @@ import {
   moneyInput,
   moneyText,
   REGION_LABEL,
+  type ShippingCarrier,
   type ShippingDestination,
   type ShippingProfile,
   type ShippingUpgrade
 } from '@shared/features/shopConfig'
 import { countryLabel } from '@shared/countries'
+import { Button, EmptyState, Field, Icon, Loading, Segmented, Select } from '../../ui'
 import {
+  carrierText,
+  CostExample,
   CountrySelect,
   DeliveryFields,
   deliveryFields,
   deliveryState,
-  ErrorNote,
-  Loading,
-  Status,
   TextField,
   useCarriers,
   useChange,
@@ -28,8 +30,14 @@ import {
   type Change,
   type DeliveryState
 } from './common'
+import { Card, DataTable, ErrorNote, Facts, Intro, Note, Status, Step, Td } from './kit'
 
 type Target = 'country' | 'eu' | 'non_eu' | 'none'
+
+interface Carriers {
+  carriers: ShippingCarrier[] | null
+  error: string | null
+}
 
 function targetOf(d: ShippingDestination | null): Target {
   if (!d || d.destinationCountry) return 'country'
@@ -43,9 +51,30 @@ function targetFields(t: Target, country: string): Record<string, string> {
 const whereText = (d: ShippingDestination): string =>
   d.destinationCountry ? countryLabel(d.destinationCountry) : REGION_LABEL[d.destinationRegion]
 
-function deliveryText(x: { carrierId: number | null; mailClass: string | null; minDeliveryDays: number | null; maxDeliveryDays: number | null }): string {
-  if (x.carrierId && x.mailClass) return `перевізник #${x.carrierId} · ${x.mailClass}`
+/** The delivery time: the days, or — when a carrier's mail class sets it — which tariff Etsy counts it by. */
+function deliveryText(
+  x: { carrierId: number | null; mailClass: string | null; minDeliveryDays: number | null; maxDeliveryDays: number | null },
+  carriers: ShippingCarrier[] | null
+): JSX.Element | string {
+  if (x.carrierId && x.mailClass)
+    return (
+      <span title="Строк у днях рахує Etsy за тарифом цього перевізника">
+        <span className="fx-meta">за тарифом:</span> {carrierText(carriers, x.carrierId, x.mailClass)}
+      </span>
+    )
   return daysText(x.minDeliveryDays, x.maxDeliveryDays)
+}
+
+/** The currency of a profile's prices (from any destination), for the money fields. */
+const profileCurrency = (p: ShippingProfile): string | null => p.destinations.find((d) => d.primaryCost)?.primaryCost?.currency ?? null
+
+function CarrierNote({ error }: { error: string | null }): JSX.Element | null {
+  if (!error) return null
+  return (
+    <Note tone="warn">
+      Перевізники: {error} Строк у днях можна вказати й без них.
+    </Note>
+  )
 }
 
 function TargetFields({
@@ -62,20 +91,63 @@ function TargetFields({
   allowEverywhere: boolean
 }): JSX.Element {
   return (
-    <div className="field-row">
-      <div className="field">
-        <label>
-          Куди
-          <select value={target} onChange={(e) => onTarget(e.target.value as Target)}>
-            <option value="country">Країна</option>
-            <option value="eu">{REGION_LABEL.eu}</option>
-            <option value="non_eu">{REGION_LABEL.non_eu}</option>
-            {allowEverywhere && <option value="none">{REGION_LABEL.none}</option>}
-          </select>
-        </label>
-      </div>
+    <div className="ui-form-grid fx-grid-2">
+      <Field
+        label="Куди"
+        glossary="features.shopConfig.region"
+        hint={target === 'none' ? 'Для всіх країн, яких немає серед інших напрямків профілю.' : target === 'country' ? 'Одна країна зі своєю ціною.' : undefined}
+      >
+        <Select value={target} onChange={(v) => onTarget(v as Target)} fullWidth>
+          <option value="country">Країна</option>
+          <option value="eu">{REGION_LABEL.eu}</option>
+          <option value="non_eu">{REGION_LABEL.non_eu}</option>
+          {allowEverywhere && <option value="none">{REGION_LABEL.none}</option>}
+        </Select>
+      </Field>
       {target === 'country' && <CountrySelect label="Країна призначення" value={country} onChange={onCountry} />}
     </div>
+  )
+}
+
+function CostFields({
+  primary,
+  secondary,
+  onPrimary,
+  onSecondary,
+  currency
+}: {
+  primary: string
+  secondary: string
+  onPrimary: (v: string) => void
+  onSecondary: (v: string) => void
+  currency: string | null
+}): JSX.Element {
+  return (
+    <>
+      <div className="ui-form-grid fx-grid-2">
+        <TextField
+          label="Вартість за один товар"
+          glossary="features.shopConfig.primaryCost"
+          money
+          aside={currency ?? undefined}
+          placeholder="0,00"
+          hint="0 — безкоштовна доставка."
+          value={primary}
+          onChange={onPrimary}
+        />
+        <TextField
+          label="За кожен наступний товар"
+          glossary="features.compete.secondaryCost"
+          money
+          aside={currency ?? undefined}
+          placeholder="0,00"
+          hint="Доплата за кожен додатковий товар в одному замовленні."
+          value={secondary}
+          onChange={onSecondary}
+        />
+      </div>
+      <CostExample first={primary} next={secondary} currency={currency} />
+    </>
   )
 }
 
@@ -84,11 +156,13 @@ function TargetFields({
 function DestinationForm({
   profile,
   dest,
+  carriers,
   onSaved,
   onCancel
 }: {
   profile: ShippingProfile
   dest: ShippingDestination | null
+  carriers: Carriers
   onSaved: (note: string) => void
   onCancel: () => void
 }): JSX.Element {
@@ -97,20 +171,21 @@ function DestinationForm({
   const [primary, setPrimary] = useState(moneyInput(dest?.primaryCost ?? null))
   const [secondary, setSecondary] = useState(moneyInput(dest?.secondaryCost ?? null))
   const [delivery, setDelivery] = useState<DeliveryState>(deliveryState(dest))
-  const { carriers, error: carrierError } = useCarriers(profile.originCountry)
   const ch = useChange()
   const where = target === 'country' ? countryLabel(country) : REGION_LABEL[target]
   const save = async (): Promise<void> => {
     const input = { primary_cost: primary, secondary_cost: secondary, ...targetFields(target, country), ...deliveryFields(delivery) }
     const change: Change = dest
       ? {
-          confirm: `Зберегти доставку «${where}» у профілі «${profile.title}»? Це змінить вартість/строк для всіх лістингів із цим профілем.`,
+          confirmLabel: 'Зберегти доставку',
+          confirm: `Зберегти доставку «${where}» у профілі «${profile.title}»?\nНові ціна й строк одразу діятимуть для всіх товарів із цим профілем.`,
           action: 'updateDestination',
           args: { profileId: profile.id, destinationId: dest.id, input },
           done: 'Напрямок збережено.'
         }
       : {
-          confirm: `Додати доставку «${where}» у профіль «${profile.title}»? Покупці побачать її у всіх лістингах із цим профілем.`,
+          confirmLabel: 'Додати доставку',
+          confirm: `Додати доставку «${where}» у профіль «${profile.title}»?\nПокупці звідти зможуть купувати всі товари з цим профілем.`,
           action: 'createDestination',
           args: { profileId: profile.id, input },
           done: 'Напрямок додано.'
@@ -118,35 +193,45 @@ function DestinationForm({
     if (await ch.run<ShippingDestination>(change)) onSaved(change.done)
   }
   return (
-    <div className="sc-form" data-testid="sc-destination-form">
-      <h4>{dest ? 'Змінити напрямок' : 'Новий напрямок'}</h4>
-      <TargetFields target={target} country={country} onTarget={setTarget} onCountry={setCountry} allowEverywhere />
-      <div className="field-row">
-        <TextField label="Вартість за один товар" value={primary} onChange={setPrimary} hint="У валюті магазину." />
-        <TextField label="За кожен наступний товар" value={secondary} onChange={setSecondary} />
-      </div>
-      <DeliveryFields value={delivery} onChange={setDelivery} carriers={carriers} idPrefix={`dest-${dest?.id ?? 'new'}`} />
-      {carrierError && <div className="hint warn">Перевізники: {carrierError}</div>}
-      <div className="settings-actions">
-        <button className="btn primary" disabled={ch.busy} onClick={() => void save()}>
-          {dest ? 'Зберегти напрямок' : 'Додати напрямок'}
-        </button>
-        <button className="btn" onClick={onCancel}>
-          Скасувати
-        </button>
-      </div>
+    <Card
+      tone="form"
+      testId="sc-destination-form" reveal
+      title={dest ? `Змінити напрямок «${whereText(dest)}»` : 'Новий напрямок доставки'}
+      footer={
+        <>
+          <Button variant="primary" busy={ch.busy} onClick={() => void save()}>
+            {dest ? 'Зберегти напрямок' : 'Додати напрямок'}
+          </Button>
+          <Button variant="ghost" onClick={onCancel}>
+            Скасувати
+          </Button>
+        </>
+      }
+    >
+      <Step n={1} title="Куди відправляєте" glossary="features.shopConfig.destination">
+        <TargetFields target={target} country={country} onTarget={setTarget} onCountry={setCountry} allowEverywhere />
+      </Step>
+      <Step n={2} title="Скільки коштує доставка для покупця">
+        <CostFields primary={primary} secondary={secondary} onPrimary={setPrimary} onSecondary={setSecondary} currency={profileCurrency(profile)} />
+      </Step>
+      <Step n={3} title="Як довго посилка в дорозі" glossary="features.shopConfig.deliveryMode">
+        <DeliveryFields value={delivery} onChange={setDelivery} carriers={carriers.carriers} />
+        <CarrierNote error={carriers.error} />
+      </Step>
       <Status error={ch.error} note={ch.note} />
-    </div>
+    </Card>
   )
 }
 
-function Destinations({ profile }: { profile: ShippingProfile }): JSX.Element {
+function Destinations({ profile, carriers }: { profile: ShippingProfile; carriers: Carriers }): JSX.Element {
   const list = useLoad<ShippingDestination[]>('destinations', { profileId: profile.id }, String(profile.id))
   const [editing, setEditing] = useState<ShippingDestination | 'new' | null>(null)
   const ch = useChange()
   const remove = async (d: ShippingDestination): Promise<void> => {
     const r = await ch.run({
-      confirm: `Видалити доставку «${whereText(d)}» з профілю «${profile.title}»? Покупці звідти більше не зможуть купити лістинги з цим профілем.`,
+      confirmLabel: 'Видалити доставку',
+      danger: true,
+      confirm: `Видалити доставку «${whereText(d)}» з профілю «${profile.title}»?\nПокупці звідти більше не зможуть купити товари з цим профілем.`,
       action: 'deleteDestination',
       args: { profileId: profile.id, destinationId: d.id },
       done: 'Напрямок видалено.'
@@ -159,59 +244,73 @@ function Destinations({ profile }: { profile: ShippingProfile }): JSX.Element {
     list.reload()
   }
   return (
-    <div data-testid="sc-destinations">
-      <h4>Напрямки доставки</h4>
+    <Card
+      testId="sc-destinations"
+      title="Куди ви доставляєте"
+      glossary="features.shopConfig.destination"
+      desc="Кожен рядок — країна чи група країн зі своєю ціною і строком. Покупці з країн, яких тут немає, не зможуть купити товари з цим профілем."
+      footer={
+        !editing && (
+          <Button icon="plus" onClick={() => setEditing('new')}>
+            Додати напрямок
+          </Button>
+        )
+      }
+    >
       <ErrorNote error={list.error} />
-      {!list.value && !list.error && <Loading />}
-      {list.value && list.value.length === 0 && <div className="hint">Напрямків немає.</div>}
+      {!list.value && !list.error && <Loading inline>Завантаження напрямків…</Loading>}
+      {list.value && list.value.length === 0 && <p className="fx-muted">Напрямків немає — додайте хоча б один, інакше товари з цим профілем не можна купити.</p>}
       {list.value && list.value.length > 0 && (
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Куди</th>
-              <th>Один товар</th>
-              <th>Кожен наступний</th>
-              <th>Доставка</th>
-              <th />
+        <DataTable
+          label="Напрямки доставки"
+          stack="lg"
+          columns={[
+            { label: 'Куди' },
+            { label: 'Один товар', glossary: 'features.shopConfig.primaryCost', align: 'end' },
+            { label: 'Кожен наступний', glossary: 'features.compete.secondaryCost', align: 'end' },
+            { label: 'Строк доставки', glossary: 'features.shopConfig.deliveryDays' },
+            { label: 'Дії', srOnly: true }
+          ]}
+        >
+          {list.value.map((d) => (
+            <tr key={d.id}>
+              <Td label="Куди" primary>
+                <span className="fx-where">
+                  <Icon name="globe" size={14} />
+                  {whereText(d)}
+                </span>
+              </Td>
+              <Td label="Один товар" align="end">
+                <span className="num">{moneyText(d.primaryCost)}</span>
+              </Td>
+              <Td label="Кожен наступний" align="end">
+                <span className="num">{moneyText(d.secondaryCost)}</span>
+              </Td>
+              <Td label="Строк доставки">{deliveryText(d, carriers.carriers)}</Td>
+              <Td label="Дії" actions>
+                <Button size="sm" icon="edit" aria-label={`Змінити доставку «${whereText(d)}»`} onClick={() => setEditing(d)}>
+                  Змінити
+                </Button>
+                <Button size="sm" variant="danger" icon="trash" aria-label={`Видалити доставку «${whereText(d)}»`} disabled={ch.busy} onClick={() => void remove(d)}>
+                  Видалити
+                </Button>
+              </Td>
             </tr>
-          </thead>
-          <tbody>
-            {list.value.map((d) => (
-              <tr key={d.id}>
-                <td>{whereText(d)}</td>
-                <td>{moneyText(d.primaryCost)}</td>
-                <td>{moneyText(d.secondaryCost)}</td>
-                <td>{deliveryText(d)}</td>
-                <td className="sc-actions">
-                  <button className="btn small" onClick={() => setEditing(d)}>
-                    Змінити
-                  </button>
-                  <button className="btn small danger" disabled={ch.busy} onClick={() => void remove(d)}>
-                    Видалити
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+          ))}
+        </DataTable>
       )}
       <Status error={ch.error} note={ch.note} />
-      {editing ? (
+      {editing && (
         <DestinationForm
           key={editing === 'new' ? 'new' : editing.id}
           profile={profile}
           dest={editing === 'new' ? null : editing}
+          carriers={carriers}
           onSaved={saved}
           onCancel={() => setEditing(null)}
         />
-      ) : (
-        <div className="settings-actions">
-          <button className="btn" onClick={() => setEditing('new')}>
-            ＋ Додати напрямок
-          </button>
-        </div>
       )}
-    </div>
+    </Card>
   )
 }
 
@@ -220,11 +319,13 @@ function Destinations({ profile }: { profile: ShippingProfile }): JSX.Element {
 function UpgradeForm({
   profile,
   upgrade,
+  carriers,
   onSaved,
   onCancel
 }: {
   profile: ShippingProfile
   upgrade: ShippingUpgrade | null
+  carriers: Carriers
   onSaved: (note: string) => void
   onCancel: () => void
 }): JSX.Element {
@@ -233,8 +334,8 @@ function UpgradeForm({
   const [price, setPrice] = useState(moneyInput(upgrade?.price ?? null))
   const [secondary, setSecondary] = useState(moneyInput(upgrade?.secondaryPrice ?? null))
   const [delivery, setDelivery] = useState<DeliveryState>(deliveryState(upgrade))
-  const { carriers, error: carrierError } = useCarriers(profile.originCountry)
   const ch = useChange()
+  const currency = profileCurrency(profile)
   const save = async (): Promise<void> => {
     const input = {
       type: international ? 1 : 0,
@@ -245,61 +346,98 @@ function UpgradeForm({
     }
     const change: Change = upgrade
       ? {
-          confirm: `Зберегти апгрейд «${name.trim()}» профілю «${profile.title}»? Покупці побачать його при оформленні замовлення.`,
+          confirmLabel: 'Зберегти доставку',
+          confirm: `Зберегти прискорену доставку «${name.trim()}» профілю «${profile.title}»?\nПокупці побачать зміни під час оформлення замовлення.`,
           action: 'updateUpgrade',
           args: { profileId: profile.id, upgradeId: upgrade.id, input },
-          done: 'Апгрейд збережено.'
+          done: 'Прискорену доставку збережено.'
         }
       : {
-          confirm: `Додати апгрейд «${name.trim()}» у профіль «${profile.title}»? Покупці побачать його при оформленні замовлення.`,
+          confirmLabel: 'Додати доставку',
+          confirm: `Додати прискорену доставку «${name.trim()}» у профіль «${profile.title}»?\nПокупці зможуть вибрати її під час оформлення замовлення.`,
           action: 'createUpgrade',
           args: { profileId: profile.id, input },
-          done: 'Апгрейд додано.'
+          done: 'Прискорену доставку додано.'
         }
     if (await ch.run<ShippingUpgrade>(change)) onSaved(change.done)
   }
   return (
-    <div className="sc-form" data-testid="sc-upgrade-form">
-      <h4>{upgrade ? 'Змінити апгрейд' : 'Новий апгрейд доставки'}</h4>
-      <div className="radio-row" role="radiogroup" aria-label="Тип апгрейду">
-        <label>
-          <input type="radio" name={`upg-${upgrade?.id ?? 'new'}`} checked={!international} onChange={() => setInternational(false)} /> Всередині
-          країни
-        </label>
-        <label>
-          <input type="radio" name={`upg-${upgrade?.id ?? 'new'}`} checked={international} onChange={() => setInternational(true)} /> Міжнародний
-        </label>
-      </div>
-      <TextField label="Назва (бачать покупці)" value={name} onChange={setName} />
-      <div className="field-row">
-        <TextField label="Доплата" value={price} onChange={setPrice} hint="У валюті магазину." />
-        <TextField label="Доплата за кожен наступний товар" value={secondary} onChange={setSecondary} />
-      </div>
-      <DeliveryFields value={delivery} onChange={setDelivery} carriers={carriers} idPrefix={`upg-${upgrade?.id ?? 'new'}-d`} />
-      {carrierError && <div className="hint warn">Перевізники: {carrierError}</div>}
-      <div className="settings-actions">
-        <button className="btn primary" disabled={ch.busy} onClick={() => void save()}>
-          {upgrade ? 'Зберегти апгрейд' : 'Додати апгрейд'}
-        </button>
-        <button className="btn" onClick={onCancel}>
-          Скасувати
-        </button>
-      </div>
+    <Card
+      tone="form"
+      testId="sc-upgrade-form" reveal
+      title={upgrade ? `Змінити «${upgrade.name}»` : 'Нова прискорена доставка'}
+      footer={
+        <>
+          <Button variant="primary" busy={ch.busy} disabled={!name.trim()} onClick={() => void save()}>
+            {upgrade ? 'Зберегти' : 'Додати'}
+          </Button>
+          <Button variant="ghost" onClick={onCancel}>
+            Скасувати
+          </Button>
+        </>
+      }
+    >
+      <Step n={1} title="Для кого і як називається">
+        <div className="ui-field">
+          <div className="ui-field-head">
+            <span className="ui-field-label" aria-hidden="true">
+              Для яких замовлень
+            </span>
+          </div>
+          <Segmented
+            label="Для яких замовлень"
+            value={international ? 'intl' : 'domestic'}
+            onChange={(v) => setInternational(v === 'intl')}
+            options={[
+              { value: 'domestic', label: 'Всередині країни', icon: 'store' },
+              { value: 'intl', label: 'Міжнародна', icon: 'globe' }
+            ]}
+          />
+        </div>
+        <TextField
+          label="Назва для покупців"
+          glossary="features.shopConfig.upgradeName"
+          placeholder="Наприклад, «Експрес, 1–2 дні»"
+          value={name}
+          onChange={setName}
+        />
+      </Step>
+      <Step n={2} title="Скільки доплачує покупець" glossary="features.shopConfig.upgradePrice">
+        <div className="ui-form-grid fx-grid-2">
+          <TextField label="Доплата" money aside={currency ?? undefined} placeholder="0,00" hint="Понад звичайну доставку, за один товар." value={price} onChange={setPrice} />
+          <TextField
+            label="Доплата за кожен наступний товар"
+            money
+            aside={currency ?? undefined}
+            placeholder="0,00"
+            hint="Додатково за кожен наступний товар в одному замовленні."
+            value={secondary}
+            onChange={setSecondary}
+          />
+        </div>
+        <CostExample first={price} next={secondary} currency={currency} lead="за прискорену доставку 3 товарів покупець доплатить" />
+      </Step>
+      <Step n={3} title="Як довго посилка в дорозі" glossary="features.shopConfig.deliveryMode">
+        <DeliveryFields value={delivery} onChange={setDelivery} carriers={carriers.carriers} />
+        <CarrierNote error={carriers.error} />
+      </Step>
       <Status error={ch.error} note={ch.note} />
-    </div>
+    </Card>
   )
 }
 
-function Upgrades({ profile }: { profile: ShippingProfile }): JSX.Element {
+function Upgrades({ profile, carriers }: { profile: ShippingProfile; carriers: Carriers }): JSX.Element {
   const list = useLoad<ShippingUpgrade[]>('upgrades', { profileId: profile.id }, String(profile.id))
   const [editing, setEditing] = useState<ShippingUpgrade | 'new' | null>(null)
   const ch = useChange()
   const remove = async (u: ShippingUpgrade): Promise<void> => {
     const r = await ch.run({
-      confirm: `Видалити апгрейд «${u.name}» з профілю «${profile.title}»?`,
+      confirmLabel: 'Видалити доставку',
+      danger: true,
+      confirm: `Видалити прискорену доставку «${u.name}» з профілю «${profile.title}»?\nПокупці більше не зможуть її вибрати.`,
       action: 'deleteUpgrade',
       args: { profileId: profile.id, upgradeId: u.id },
-      done: 'Апгрейд видалено.'
+      done: 'Прискорену доставку видалено.'
     })
     if (r) list.reload()
   }
@@ -309,61 +447,74 @@ function Upgrades({ profile }: { profile: ShippingProfile }): JSX.Element {
     list.reload()
   }
   return (
-    <div data-testid="sc-upgrades">
-      <h4>Апгрейди (швидша доставка за доплату)</h4>
+    <Card
+      testId="sc-upgrades"
+      title="Прискорена доставка за доплату"
+      glossary="features.compete.upgrades"
+      desc="Необов’язково. Додаткові, швидші варіанти доставки, які покупець може вибрати під час оформлення замовлення, доплативши."
+      footer={
+        !editing && (
+          <Button icon="plus" onClick={() => setEditing('new')}>
+            Додати прискорену доставку
+          </Button>
+        )
+      }
+    >
       <ErrorNote error={list.error} />
-      {!list.value && !list.error && <Loading />}
-      {list.value && list.value.length === 0 && <div className="hint">Апгрейдів немає.</div>}
+      {!list.value && !list.error && <Loading inline>Завантаження…</Loading>}
+      {list.value && list.value.length === 0 && <p className="fx-muted">Прискореної доставки немає — покупці бачать лише звичайну.</p>}
       {list.value && list.value.length > 0 && (
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Назва</th>
-              <th>Тип</th>
-              <th>Доплата</th>
-              <th>За наступний</th>
-              <th>Доставка</th>
-              <th />
+        <DataTable
+          label="Прискорена доставка"
+          stack="lg"
+          columns={[
+            { label: 'Назва' },
+            { label: 'Для кого', glossary: 'features.shopConfig.upgradeScope' },
+            { label: 'Доплата', glossary: 'features.shopConfig.upgradePrice', align: 'end' },
+            { label: 'За наступний', align: 'end' },
+            { label: 'Строк доставки' },
+            { label: 'Дії', srOnly: true }
+          ]}
+        >
+          {list.value.map((u) => (
+            <tr key={u.id}>
+              <Td label="Назва" primary>
+                <span className="clamp-2 fx-title" title={u.name}>
+                  {u.name}
+                </span>
+              </Td>
+              <Td label="Для кого">{u.international ? 'Міжнародна' : 'Всередині країни'}</Td>
+              <Td label="Доплата" align="end">
+                <span className="num">{moneyText(u.price)}</span>
+              </Td>
+              <Td label="За наступний" align="end">
+                <span className="num">{moneyText(u.secondaryPrice)}</span>
+              </Td>
+              <Td label="Строк доставки">{deliveryText(u, carriers.carriers)}</Td>
+              <Td label="Дії" actions>
+                <Button size="sm" icon="edit" aria-label={`Змінити прискорену доставку «${u.name}»`} onClick={() => setEditing(u)}>
+                  Змінити
+                </Button>
+                <Button size="sm" variant="danger" icon="trash" aria-label={`Видалити прискорену доставку «${u.name}»`} disabled={ch.busy} onClick={() => void remove(u)}>
+                  Видалити
+                </Button>
+              </Td>
             </tr>
-          </thead>
-          <tbody>
-            {list.value.map((u) => (
-              <tr key={u.id}>
-                <td>{u.name}</td>
-                <td>{u.international ? 'Міжнародний' : 'Всередині країни'}</td>
-                <td>{moneyText(u.price)}</td>
-                <td>{moneyText(u.secondaryPrice)}</td>
-                <td>{deliveryText(u)}</td>
-                <td className="sc-actions">
-                  <button className="btn small" onClick={() => setEditing(u)}>
-                    Змінити
-                  </button>
-                  <button className="btn small danger" disabled={ch.busy} onClick={() => void remove(u)}>
-                    Видалити
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+          ))}
+        </DataTable>
       )}
       <Status error={ch.error} note={ch.note} />
-      {editing ? (
+      {editing && (
         <UpgradeForm
           key={editing === 'new' ? 'new' : editing.id}
           profile={profile}
           upgrade={editing === 'new' ? null : editing}
+          carriers={carriers}
           onSaved={saved}
           onCancel={() => setEditing(null)}
         />
-      ) : (
-        <div className="settings-actions">
-          <button className="btn" onClick={() => setEditing('new')}>
-            ＋ Додати апгрейд
-          </button>
-        </div>
       )}
-    </div>
+    </Card>
   )
 }
 
@@ -387,17 +538,25 @@ function ProcessingTimeFields({
   onUnit: (u: Unit) => void
 }): JSX.Element {
   return (
-    <div className="field-row">
-      <TextField label="Обробка: мін. (1–10)" type="number" value={min} onChange={onMin} />
-      <TextField label="Обробка: макс. (1–10)" type="number" value={max} onChange={onMax} />
-      <div className="field">
-        <label>
-          Одиниця
-          <select value={unit} onChange={(e) => onUnit(e.target.value as Unit)}>
-            <option value="business_days">робочі дні</option>
-            <option value="weeks">тижні</option>
-          </select>
-        </label>
+    <div className="ui-form-grid fx-grid-3">
+      <TextField label="Підготовка: від" type="number" aside="1–10" glossary="processingTime" value={min} onChange={onMin} />
+      <TextField label="Підготовка: до" type="number" aside="1–10" value={max} onChange={onMax} />
+      <div className="ui-field">
+        <div className="ui-field-head">
+          <span className="ui-field-label" aria-hidden="true">
+            Одиниця
+          </span>
+        </div>
+        <Segmented
+          label="Одиниця"
+          fullWidth
+          value={unit}
+          onChange={onUnit}
+          options={[
+            { value: 'business_days', label: 'робочі дні' },
+            { value: 'weeks', label: 'тижні' }
+          ]}
+        />
       </div>
     </div>
   )
@@ -408,7 +567,7 @@ function ProcessingTimeFields({
  * one starts unset), an emptied postal code as '' (clears it), the processing
  * time only when typed. Stays mounted after a save, so its note stays too.
  */
-function ProfileEditForm({ profile, onSaved }: { profile: ShippingProfile; onSaved: (p: ShippingProfile) => void }): JSX.Element {
+function ProfileEditForm({ profile, onSaved, onClose }: { profile: ShippingProfile; onSaved: (p: ShippingProfile) => void; onClose: () => void }): JSX.Element {
   const [title, setTitle] = useState(profile.title)
   const [origin, setOrigin] = useState(profile.originCountry ?? '')
   const [postal, setPostal] = useState(profile.originPostalCode ?? '')
@@ -421,9 +580,11 @@ function ProfileEditForm({ profile, onSaved }: { profile: ShippingProfile; onSav
   if (origin && origin !== profile.originCountry) input.origin_country_iso = origin
   if (postal.trim() !== (profile.originPostalCode ?? '')) input.origin_postal_code = postal.trim()
   if (min || max) Object.assign(input, { min_processing_time: min, max_processing_time: max, processing_time_unit: unit })
+  const changed = Object.keys(input).length > 0
   const save = async (): Promise<void> => {
     const p = await ch.run<ShippingProfile>({
-      confirm: `Зберегти профіль доставки «${profile.title}»? Зміни стосуються всіх лістингів із цим профілем.`,
+      confirmLabel: 'Зберегти профіль',
+      confirm: `Зберегти профіль доставки «${profile.title}»?\nЗміни одразу стосуються всіх товарів із цим профілем.`,
       action: 'updateShippingProfile',
       args: { profileId: profile.id, input },
       done: 'Профіль збережено.'
@@ -435,21 +596,105 @@ function ProfileEditForm({ profile, onSaved }: { profile: ShippingProfile; onSav
     }
   }
   return (
-    <div className="sc-form" data-testid="sc-profile-edit">
-      <TextField label="Назва профілю" value={title} onChange={setTitle} />
-      <div className="field-row">
-        <CountrySelect label="Країна відправлення" value={origin} onChange={setOrigin} unset={!profile.originCountry} />
-        <TextField label="Поштовий індекс відправлення" value={postal} onChange={setPostal} />
+    <Card
+      tone="form"
+      testId="sc-profile-edit" reveal
+      title="Змінити назву, звідки і час на підготовку"
+      footer={
+        <>
+          <Button variant="primary" busy={ch.busy} disabled={!changed} onClick={() => void save()}>
+            Зберегти профіль
+          </Button>
+          <Button variant="ghost" onClick={onClose}>
+            Закрити
+          </Button>
+        </>
+      }
+    >
+      <TextField label="Назва профілю" hint="Бачите лише ви — щоб розрізняти профілі. Покупцям не показується." value={title} onChange={setTitle} />
+      <div className="ui-form-grid fx-grid-2">
+        <CountrySelect label="Країна відправлення" glossary="features.shopConfig.originCountry" value={origin} onChange={setOrigin} unset={!profile.originCountry} />
+        <TextField label="Поштовий індекс відправлення" glossary="features.shopConfig.originPostalCode" value={postal} onChange={setPostal} />
       </div>
       <ProcessingTimeFields min={min} max={max} unit={unit} onMin={setMin} onMax={setMax} onUnit={setUnit} />
-      <div className="hint">Час обробки змінюється лише якщо ви його вкажете (Etsy не повертає поточний у профілі).</div>
-      <div className="settings-actions">
-        <button className="btn primary" disabled={ch.busy || Object.keys(input).length === 0} onClick={() => void save()}>
-          Зберегти профіль
-        </button>
-      </div>
+      <Note>Час на підготовку змінюється, лише якщо ви його вкажете: Etsy не повідомляє поточний час у профілі доставки.</Note>
       <Status error={ch.error} note={ch.note} />
-    </div>
+    </Card>
+  )
+}
+
+function ProfileBody({ profile, onSaved, onDeleted }: { profile: ShippingProfile; onSaved: (p: ShippingProfile) => void; onDeleted: () => void }): JSX.Element {
+  const carriers = useCarriers(profile.originCountry)
+  const [editing, setEditing] = useState(false)
+  const ch = useChange()
+  const remove = async (): Promise<void> => {
+    const r = await ch.run({
+      confirmLabel: 'Видалити профіль',
+      danger: true,
+      confirm: `Видалити профіль доставки «${profile.title}»?\nТовари з ним залишаться без доставки, доки ви не виберете їм інший профіль. Це не можна скасувати.`,
+      action: 'deleteShippingProfile',
+      args: { profileId: profile.id },
+      done: 'Профіль видалено.'
+    })
+    if (r) onDeleted()
+  }
+  return (
+    <>
+      <Card
+        testId="sc-profile-summary"
+        footer={
+          !editing && (
+            <Button size="sm" icon="edit" onClick={() => setEditing(true)}>
+              Змінити основне
+            </Button>
+          )
+        }
+      >
+        <Facts
+          items={[
+            {
+              label: 'Звідки',
+              glossary: 'features.shopConfig.originCountry',
+              value: (
+                <>
+                  {profile.originCountry ? countryLabel(profile.originCountry) : '—'}
+                  {profile.originPostalCode ? `, ${profile.originPostalCode}` : ''}
+                </>
+              )
+            },
+            {
+              label: 'Спосіб розрахунку',
+              glossary: 'features.compete.profileType',
+              value: profile.profileType === 'calculated' ? 'Розрахунковий (Etsy рахує за вагою)' : 'Фіксована вартість (ви задаєте ціни)'
+            },
+            (profile.profileType === 'calculated' || !!profile.domesticHandlingFee || !!profile.internationalHandlingFee) && {
+              label: 'Плата за обробку',
+              glossary: 'features.compete.handlingFee',
+              value: (
+                <>
+                  {profile.domesticHandlingFee ?? 0} всередині країни · {profile.internationalHandlingFee ?? 0} міжнародна
+                </>
+              )
+            }
+          ]}
+        />
+      </Card>
+      {editing && <ProfileEditForm profile={profile} onSaved={onSaved} onClose={() => setEditing(false)} />}
+      <Destinations profile={profile} carriers={carriers} />
+      <Upgrades profile={profile} carriers={carriers} />
+      <Card
+        tone="danger"
+        title="Видалити профіль"
+        desc="Товари, які зараз використовують цей профіль, залишаться без доставки, доки ви не виберете їм інший."
+        footer={
+          <Button variant="danger" icon="trash" busy={ch.busy} onClick={() => void remove()}>
+            Видалити профіль
+          </Button>
+        }
+      >
+        <Status error={ch.error} note={ch.note} />
+      </Card>
+    </>
   )
 }
 
@@ -465,55 +710,22 @@ function ProfileDetail({
 }): JSX.Element {
   const loaded = useLoad<ShippingProfile>('shippingProfile', { profileId }, String(profileId))
   const [fresh, setFresh] = useState<ShippingProfile | null>(null)
-  const ch = useChange()
   const profile = fresh ?? loaded.value
-  const remove = async (): Promise<void> => {
-    if (!profile) return
-    const r = await ch.run({
-      confirm: `Видалити профіль доставки «${profile.title}»? Лістинги з ним залишаться без доставки.`,
-      action: 'deleteShippingProfile',
-      args: { profileId },
-      done: 'Профіль видалено.'
-    })
-    if (r) onBack('Профіль видалено.')
-  }
+  const title = profile?.title ?? `Профіль #${profileId}`
   return (
-    <div data-testid="sc-profile">
-      <div className="editor-head">
-        <button className="btn small" onClick={() => onBack(null)}>
-          ← Усі профілі
-        </button>
-        <strong>{profile?.title ?? `Профіль #${profileId}`}</strong>
+    <div className="fx-page" data-testid="sc-profile">
+      <div className="fx-detail-head">
+        <Button size="sm" variant="ghost" icon="chevron-left" onClick={() => onBack(null)}>
+          Усі профілі
+        </Button>
+        <h3 className="fx-detail-title truncate" title={title}>
+          {title}
+        </h3>
       </div>
       <Status error={null} note={note} />
-      <ErrorNote error={loaded.error} />
-      {!profile && !loaded.error && <Loading />}
-      {profile && (
-        <>
-          <dl className="listing-facts">
-            <dt>Звідки</dt>
-            <dd>
-              {profile.originCountry ? countryLabel(profile.originCountry) : '—'}
-              {profile.originPostalCode ? `, ${profile.originPostalCode}` : ''}
-            </dd>
-            <dt>Тип</dt>
-            <dd>{profile.profileType === 'calculated' ? 'Розрахунковий (за вагою)' : 'Фіксована вартість'}</dd>
-            <dt>Плата за обробку</dt>
-            <dd>
-              {profile.domesticHandlingFee ?? 0} всередині країни · {profile.internationalHandlingFee ?? 0} міжнародна
-            </dd>
-          </dl>
-          <ProfileEditForm profile={profile} onSaved={setFresh} />
-          <Destinations profile={profile} />
-          <Upgrades profile={profile} />
-          <div className="settings-actions">
-            <button className="btn danger" disabled={ch.busy} onClick={() => void remove()}>
-              Видалити профіль
-            </button>
-          </div>
-          <Status error={ch.error} note={ch.note} />
-        </>
-      )}
+      <ErrorNote error={loaded.error} title="Не вдалося завантажити профіль" />
+      {!profile && !loaded.error && <Loading>Завантаження профілю…</Loading>}
+      {profile && <ProfileBody profile={profile} onSaved={setFresh} onDeleted={() => onBack('Профіль видалено.')} />}
     </div>
   )
 }
@@ -536,7 +748,7 @@ function ProfileCreateForm({
   const [max, setMax] = useState('')
   const [unit, setUnit] = useState<Unit>('business_days')
   const [delivery, setDelivery] = useState<DeliveryState>(deliveryState(null))
-  const { carriers, error: carrierError } = useCarriers(origin)
+  const carriers = useCarriers(origin)
   const ch = useChange()
   const create = async (): Promise<void> => {
     const input = {
@@ -552,7 +764,8 @@ function ProfileCreateForm({
       ...deliveryFields(delivery)
     }
     const change: Change = {
-      confirm: `Створити профіль доставки «${title.trim()}»?`,
+      confirmLabel: 'Створити профіль',
+      confirm: `Створити профіль доставки «${title.trim()}»?\nЙого одразу можна буде вибрати в товарах.`,
       action: 'createShippingProfile',
       args: { input },
       done: 'Профіль створено.'
@@ -561,32 +774,48 @@ function ProfileCreateForm({
     if (p) onCreated(p.value, change.done)
   }
   return (
-    <div className="sc-form" data-testid="sc-profile-create">
-      <h4>Новий профіль доставки</h4>
-      <TextField label="Назва профілю" value={title} onChange={setTitle} />
-      <div className="field-row">
-        <CountrySelect label="Країна відправлення" value={origin} onChange={setOrigin} />
-        <TextField label="Поштовий індекс відправлення" value={postal} onChange={setPostal} hint="Потрібен, якщо в країні є індекси." />
-      </div>
-      <ProcessingTimeFields min={min} max={max} unit={unit} onMin={setMin} onMax={setMax} onUnit={setUnit} />
-      <h4>Перший напрямок</h4>
-      <TargetFields target={target} country={country} onTarget={setTarget} onCountry={setCountry} allowEverywhere={false} />
-      <div className="field-row">
-        <TextField label="Вартість за один товар" value={primary} onChange={setPrimary} hint="У валюті магазину." />
-        <TextField label="За кожен наступний товар" value={secondary} onChange={setSecondary} />
-      </div>
-      <DeliveryFields value={delivery} onChange={setDelivery} carriers={carriers} idPrefix="new-profile" />
-      {carrierError && <div className="hint warn">Перевізники: {carrierError}</div>}
-      <div className="settings-actions">
-        <button className="btn primary" disabled={ch.busy} onClick={() => void create()}>
-          Створити профіль
-        </button>
-        <button className="btn" onClick={onCancel}>
-          Скасувати
-        </button>
-      </div>
+    <Card
+      tone="form"
+      testId="sc-profile-create" reveal
+      title="Новий профіль доставки"
+      desc="Профіль створюється разом із першим напрямком. Інші напрямки і прискорену доставку додасте потім, відкривши профіль."
+      footer={
+        <>
+          <Button variant="primary" busy={ch.busy} disabled={!title.trim()} onClick={() => void create()}>
+            Створити профіль
+          </Button>
+          <Button variant="ghost" onClick={onCancel}>
+            Скасувати
+          </Button>
+        </>
+      }
+    >
+      <Step n={1} title="Назва і звідки відправляєте">
+        <TextField label="Назва профілю" hint="Бачите лише ви, наприклад «Друковані планери» або «Важкі посилки»." value={title} onChange={setTitle} />
+        <div className="ui-form-grid fx-grid-2">
+          <CountrySelect label="Країна відправлення" glossary="features.shopConfig.originCountry" value={origin} onChange={setOrigin} />
+          <TextField
+            label="Поштовий індекс відправлення"
+            glossary="features.shopConfig.originPostalCode"
+            hint="Потрібен, якщо в країні є індекси."
+            value={postal}
+            onChange={setPostal}
+          />
+        </div>
+      </Step>
+      <Step n={2} title="Скільки часу на підготовку" desc="Необов’язково: від оплати до відправлення, без часу доставки.">
+        <ProcessingTimeFields min={min} max={max} unit={unit} onMin={setMin} onMax={setMax} onUnit={setUnit} />
+      </Step>
+      <Step n={3} title="Перший напрямок: куди і скільки коштує" glossary="features.shopConfig.destination">
+        <TargetFields target={target} country={country} onTarget={setTarget} onCountry={setCountry} allowEverywhere={false} />
+        <CostFields primary={primary} secondary={secondary} onPrimary={setPrimary} onSecondary={setSecondary} currency={null} />
+      </Step>
+      <Step n={4} title="Як довго посилка в дорозі" glossary="features.shopConfig.deliveryMode">
+        <DeliveryFields value={delivery} onChange={setDelivery} carriers={carriers.carriers} />
+        <CarrierNote error={carriers.error} />
+      </Step>
       <Status error={ch.error} note={ch.note} />
-    </div>
+    </Card>
   )
 }
 
@@ -609,46 +838,83 @@ export function ShippingTab(): JSX.Element {
     )
   }
   return (
-    <div data-testid="sc-shipping">
-      <ErrorNote error={list.error} />
-      {!list.value && !list.error && <Loading />}
+    <div className="fx-page" data-testid="sc-shipping">
+      <Intro
+        title="Профілі доставки"
+        glossary="shippingProfile"
+        icon="truck"
+        action={
+          !creating && (
+            <Button icon="plus" onClick={() => setCreating(true)}>
+              Новий профіль доставки
+            </Button>
+          )
+        }
+      >
+        Профіль — це готовий набір правил: звідки ви відправляєте, у які країни, скільки коштує доставка і як довго вона триває. Кожен фізичний
+        товар використовує один профіль, тому, змінивши профіль, ви змінюєте доставку одразу в багатьох товарах.
+      </Intro>
+      <ErrorNote error={list.error} title="Не вдалося завантажити профілі" />
+      {!list.value && !list.error && <Loading>Завантаження профілів…</Loading>}
       <Status error={null} note={note} />
-      {list.value && list.value.length === 0 && <div className="hint">Профілів доставки ще немає.</div>}
-      {list.value && list.value.length > 0 && (
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Профіль</th>
-              <th>Звідки</th>
-              <th>Напрямків</th>
-              <th>Апгрейдів</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {list.value.map((p) => (
-              <tr key={p.id}>
-                <td>{p.title || `#${p.id}`}</td>
-                <td>{p.originCountry ? countryLabel(p.originCountry) : '—'}</td>
-                <td>{p.destinations.length}</td>
-                <td>{p.upgrades.length}</td>
-                <td className="sc-actions">
-                  <button
-                    className="btn small"
-                    onClick={() => {
-                      setNote(null)
-                      setOpen(p.id)
-                    }}
-                  >
-                    Відкрити
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      {list.value && list.value.length === 0 && !creating && (
+        <EmptyState
+          compact
+          icon="truck"
+          title="Профілів доставки ще немає."
+          action={
+            <Button variant="primary" icon="plus" onClick={() => setCreating(true)}>
+              Створити профіль
+            </Button>
+          }
+        >
+          Без профілю доставки фізичний товар не можна опублікувати.
+        </EmptyState>
       )}
-      {creating ? (
+      {list.value && list.value.length > 0 && (
+        <DataTable
+          label="Профілі доставки"
+          stack="sm"
+          columns={[
+            { label: 'Профіль' },
+            { label: 'Звідки', glossary: 'features.shopConfig.originCountry' },
+            { label: 'Напрямків', glossary: 'features.shopConfig.destination', align: 'end' },
+            { label: 'Прискорених', glossary: 'features.compete.upgrades', align: 'end' },
+            { label: 'Дії', srOnly: true }
+          ]}
+        >
+          {list.value.map((p) => (
+            <tr key={p.id}>
+              <Td label="Профіль" primary>
+                <span className="clamp-2 fx-title" title={p.title || `#${p.id}`}>
+                  {p.title || `#${p.id}`}
+                </span>
+              </Td>
+              <Td label="Звідки">{p.originCountry ? countryLabel(p.originCountry) : '—'}</Td>
+              <Td label="Напрямків" align="end">
+                <span className="num">{p.destinations.length}</span>
+              </Td>
+              <Td label="Прискорених" align="end">
+                <span className="num">{p.upgrades.length}</span>
+              </Td>
+              <Td label="Дії" actions>
+                <Button
+                  size="sm"
+                  icon="chevron-right"
+                  aria-label={`Відкрити профіль доставки «${p.title || `#${p.id}`}»`}
+                  onClick={() => {
+                    setNote(null)
+                    setOpen(p.id)
+                  }}
+                >
+                  Відкрити
+                </Button>
+              </Td>
+            </tr>
+          ))}
+        </DataTable>
+      )}
+      {creating && (
         <ProfileCreateForm
           onCreated={(p, n) => {
             setCreating(false)
@@ -657,12 +923,6 @@ export function ShippingTab(): JSX.Element {
           }}
           onCancel={() => setCreating(false)}
         />
-      ) : (
-        <div className="settings-actions">
-          <button className="btn" onClick={() => setCreating(true)}>
-            ＋ Новий профіль доставки
-          </button>
-        </div>
       )}
     </div>
   )

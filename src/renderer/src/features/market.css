@@ -1,52 +1,349 @@
 /* Feature "market": the "Пошук по всьому Etsy" window. */
-.market-search .field input,
-.market-search .field select {
+
+.market-search {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  min-width: 0;
+}
+
+/* ---- the form ---- */
+.market-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.market-form .ui-field {
+  min-width: 0;
+  margin-bottom: var(--sp-3);
+}
+.market-form input,
+.market-form select {
   width: 100%;
+}
+.market-grid-2,
+.market-grid-3 {
+  display: grid;
+  gap: 0 var(--sp-4);
+  min-width: 0;
+}
+.market-grid-2 {
+  grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
+}
+.market-grid-3 {
+  grid-template-columns: repeat(auto-fit, minmax(min(170px, 100%), 1fr));
+}
+.market-form > .feature-details {
+  margin: 0 0 var(--sp-3);
   background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  padding: 8px 10px;
+}
+
+/* An input with a leading icon (search). */
+.market-input-icon {
+  position: relative;
+  min-width: 0;
+}
+.market-input-icon > .ui-icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-dim);
+  pointer-events: none;
+}
+.market-input-icon > input {
+  padding-left: 32px;
+}
+
+.market-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.market-form-note {
+  flex: 1 1 260px;
+  margin: 0 0 0 var(--sp-2);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+.market-form-actions .btn.primary {
+  min-width: 140px;
+}
+
+/* ---- category picker ---- */
+.market-cat-picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+.market-cat-results {
+  padding: var(--sp-1);
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--border-control);
+  border-radius: var(--r-sm);
+  background: var(--bg-3);
+  box-shadow: var(--shadow-1);
+}
+.market-cat-results > ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.market-cat-results [role='option'] {
+  padding: 6px var(--sp-2);
+  border-radius: var(--r-xs);
+  color: var(--text-body);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.market-cat-results [role='option']:hover,
+.market-cat-results [role='option'].is-active {
+  background: var(--bg-4);
   color: var(--text);
-  font-family: inherit;
-  font-size: 13px;
 }
-.market-search .field select:focus {
-  outline: none;
-  border-color: var(--accent);
+.market-cat-results [role='option'].is-active {
+  box-shadow: inset 2px 0 0 var(--accent);
 }
-.market-submit,
-.market-more {
-  margin: 12px 0;
+.market-cat-more,
+.market-cat-empty,
+.market-muted {
+  padding: 4px var(--sp-2);
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+.market-chosen-cat {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.market-chosen-cat input {
+  flex: 1 1 0;
+  min-width: 0;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+/* "× Змінити" never shrinks: the long path in the input gives way (ellipsis). */
+.market-chosen-cat > .ui-tooltip-anchor,
+.market-chosen-cat > .btn {
+  flex: 0 0 auto;
+}
+.market-chosen-cat .btn {
+  white-space: nowrap;
+}
+.market-chosen-icon {
+  flex: 0 0 auto;
+  color: var(--accent);
+  display: inline-flex;
+}
+
+/* ---- category properties ---- */
+.market-props {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.market-prop {
+  padding: var(--sp-2) 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.market-prop:last-child {
+  border-bottom: 0;
+}
+.market-prop-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px var(--sp-2);
+  color: var(--text);
+}
+.market-prop-values {
+  margin-top: 2px;
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+/* ---- results ---- */
+.market-results {
+  scroll-margin-top: var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  min-width: 0;
 }
 .market-summary {
-  margin: 14px 0 10px;
-  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  font-size: var(--fs-sm);
   color: var(--text-body);
 }
+.market-summary-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--text);
+}
+.market-summary-head > .ui-icon {
+  color: var(--accent);
+  flex: 0 0 auto;
+}
+.market-summary-prices {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px var(--sp-4);
+  padding-left: 23px;
+  font-size: var(--fs-xs);
+}
+.market-summary-label {
+  color: var(--text-dim);
+}
+.market-price-row strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* The result grid: the same shape as the shop's listing grid. */
 .market-grid {
-  margin-top: 8px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(210px, 100%), 1fr));
+  gap: var(--sp-3);
+}
+.market-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-2);
+  transition: border-color var(--dur) var(--ease);
+}
+.market-card:hover {
+  border-color: var(--border-hover);
+}
+.market-thumb {
+  aspect-ratio: 4 / 3;
+  background: var(--bg-3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.market-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.market-no-img {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+.market-card-body {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: var(--sp-3);
+}
+.market-card-title {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  line-height: 1.35;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.market-card-price {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--text);
 }
 .market-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 10px;
-  margin-top: 6px;
-  font-size: 11.5px;
+  gap: 4px 12px;
+  font-size: var(--fs-xs);
   color: var(--text-dim);
+}
+/* The shop always on its own line, so cards of one row line up. */
+.market-shop {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+.market-shop.feat-stat {
+  align-self: flex-start;
+}
+.market-shop > .ui-icon {
+  flex: 0 0 auto;
+}
+.market-shop--tracked > .truncate {
+  min-width: 0;
+  color: var(--text-body);
+}
+.market-shop--tracked .ui-badge,
+.market-shop--tracked .ui-tooltip-anchor {
+  flex: 0 0 auto;
 }
 .market-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin-top: 8px;
+  margin-top: auto;
+  padding-top: var(--sp-1);
 }
-.market-actions .btn.small {
-  margin-left: 0;
+.market-actions > *,
+.market-actions > .ui-tooltip-anchor > .btn {
+  flex: 1 1 auto;
 }
-.market-card .test-result {
-  margin-top: 6px;
-  font-size: 12px;
+.market-actions .ui-tooltip-anchor {
+  display: flex;
+  flex: 1 1 auto;
 }
-.market-search .chosen-cat input {
-  flex: 1;
+.market-actions .ui-tooltip-anchor > .btn {
+  width: 100%;
+}
+.market-more {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) 0 var(--sp-1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .market-card {
+    transition: none;
+  }
+}
+/* A note inside a narrow card: keep the icon beside the text (the callout's own
+   240 px text basis would push the text under the icon). */
+.market-card .ui-callout {
+  flex-wrap: nowrap;
 }

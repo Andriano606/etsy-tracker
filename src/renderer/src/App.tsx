@@ -13,6 +13,7 @@ import { HistoryModal } from './components/ScanHistory'
 import { ConfirmModal } from './components/ConfirmModal'
 import { StatsModal } from './components/StatsModal'
 import { NoKeyState, NoShopsState } from './components/EmptyStates'
+import { Callout, EmptyState, Loading } from './ui'
 
 export function App(): JSX.Element {
   const {
@@ -49,10 +50,22 @@ export function App(): JSX.Element {
   }, [load, setShops, setProgress, setScanning, setQuota, setImageSync, setReviewSync, setEtsyAuth, setDrafts])
 
   let main: JSX.Element | null
-  if (!loaded) main = <div className="placeholder">Завантаження…</div>
+  if (!loaded)
+    main = (
+      <div className="placeholder">
+        <Loading>Завантаження…</Loading>
+      </div>
+    )
   else if (!keyStatus?.hasKey && shops.length === 0) main = <NoKeyState />
   else if (shops.length === 0) main = <NoShopsState />
-  else if (activeShopId == null) main = <div className="placeholder">Виберіть магазин зліва.</div>
+  else if (activeShopId == null)
+    main = (
+      <div className="placeholder">
+        <EmptyState icon="store" title="Виберіть магазин зліва">
+          Натисніть на магазин у списку, щоб побачити його товари і що в ньому змінилось.
+        </EmptyState>
+      </div>
+    )
   else main = <ShopView />
 
   return (
@@ -60,11 +73,10 @@ export function App(): JSX.Element {
       <Sidebar />
       <main className="main">
         {error && (
-          <div className="banner err top" role="alert">
-            {error}
-            <button className="banner-close" aria-label="Закрити" onClick={() => setError(null)}>
-              ×
-            </button>
+          <div className="app-error">
+            <Callout tone="error" onClose={() => setError(null)}>
+              {error}
+            </Callout>
           </div>
         )}
         {main}

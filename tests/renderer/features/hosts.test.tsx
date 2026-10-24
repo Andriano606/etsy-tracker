@@ -7,12 +7,12 @@ vi.mock('../../../src/renderer/src/features/registry', () => ({
   MY_SHOP_TABS: [],
   OWN_LISTING_SECTIONS: [],
   SHOP_PANELS: [
-    { id: 'p1', label: 'Панель магазину', Component: ({ shop, mine }: { shop: { shopName: string }; mine: boolean }) => <div>панель {shop.shopName} {mine ? 'мій' : 'чужий'}</div> }
+    { id: 'p1', label: 'Панель магазину', description: 'Що в панелі і навіщо.', icon: 'folder', Component: ({ shop, mine }: { shop: { shopName: string }; mine: boolean }) => <div>панель {shop.shopName} {mine ? 'мій' : 'чужий'}</div> }
   ],
   LISTING_PANELS: [
     { id: 'l1', label: 'Панель товару', Component: ({ listing, mine }: { listing: { title: string }; mine: boolean }) => <div>товар {listing.title} {mine ? 'мій' : 'чужий'}</div> }
   ],
-  TOP_MODALS: [{ id: 'm1', button: '🔎 Тестове вікно', title: 'Тестове вікно', Component: () => <div>вміст вікна</div> }]
+  TOP_MODALS: [{ id: 'm1', button: '🔎 Тестове вікно', title: 'Тестове вікно', description: 'Опис тестового вікна.', Component: () => <div>вміст вікна</div> }]
 }))
 
 import { FeatureModalHost, ShopPanelsModal } from '../../../src/renderer/src/features/hosts'
@@ -49,7 +49,7 @@ describe('feature hosts', () => {
       </>
     )
     await act(async () => {
-      fireEvent.click(screen.getByText('ℹ️ Більше'))
+      fireEvent.click(screen.getByRole('button', { name: 'Більше' }))
     })
     expect(screen.getByRole('dialog', { name: 'Other: більше даних з Etsy' })).toBeInTheDocument()
     expect(screen.queryByText(/панель Other/)).toBeNull()
@@ -57,6 +57,26 @@ describe('feature hosts', () => {
     expect(screen.getByText('панель Other чужий')).toBeInTheDocument()
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('each shop panel is a collapsible card: label + its one-line description visible while closed', async () => {
+    useStore.setState({ shopPanelsFor: 1 })
+    render(<ShopPanelsModal />)
+    const d = screen.getByTestId('shop-panel-p1')
+    expect(d).not.toHaveAttribute('open')
+    expect(d.querySelector('summary')).toHaveTextContent('Панель магазинуЩо в панелі і навіщо.')
+    expect(screen.getByRole('dialog', { name: 'Other: більше даних з Etsy' })).toHaveAccessibleDescription(/Живі дані прямо з Etsy/)
+    // The footer button (the header × has the same name).
+    const [x, footer] = screen.getAllByRole('button', { name: 'Закрити' })
+    expect(x).toHaveAttribute('title', 'Закрити (Esc)')
+    fireEvent.click(footer)
+    expect(useStore.getState().shopPanelsFor).toBeNull()
+  })
+
+  it('a sidebar window shows its description as the subtitle', () => {
+    useStore.setState({ featureModal: 'm1' })
+    render(<FeatureModalHost />)
+    expect(screen.getByRole('dialog', { name: 'Тестове вікно' })).toHaveAccessibleDescription('Опис тестового вікна.')
   })
 
   it('the own shop’s panels get mine = true', async () => {
@@ -74,7 +94,7 @@ describe('feature hosts', () => {
       </>
     )
     await act(async () => {
-      fireEvent.click(screen.getByText('🔎 Тестове вікно'))
+      fireEvent.click(screen.getByRole('button', { name: /Тестове вікно/ }))
     })
     expect(screen.getByRole('dialog', { name: 'Тестове вікно' })).toHaveTextContent('вміст вікна')
     fireEvent.click(screen.getByText('Закрити'))

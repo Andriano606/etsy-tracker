@@ -451,3 +451,23 @@ describe('review photos (Etsy CDN → MinIO)', () => {
     expect(reviewImageCounts(db, SHOP_ID).total).toBe(0)
   })
 })
+
+describe('retryErrors (the run after a scan)', () => {
+  it('retries images that already failed 5 times, without stat-checking stored objects', async () => {
+    const t = setup(1)
+    await t.scanner.scanShop(SHOP_ID)
+    const failing = fakeCdn({ failing: ['fullxfull'] })
+    const syncer1 = createImageSyncer({ db: t.db, getStore: async () => t.store, fetch: failing, sleep: async () => {} })
+    for (let i = 0; i < 5; i++) await syncer1.sync({ shopId: SHOP_ID })
+    const stuck = () => t.db.prepare("SELECT sync_attempts FROM listing_images WHERE sync_status = 'error'").all() as Array<{ sync_attempts: number }>
+    expect(stuck().length).toBeGreaterThan(0)
+    expect(stuck().every((r) => r.sync_attempts >= 5)).toBe(true)
+    const statSpy = vi.spyOn(t.store, 'stat')
+    const ok = createImageSyncer({ db: t.db, getStore: async () => t.store, fetch: fakeCdn(), sleep: async () => {} })
+    await ok.sync({ shopId: SHOP_ID })
+    expect(stuck().length).toBeGreaterThan(0) // a plain run gives up on them
+    await ok.sync({ shopId: SHOP_ID, retryErrors: true })
+    expect(stuck()).toEqual([])
+    expect(statSpy).not.toHaveBeenCalled()
+  })
+})

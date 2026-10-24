@@ -236,7 +236,7 @@ describe('shopConfig actions: sections', () => {
       expect(bad.fetch.calls).toHaveLength(0)
     }
     const a = act('setListingSection', { listingId: 900, sectionId: 1 }, { status: signedIn({ scopes: ['shops_w'] }) })
-    await expect(a.run()).rejects.toThrow('редагування лістингів')
+    await expect(a.run()).rejects.toThrow('редагування товарів')
   })
 })
 
@@ -517,7 +517,7 @@ describe('shopConfig actions: processing, returns, holidays, partners', () => {
     expect([r.path, r.query, r.auth]).toEqual([`${RP}/61/listings`, {}, 'Bearer tok'])
     expect(r.value).toEqual([{ listingId: 900, title: 'Budget planner', state: 'active' }])
     const a = act('returnPolicyListings', { id: 61 }, { status: signedIn({ scopes: ['shops_r'] }) })
-    await expect(a.run()).rejects.toThrow('читання лістингів')
+    await expect(a.run()).rejects.toThrow('читання товарів')
   })
 
   it('holidays: GET (a bare array) and PUT is_working', async () => {

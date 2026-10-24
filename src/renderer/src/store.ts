@@ -24,6 +24,13 @@ import type { SortMode } from '@shared/listingFilter'
 
 export type { SortMode }
 
+/** How a confirm dialog reads (ConfirmModal): heading, the confirm button's verb, red or not (default: guessed). */
+export interface ConfirmOptions {
+  title?: string
+  confirmLabel?: string
+  danger?: boolean
+}
+
 /** localStorage key for the last-selected shop. */
 const UI_KEY = 'etsyTracker.ui'
 
@@ -109,7 +116,7 @@ interface AppState {
   historyChanges: ScanChange[]
   /** The shop whose "📊 Статистика" view is open. */
   statsShopId: number | null
-  confirmRequest: { message: string; onResolve: (ok: boolean) => void } | null
+  confirmRequest: (ConfirmOptions & { message: string; onResolve: (ok: boolean) => void }) | null
 
   load: () => Promise<void>
   setShops: (shops: ShopSummary[]) => void
@@ -133,9 +140,7 @@ interface AppState {
   testKey: (keystring?: string, sharedSecret?: string) => Promise<KeyTestResult>
 
   setReviewSync: (s: ReviewSyncState) => void
-  syncReviews: () => Promise<void>
   setImageSync: (s: ImageSyncState) => void
-  syncImages: () => Promise<void>
   saveMinio: (input: MinioSettingsInput) => Promise<{ ok: boolean; error?: string }>
   testMinio: (input?: MinioSettingsInput) => Promise<MinioTestResult>
 
@@ -152,7 +157,8 @@ interface AppState {
   openListing: (l: Listing | null) => void
   openHistoryScan: (scan: ScanSummary | null) => Promise<void>
   openStats: (shopId: number | null) => void
-  requestConfirm: (message: string) => Promise<boolean>
+  /** The in-app confirm dialog; `opts` = heading, the button's verb, red tone. */
+  requestConfirm: (message: string, opts?: ConfirmOptions) => Promise<boolean>
   resolveConfirm: (ok: boolean) => void
 }
 
@@ -290,9 +296,10 @@ export const useStore = create<AppState>((set, get) => ({
 
   removeShop: async (id) => {
     const shop = get().shops.find((s) => s.id === id)
-    const name = shop?.title || shop?.shopName || 'магазин'
+    const name = shop?.shopName || 'магазин'
     const ok = await get().requestConfirm(
-      `Видалити «${name}»?\nУсі збережені товари та історія сканувань цього магазину будуть видалені.`
+      `Видалити магазин «${name}» з програми?\nУсі збережені товари та історія сканувань будуть видалені. На Etsy нічого не зміниться.`,
+      { title: 'Видалити магазин?', confirmLabel: 'Видалити магазин', danger: true }
     )
     if (!ok) return
     const res = await window.api.removeShop(id)
@@ -374,7 +381,10 @@ export const useStore = create<AppState>((set, get) => ({
     return { ok: true }
   },
   clearKey: async () => {
-    const ok = await get().requestConfirm('Видалити збережений API-ключ Etsy?')
+    const ok = await get().requestConfirm(
+      'Видалити збережений ключ доступу до Etsy?\nБез нього програма не зможе сканувати магазини, доки ви не введете ключ знову.',
+      { title: 'Видалити ключ?', confirmLabel: 'Видалити ключ', danger: true }
+    )
     if (!ok) return
     set({ keyStatus: await window.api.clearApiKey() })
   },
@@ -391,12 +401,6 @@ export const useStore = create<AppState>((set, get) => ({
       })()
     }
   },
-  syncReviews: async () => {
-    const id = get().activeShopId
-    if (id == null) return
-    // The live state arrives only through `reviews:progress` (setReviewSync).
-    await window.api.syncReviews(id)
-  },
   setImageSync: (imageSync) => {
     const wasRunning = get().imageSync?.running
     set({ imageSync })
@@ -407,10 +411,6 @@ export const useStore = create<AppState>((set, get) => ({
         if (get().activeShopId === id) set({ imageCounts: r.counts })
       })
     }
-  },
-  syncImages: async () => {
-    const imageSync = await window.api.syncImages(get().activeShopId)
-    set({ imageSync })
   },
   saveMinio: async (input) => {
     const res = await window.api.setMinio(input)
@@ -441,8 +441,8 @@ export const useStore = create<AppState>((set, get) => ({
     if (get().historyScan?.id === scan.id) set({ historyChanges: changes })
   },
   openStats: (statsShopId) => set({ statsShopId }),
-  requestConfirm: (message) =>
-    new Promise<boolean>((resolve) => set({ confirmRequest: { message, onResolve: resolve } })),
+  requestConfirm: (message, opts = {}) =>
+    new Promise<boolean>((resolve) => set({ confirmRequest: { ...opts, message, onResolve: resolve } })),
   resolveConfirm: (ok) => {
     const req = get().confirmRequest
     set({ confirmRequest: null })

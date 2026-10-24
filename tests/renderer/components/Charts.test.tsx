@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
-import { render } from '@testing-library/react'
-import { Sparkline, StackedBarChart, tipLeft } from '../../../src/renderer/src/components/Charts'
+import { render, screen } from '@testing-library/react'
+import { Legend, LineChart, Sparkline, StackedBarChart, lineScale, tipLeft } from '../../../src/renderer/src/components/Charts'
+import { GLOSSARY } from '../../../src/shared/glossary'
 
 const H = 3_600_000
 
@@ -65,5 +66,60 @@ describe('Charts', () => {
     // 1 baseline ring + 4 scan ticks (the one without changes included).
     expect(container.querySelectorAll('circle.marker')).toHaveLength(1)
     expect(container.querySelectorAll('circle.scan-tick')).toHaveLength(4)
+  })
+
+  it('a legend item can explain its series with an ⓘ; the colour key is decorative', () => {
+    const { container } = render(
+      <Legend
+        items={[
+          { label: 'Нові', className: 'c-added', glossary: 'listingNew' },
+          { label: 'сканування', className: 'c-scan', kind: 'dot' }
+        ]}
+      />
+    )
+    expect(screen.getAllByRole('listitem')).toHaveLength(2)
+    expect(screen.getByRole('button', { name: 'Що таке «Новий товар»?' })).toHaveAccessibleDescription(GLOSSARY.listingNew.short)
+    expect(screen.getAllByRole('button')).toHaveLength(1)
+    expect(container.querySelectorAll('.key[aria-hidden="true"]')).toHaveLength(2)
+    expect(container.querySelector('.key.dot.c-scan')).not.toBeNull()
+  })
+
+  it('a flat non-negative line (no sales: all 0) gets no negative tick', () => {
+    expect(lineScale([0, 0, 0], { integer: true })).toEqual({ min: 0, max: 1, ticks: [0, 1] })
+    // Any other flat value stays centred; a series with negatives is left alone.
+    expect(lineScale([3, 3], { integer: true }).ticks).toEqual([2, 3, 4])
+    expect(lineScale([-2, -2], { integer: true }).min).toBeLessThan(-2)
+    const { container } = render(
+      <LineChart
+        label="Продано"
+        points={[0, 1, 2].map((i) => ({ t: i * H, v: 0 }))}
+        domain={[0, 2 * H]}
+        format={String}
+        dateText={String}
+      />
+    )
+    const labels = [...container.querySelectorAll('text.tick.y')].map((t) => t.textContent)
+    expect(labels).toContain('0')
+    expect(labels.some((l) => /[-−]/.test(l ?? ''))).toBe(false)
+  })
+
+  it('compact: a strip of scan marks without a y axis or grid', () => {
+    const series = [{ key: 'a', label: 'Нові', className: 'c-added' }]
+    const { container } = render(
+      <StackedBarChart
+        label="Зміни"
+        series={series}
+        compact
+        domain={[0, 4 * H]}
+        stacks={[0, 2, 4].map((i) => ({ t: i * H, values: [0], marker: i === 0, tip: 'x' }))}
+      />
+    )
+    const chart = screen.getByRole('group', { name: 'Зміни' })
+    expect(chart).toHaveClass('compact')
+    expect(container.querySelectorAll('text.tick.y')).toHaveLength(0)
+    expect(container.querySelectorAll('line.grid')).toHaveLength(0)
+    expect(container.querySelectorAll('circle.marker')).toHaveLength(1)
+    expect(container.querySelectorAll('circle.scan-tick')).toHaveLength(2)
+    expect(Number(container.querySelector('svg')!.getAttribute('height'))).toBeLessThan(60)
   })
 })

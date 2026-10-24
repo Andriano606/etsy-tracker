@@ -36,6 +36,8 @@ import {
 // its keyring secret after it ("<name> Safe Storage") and X11 uses it as WM_CLASS
 // (matched by StartupWMClass in scripts/install-desktop.sh).
 app.setName('etsy-tracker')
+// Ukrainian locale for Chromium: date inputs read dd.mm.yyyy like the rest of the UI.
+app.commandLine.appendSwitch('lang', 'uk')
 // One fixed userData dir for dev and the packaged app alike (~/.config/etsy-tracker),
 // independent of productName.
 app.setPath('userData', join(app.getPath('appData'), 'etsy-tracker'))

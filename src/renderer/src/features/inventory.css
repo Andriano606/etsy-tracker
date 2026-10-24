@@ -1,79 +1,509 @@
-/* Feature "inventory": the variants table, the variation-photo picker, "Ціни й залишки". */
+/* Feature "inventory": the variants table, the variation-photo picker, "Ціни й залишки".
+   Tables turn into cards when their container is narrow (container queries). */
 
-.inv-table input[type='text'] {
-  width: 100%;
-  min-width: 60px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 4px 7px;
+.inv-section,
+.inv-prices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+.inv-intro {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  line-height: var(--lh);
+  max-width: 72ch;
+}
+.inv-hint {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  line-height: var(--lh);
+}
+.inv-hint .ui-infotip {
+  vertical-align: -2px;
+}
+.inv-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.inv-problems {
+  margin: 2px 0 0;
+  padding-left: 18px;
+}
+.inv-problems li + li {
+  margin-top: 2px;
+}
+/* A problem of one field: a link-like button that focuses it. */
+.inv-problem-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.inv-problem-link:hover {
   color: var(--text);
-  font-size: 12.5px;
+  text-decoration-style: solid;
 }
-.inv-table input[type='text']:focus {
-  outline: none;
-  border-color: var(--accent);
+.inv-problem-link:focus-visible {
+  outline: 2px solid var(--focus-color);
+  outline-offset: 2px;
+  border-radius: 2px;
 }
+
+/* ---- facts: variants / price range / in stock ---- */
+.inv-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+.inv-fact {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 6px 12px;
+  border-radius: var(--r-md);
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+}
+.inv-fact-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-dim);
+  font-size: var(--fs-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.inv-fact-value {
+  color: var(--text);
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+
+/* ---- "що залежить від варіанта" matrix ---- */
+.inv-depends {
+  padding: var(--sp-3);
+  border-radius: var(--r-md);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  min-width: 0;
+}
+.inv-depends-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: var(--sp-2);
+}
+.inv-depends-title {
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.inv-depends-grid {
+  display: grid;
+  align-items: center;
+  gap: 6px var(--sp-5);
+  max-width: 100%;
+  overflow-x: auto;
+}
+.inv-depends-row {
+  display: contents;
+}
+.inv-depends-prop {
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  max-width: 140px;
+}
+.inv-depends-label {
+  color: var(--text-body);
+  font-size: var(--fs-sm);
+}
+.inv-depends-note {
+  margin: var(--sp-2) 0 0;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  line-height: var(--lh);
+}
+
+/* ---- the variants table (→ cards when narrow) ---- */
+.inv-variants {
+  container-type: inline-size;
+  min-width: 0;
+}
+.inv-table,
+.inv-ov-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: var(--fs-sm);
+}
+.inv-table th,
+.inv-ov-table th {
+  padding: 6px 8px;
+  text-align: left;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--border);
+}
+.inv-table td,
+.inv-ov-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--hairline);
+  vertical-align: middle;
+}
+.inv-table th.num,
 .inv-table td.num,
-.inv-table th.num {
+.inv-ov-table th.num,
+.inv-ov-table td.num {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
-.inv-table .inv-narrow {
-  width: 80px;
+.inv-table .inv-prop {
+  color: var(--text);
+  overflow-wrap: anywhere;
 }
-.inv-on {
+.inv-table .inv-col-show {
+  width: 1%;
+  text-align: center;
+}
+.inv-table tr.is-off .inv-prop,
+.inv-table tr.is-off .inv-input {
+  opacity: 0.55;
+}
+.inv-input {
+  width: 100%;
+  min-width: 70px;
+  min-height: var(--control-h-sm);
+  padding: 4px 8px;
+  font-size: var(--fs-sm);
+}
+.inv-input-num {
+  width: 84px;
+  min-width: 64px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.inv-input.is-changed {
+  border-color: var(--accent-line);
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg-input));
+}
+.inv-input.is-invalid,
+.inv-input.is-invalid.is-changed {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg-input));
+}
+.inv-input.is-invalid:focus {
+  box-shadow: 0 0 0 3px var(--danger-soft);
+}
+.inv-table .ui-toggle--bare {
+  justify-content: center;
+}
+
+@container (max-width: 560px) {
+  .inv-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+  }
+  .inv-table,
+  .inv-table tbody {
+    display: block;
+  }
+  .inv-table tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--sp-2) var(--sp-3);
+    margin-bottom: var(--sp-2);
+    padding: var(--sp-3);
+    border-radius: var(--r-md);
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+  }
+  .inv-table td {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 0;
+    border: 0;
+    text-align: left !important;
+    min-width: 0;
+  }
+  .inv-table td::before {
+    content: attr(data-label);
+    color: var(--text-dim);
+    font-size: var(--fs-2xs);
+  }
+  .inv-table .inv-prop {
+    font-weight: 600;
+  }
+  .inv-table .inv-col-show {
+    width: auto;
+    align-items: flex-start;
+  }
+  .inv-input-num {
+    width: 100%;
+    text-align: left;
+  }
+}
+
+/* ---- "Фото варіацій" ---- */
+.inv-varimg-prop {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 14px;
-  margin: 6px 0;
-  font-size: 12.5px;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
 }
-.inv-on > span {
-  color: var(--text-dim);
+.inv-varimg-prop-label {
+  color: var(--text-body);
+  font-size: var(--fs-sm);
+}
+.inv-varimg-prop .inv-hint {
+  flex-basis: 100%;
+}
+.inv-varimg-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  container-type: inline-size;
+  /* One value column for every row, only as wide as the longest value (≤ 160 px). */
+  display: grid;
+  grid-template-columns: fit-content(160px) minmax(0, 1fr);
+  column-gap: var(--sp-4);
+}
+.inv-varimg-row {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
+  align-items: start;
+  padding: var(--sp-3) 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.inv-varimg-row:first-child {
+  padding-top: 0;
+}
+.inv-varimg-value {
+  min-width: 96px;
+  padding-top: 12px;
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+@container (max-width: 480px) {
+  .inv-varimg-row {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+  }
+  .inv-varimg-value {
+    padding-top: 0;
+  }
 }
 .inv-thumbs {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   align-items: center;
+  min-width: 0;
 }
 .inv-thumb {
+  position: relative;
+  width: 64px;
+  height: 50px;
   padding: 0;
   border: 2px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   background: var(--bg-3);
   cursor: pointer;
   line-height: 0;
+  overflow: hidden;
+  transition: border-color var(--dur) var(--ease), opacity var(--dur) var(--ease);
 }
 .inv-thumb img {
-  width: 56px;
-  height: 44px;
+  width: 100%;
+  height: 100%;
   object-fit: cover;
-  border-radius: 4px;
+}
+.inv-thumb:hover {
+  border-color: var(--border-hover);
+}
+.inv-thumb:focus-visible {
+  outline: 2px solid var(--focus-color);
+  outline-offset: 2px;
 }
 .inv-thumb.none {
-  width: 60px;
-  height: 48px;
   line-height: 1.2;
-  font-size: 11px;
+  padding: 0 4px;
+  font-size: var(--fs-2xs);
+  color: var(--text-dim);
+  border: 1px dashed var(--border-hover);
+}
+.inv-thumb.none[aria-checked='true'] {
+  border-style: solid;
+  background: var(--accent-soft);
+}
+.inv-thumb-n {
+  display: inline-block;
+  line-height: 46px;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+.inv-thumb[aria-checked='true'] {
+  border: 2px solid var(--accent);
+  color: var(--text);
+}
+.inv-thumb-check {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-on);
+  line-height: 0;
+}
+.inv-thumb[aria-checked='true'] .inv-thumb-check {
+  display: inline-flex;
+}
+
+/* ---- "Ціни й залишки" overview (→ cards when narrow) ---- */
+.inv-ov {
+  container-type: inline-size;
+  min-width: 0;
+}
+.inv-th {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.inv-ov-table .inv-ov-title {
+  width: 100%;
+  min-width: 0;
+}
+.inv-ov-table td.num {
+  white-space: nowrap;
+}
+.inv-ov-action {
+  text-align: right;
+  white-space: nowrap;
+}
+.inv-ov-where {
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+.inv-dim {
   color: var(--text-dim);
 }
-.inv-thumb[aria-pressed='true'] {
-  border-color: var(--accent);
+.inv-ov-table tr.is-editing td {
+  border-bottom: 0;
+}
+.inv-ov-table tr.is-editing,
+.inv-ov-table tr.inv-ov-edit {
+  background: var(--bg-2);
 }
 .inv-title-cell {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
   min-width: 0;
+  color: var(--text);
+  line-height: 1.35;
 }
 .inv-title-cell img,
-.inv-title-cell .thumb-empty {
-  width: 44px;
-  height: 34px;
+.inv-title-cell .inv-thumb-empty {
+  width: 48px;
+  height: 38px;
   object-fit: cover;
-  border-radius: 4px;
+  border-radius: var(--r-xs);
   background: var(--bg-3);
   flex-shrink: 0;
+}
+.inv-quick {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-1) 0 var(--sp-2) 56px;
+}
+.inv-quick-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 220px));
+  gap: 0 var(--sp-4);
+}
+.inv-more {
+  display: flex;
+  justify-content: center;
+}
+
+@container (max-width: 680px) {
+  .inv-ov-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+  }
+  .inv-ov-table,
+  .inv-ov-table tbody {
+    display: block;
+  }
+  .inv-ov-table tr {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, auto)) minmax(0, 1fr);
+    align-items: end;
+    gap: var(--sp-2) var(--sp-4);
+    padding: var(--sp-3) 0;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .inv-ov-table tr.is-editing {
+    border-bottom: 0;
+    padding-bottom: 0;
+  }
+  .inv-ov-table tr.inv-ov-edit {
+    display: block;
+    padding: var(--sp-2) var(--sp-3) var(--sp-3);
+    border-radius: 0 0 var(--r-md) var(--r-md);
+  }
+  .inv-ov-table td {
+    display: block;
+    padding: 0;
+    border: 0;
+    text-align: left !important;
+    min-width: 0;
+  }
+  .inv-ov-table td.inv-ov-title {
+    grid-column: 1 / -1;
+  }
+  .inv-ov-table td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    color: var(--text-dim);
+    font-size: var(--fs-2xs);
+  }
+  .inv-ov-action {
+    justify-self: end;
+    text-align: right !important;
+  }
+  .inv-quick {
+    padding-left: 0;
+  }
 }

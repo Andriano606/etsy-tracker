@@ -10,6 +10,7 @@ import {
 } from '@shared/features/listingMeta'
 import { MAX_TAGS, TITLE_MAX, splitList } from '@shared/myShop'
 import type { MyListing } from '@shared/types'
+import { Badge, Button, Callout, Field, Loading, Term } from '../../ui'
 import { featureCall } from '../call'
 
 interface Form {
@@ -34,6 +35,7 @@ export function TranslationsSection({ listing }: { listing: MyListing; onChanged
   const [note, setNote] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const seq = useRef(0)
+  const [attempt, setAttempt] = useState(0)
   const listingId = listing.listingId
 
   useEffect(() => {
@@ -48,7 +50,7 @@ export function TranslationsSection({ listing }: { listing: MyListing; onChanged
       setTr(r.value)
       setForm(formOf(r.value))
     })
-  }, [listingId, language])
+  }, [listingId, language, attempt])
 
   const input = { title: form.title, description: form.description, tags: splitList(form.tags) }
   const problems = translationProblems(input)
@@ -79,57 +81,93 @@ export function TranslationsSection({ listing }: { listing: MyListing; onChanged
   }
 
   return (
-    <div data-testid="lm-translations">
-      <div className="field">
-        <label htmlFor="lm-lang">Мова</label>
-        <select id="lm-lang" value={language} onChange={(e) => setLanguage(e.target.value as TranslationLanguage)}>
-          {TRANSLATION_LANGUAGES.map((l) => (
-            <option key={l.code} value={l.code}>
-              {l.label} ({l.code})
-            </option>
-          ))}
-        </select>
+    <div className="lm-section" data-testid="lm-translations">
+      <p className="lm-intro">
+        Etsy показує назву, опис і <Term glossary="tags">теги</Term> мовою покупця, якщо є{' '}
+        <Term glossary="features.compete.translation">переклад</Term>. Так покупці з інших країн легше знаходять і розуміють товар. Виберіть
+        мову, заповніть поля й збережіть — кожна мова зберігається окремо.
+      </p>
+      <div className="lm-lang-row">
+        <Field label="Мова" id="lm-lang" className="lm-lang">
+          <select value={language} onChange={(e) => setLanguage(e.target.value as TranslationLanguage)}>
+            {TRANSLATION_LANGUAGES.map((l) => (
+              <option key={l.code} value={l.code}>
+                {l.label} ({l.code})
+              </option>
+            ))}
+          </select>
+        </Field>
+        {tr && !loadError && (
+          <Badge tone="accent" icon="check">
+            Переклад є на Etsy
+          </Badge>
+        )}
       </div>
       {loadError ? (
-        <div className="test-result err" role="alert">
+        <Callout tone="error" action={
+          <Button size="sm" icon="refresh" onClick={() => setAttempt((n) => n + 1)}>
+            Спробувати ще
+          </Button>
+        }>
           {loadError}
-        </div>
+        </Callout>
       ) : tr === undefined ? (
-        <div className="hint">Завантаження…</div>
+        <Loading>Завантаження перекладу…</Loading>
       ) : (
         <>
-          {tr === null && <div className="hint">Перекладу цією мовою ще немає — заповніть поля й створіть його.</div>}
-          <div className="field">
-            <label htmlFor="lm-tr-title">
-              Назва ({form.title.trim().length}/{TITLE_MAX})
-            </label>
-            <input id="lm-tr-title" value={form.title} onChange={(e) => set({ title: e.target.value })} />
-          </div>
-          <div className="field">
-            <label htmlFor="lm-tr-desc">Опис</label>
-            <textarea id="lm-tr-desc" rows={6} value={form.description} onChange={(e) => set({ description: e.target.value })} />
-          </div>
-          <div className="field">
-            <label htmlFor="lm-tr-tags">
-              Теги через кому ({input.tags.length}/{MAX_TAGS})
-            </label>
-            <input id="lm-tr-tags" value={form.tags} onChange={(e) => set({ tags: e.target.value })} />
-            {tr != null && tr.tags.length > 0 && !input.tags.length && (
-              <div className="hint warn">Прибрати всі теги перекладу Etsy API не дозволяє — без тегів наявні лишаться як є.</div>
-            )}
-          </div>
-          {dirty && problems.length > 0 && <div className="hint warn">{problems.join(' ')}</div>}
-          <div className="settings-actions">
-            <button className="btn small primary" disabled={busy || !dirty || problems.length > 0} onClick={() => void save()}>
-              {tr ? 'Оновити переклад' : 'Створити переклад'}
-            </button>
-          </div>
-          {error && (
-            <div className="test-result err" role="alert">
-              {error}
-            </div>
+          {tr === null && (
+            <Callout tone="info" role="note" compact>
+              Перекладу цією мовою ще немає — заповніть поля й створіть його.
+            </Callout>
           )}
-          {note && <div className="test-result ok">{note}</div>}
+          <Field
+            label="Назва"
+            id="lm-tr-title"
+            aside={
+              <span className={form.title.trim().length > TITLE_MAX ? 'lm-over' : undefined}>
+                {form.title.trim().length}/{TITLE_MAX}
+              </span>
+            }
+          >
+            <input value={form.title} onChange={(e) => set({ title: e.target.value })} />
+          </Field>
+          <Field label="Опис" id="lm-tr-desc">
+            <textarea rows={6} value={form.description} onChange={(e) => set({ description: e.target.value })} />
+          </Field>
+          <Field
+            label="Теги через кому"
+            id="lm-tr-tags"
+            aside={
+              <span className={input.tags.length > MAX_TAGS ? 'lm-over' : undefined}>
+                {input.tags.length}/{MAX_TAGS}
+              </span>
+            }
+            hint="Слова й фрази, за якими покупці шукатимуть товар цією мовою."
+          >
+            <input value={form.tags} onChange={(e) => set({ tags: e.target.value })} />
+          </Field>
+          {tr != null && tr.tags.length > 0 && !input.tags.length && (
+            <Callout tone="warn" role="note" compact>
+              Etsy не дозволяє прибрати всі теги перекладу — якщо поле порожнє, наявні теги лишаться як є.
+            </Callout>
+          )}
+          {dirty && problems.length > 0 && (
+            <Callout tone="warn" role="note" compact>
+              {problems.join(' ')}
+            </Callout>
+          )}
+          {error && <Callout tone="error">{error}</Callout>}
+          {note && (
+            <Callout tone="success" compact>
+              {note}
+            </Callout>
+          )}
+          <div className="lm-actions lm-footer">
+            <Button variant="primary" icon="upload" busy={busy} disabled={!dirty || problems.length > 0} onClick={() => void save()}>
+              {tr ? 'Оновити переклад' : 'Створити переклад'}
+            </Button>
+            {dirty && <span className="lm-hint">Є незбережені зміни</span>}
+          </div>
         </>
       )}
     </div>

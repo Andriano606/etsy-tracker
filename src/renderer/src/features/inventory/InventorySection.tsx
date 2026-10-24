@@ -1,26 +1,40 @@
 // "Ціна, кількість і варіації" under the own-listing editor: every product
 // (variant) of the listing with its SKU, price, quantity and "показувати";
+// an invalid price/quantity is marked on its field and listed (as a link to it)
+// above the save button;
 // "Зберегти на Etsy" sends the FULL inventory (updateListingInventory).
+// Wide: a table; narrow (container query): every variant is a card.
 
 import { useEffect, useState } from 'react'
 import {
+  INV_MAX_QUANTITY,
   inventoryProblems,
   inventoryProperties,
   inventorySummary,
   inventoryToWrite,
+  parseQuantity,
   rowsFromInventory,
   writeFromRows,
+  type InvMoney,
   type InvOnProperty,
   type InvRowEdit,
   type ListingInventory
 } from '@shared/features/inventory'
+import { formatPrice } from '@shared/format'
+import { parsePrice } from '@shared/myShop'
 import type { MyListing } from '@shared/types'
 import { useStore } from '../../store'
+import { Badge, Button, Callout, EmptyState, InfoTip, Loading, Term, Toggle } from '../../ui'
 import { featureCall } from '../call'
 
 type OnKey = keyof InvOnProperty
 
-const ON_LABEL: Record<OnKey, string> = { price: 'Ціна', quantity: 'Кількість', sku: 'SKU' }
+/** The "depends on" rows: what the value is and how the matrix names it. */
+const ON_ROWS: Array<{ key: OnKey; label: string; name: string }> = [
+  { key: 'price', label: 'Ціна', name: 'Ціна' },
+  { key: 'quantity', label: 'Кількість', name: 'Кількість' },
+  { key: 'sku', label: 'Артикул', name: 'Артикул' }
+]
 
 const valuesOf = (inv: ListingInventory, i: number, ids: number[]): string =>
   JSON.stringify(ids.map((id) => inv.products[i].propertyValues.find((v) => v.propertyId === id)?.values ?? null))
@@ -29,11 +43,30 @@ const rowName = (inv: ListingInventory, i: number): string =>
   inv.products[i].propertyValues.map((v) => v.values.join(', ')).join(' / ')
 
 /** "1 варіант", "3 варіанти", "5 варіантів", "11 варіантів". */
-function variantsText(n: number): string {
+export function variantsText(n: number): string {
   const teen = n % 100 >= 11 && n % 100 <= 14
   const word = !teen && n % 10 === 1 ? 'варіант' : !teen && n % 10 >= 2 && n % 10 <= 4 ? 'варіанти' : 'варіантів'
   return `${n} ${word}`
 }
+
+const money = (m: InvMoney): string => formatPrice(m.amount, m.divisor, m.currency)
+
+/** A price as the field shows it: "12.5" → "12,50" (like the tiles); more decimals stay as they are. */
+export function priceInput(raw: string): string {
+  const n = Number(raw)
+  if (!raw.trim() || !Number.isFinite(n)) return raw
+  return Math.abs(n * 100 - Math.round(n * 100)) < 1e-6 ? n.toFixed(2).replace('.', ',') : raw.replace('.', ',')
+}
+
+/** The table's rows as the fields show them. */
+const editRows = (inv: ListingInventory): InvRowEdit[] => rowsFromInventory(inv).map((r) => ({ ...r, price: priceInput(r.price) }))
+
+const PRICE_PROBLEM = 'ціна — додатне число, не більше 2 знаків після коми.'
+const QTY_PROBLEM = `кількість — ціле число від 0 до ${INV_MAX_QUANTITY}.`
+/** inventoryProblems' own texts for these fields (shown per field instead). */
+const isFieldProblem = (uk: string): boolean => uk.includes(`: ${PRICE_PROBLEM}`) || uk.includes(`: ${QTY_PROBLEM}`)
+
+type FieldKey = 'price' | 'quantity'
 
 /** The listing row after a save: lowest enabled price and the total quantity. */
 function listingAfter(listing: MyListing, inv: ListingInventory): MyListing {
@@ -55,10 +88,11 @@ export function InventorySection({ listing, onChanged }: { listing: MyListing; o
   const [error, setError] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [attempt, setAttempt] = useState(0)
 
   const reset = (i: ListingInventory): void => {
     setInv(i)
-    setRows(rowsFromInventory(i))
+    setRows(editRows(i))
     setOn({ price: i.priceOnProperty, quantity: i.quantityOnProperty, sku: i.skuOnProperty })
   }
 
@@ -72,24 +106,60 @@ export function InventorySection({ listing, onChanged }: { listing: MyListing; o
     return () => {
       alive = false
     }
-  }, [listing.listingId])
+  }, [listing.listingId, attempt])
 
   if (!inv) {
     return error ? (
-      <div className="test-result err" role="alert">
+      <Callout
+        tone="error"
+        action={
+          <Button size="sm" icon="refresh" onClick={() => {
+              setError(null)
+              setAttempt((n) => n + 1)
+            }}>
+            Спробувати ще
+          </Button>
+        }
+      >
         {error}
-      </div>
+      </Callout>
     ) : (
-      <div className="hint">Завантаження…</div>
+      <Loading />
     )
   }
-  if (!inv.products.length) return <div className="hint">Etsy не повернув жодного варіанта цього лістингу.</div>
+  if (!inv.products.length) {
+    return (
+      <EmptyState compact icon="layers" title="Варіантів немає">
+        Etsy не повернув жодного варіанта цього товару.
+      </EmptyState>
+    )
+  }
 
   const props = inventoryProperties(inv.products)
   const write = writeFromRows(inv, rows, on)
-  const problems = inventoryProblems(write).map((p) => p.uk)
   const changed = JSON.stringify(write) !== JSON.stringify(inventoryToWrite(inv))
-  const currency = inventorySummary(inv).priceMin?.currency ?? listing.currency ?? ''
+  const summary = inventorySummary(inv)
+  const currency = summary.priceMin?.currency ?? listing.currency ?? ''
+  const original = editRows(inv)
+  const fieldId = (i: number, key: FieldKey | 'sku'): string => `inv-${listing.listingId}-${i}-${key}`
+  // The same checks as inventoryProblems, per field, so each bad input is marked and linked.
+  const fieldErrors = rows.map((r, i) => {
+    if (!inv.products[i]?.offerings.length) return { price: null, quantity: null }
+    const q = parseQuantity(r.quantity)
+    return {
+      price: parsePrice(r.price) == null ? PRICE_PROBLEM : null,
+      quantity: !Number.isSafeInteger(q) || q < 0 || q > INV_MAX_QUANTITY ? QTY_PROBLEM : null
+    }
+  })
+  const fieldProblems = fieldErrors.flatMap((e, i) => {
+    const name = rowName(inv, i)
+    const who = name ? `Варіант «${name}»` : `Варіант №${i + 1}`
+    return (['price', 'quantity'] as const).flatMap((k) => (e[k] ? [{ text: `${who}: ${e[k]}`, target: fieldId(i, k) }] : []))
+  })
+  const otherProblems = inventoryProblems(write)
+    .map((p) => p.uk)
+    .filter((p) => !isFieldProblem(p))
+  const problemCount = fieldProblems.length + otherProblems.length
 
   /** A value that doesn't vary by an option is the same in every row sharing the options it does vary by. */
   const edit = (i: number, key: keyof InvRowEdit, value: string | boolean): void => {
@@ -105,8 +175,10 @@ export function InventorySection({ listing, onChanged }: { listing: MyListing; o
 
   const save = async (): Promise<void> => {
     const ok = await requestConfirm(
-      `Зберегти ціни, кількість і SKU (${variantsText(inv.products.length)}) на Etsy?\n` +
-        'Etsy замінить увесь інвентар лістингу — покупці одразу побачать зміни.'
+      props.length > 0
+        ? `Зберегти ціни, кількість і артикули (${variantsText(inv.products.length)}) на Etsy?\n` +
+            'Etsy замінить дані всіх варіантів товару — покупці одразу побачать зміни.'
+        : 'Зберегти ціну, кількість і артикул на Etsy?\nПокупці одразу побачать зміни.'
     )
     if (!ok) return
     setSaving(true)
@@ -122,80 +194,206 @@ export function InventorySection({ listing, onChanged }: { listing: MyListing; o
     onChanged(listingAfter(listing, r.value))
   }
 
+  const cls = (base: string, i: number, key: keyof InvRowEdit): string =>
+    base + (original[i] && original[i][key] !== rows[i][key] ? ' is-changed' : '')
+
   return (
-    <div data-testid="inventory-section">
-      {props.length > 0 &&
-        (Object.keys(ON_LABEL) as OnKey[]).map((key) => (
-          <div className="inv-on" key={key}>
-            <span>{ON_LABEL[key]} залежить від:</span>
+    <div className="inv-section" data-testid="inventory-section">
+      {props.length > 0 ? (
+        <p className="inv-intro">
+          Кожен рядок — один <Term glossary="variations">варіант</Term> товару (наприклад, розмір чи колір) зі своєю ціною, кількістю й{' '}
+          <Term glossary="sku">артикулом</Term>. Ціна — ваша базова, без податку і знижок. Змініть значення й натисніть «Зберегти на Etsy» —
+          покупці побачать зміни одразу.
+        </p>
+      ) : (
+        <p className="inv-intro">
+          У товару немає <Term glossary="variations">варіантів</Term> — тут його ціна, кількість і <Term glossary="sku">артикул</Term>. Ціна —
+          ваша базова, без податку і знижок. Змініть значення й натисніть «Зберегти на Etsy» — покупці побачать зміни одразу.
+        </p>
+      )}
+
+      <div className="inv-facts" aria-label={props.length > 0 ? 'Коротко про варіанти' : 'Коротко про товар'}>
+        {props.length > 0 && (
+          <span className="inv-fact">
+            <span className="inv-fact-label">Варіантів</span>
+            <span className="inv-fact-value num">
+              {summary.enabledCount === summary.productCount ? summary.productCount : `${summary.enabledCount} з ${summary.productCount} показано`}
+            </span>
+          </span>
+        )}
+        {summary.priceMin && summary.priceMax && (
+          <span className="inv-fact">
+            <span className="inv-fact-label">
+              Ціна <InfoTip glossary="features.inventory.priceRange" size={13} />
+            </span>
+            <span className="inv-fact-value num">
+              {summary.priceMin.amount * summary.priceMax.divisor === summary.priceMax.amount * summary.priceMin.divisor
+                ? money(summary.priceMin)
+                : `${money(summary.priceMin)} – ${money(summary.priceMax)}`}
+            </span>
+          </span>
+        )}
+        <span className="inv-fact">
+          <span className="inv-fact-label">
+            У наявності <InfoTip glossary="features.inventory.totalQuantity" size={13} />
+          </span>
+          <span className="inv-fact-value num">{summary.totalQuantity}</span>
+        </span>
+      </div>
+
+      {props.length > 0 && (
+        <div className="inv-depends" role="group" aria-label="Що залежить від варіанта">
+          <div className="inv-depends-head">
+            <span className="inv-depends-title">Що залежить від варіанта</span>
+            <InfoTip glossary="features.inventory.dependsOn" />
+          </div>
+          <div className="inv-depends-grid" style={{ gridTemplateColumns: `minmax(84px, max-content) repeat(${props.length}, minmax(0, max-content))` }}>
+            <span />
             {props.map((p) => (
-              <label className="check" key={p.propertyId}>
-                <input type="checkbox" checked={on[key].includes(p.propertyId)} onChange={(e) => toggleOn(key, p.propertyId, e.target.checked)} />
+              <span key={p.propertyId} className="inv-depends-prop truncate" title={p.name}>
                 {p.name}
-              </label>
+              </span>
+            ))}
+            {ON_ROWS.map((row) => (
+              <div className="inv-depends-row" key={row.key} role="presentation">
+                <span className="inv-depends-label">{row.label}</span>
+                {props.map((p) => (
+                  <Toggle
+                    key={p.propertyId}
+                    size="sm"
+                    ariaLabel={`${row.name} залежить від «${p.name}»`}
+                    checked={on[row.key].includes(p.propertyId)}
+                    onChange={(c) => toggleOn(row.key, p.propertyId, c)}
+                  />
+                ))}
+              </div>
             ))}
           </div>
-        ))}
-      <table className="data-table inv-table">
-        <thead>
-          <tr>
-            {props.map((p) => (
-              <th key={p.propertyId}>{p.name}</th>
-            ))}
-            <th>SKU</th>
-            <th className="num">Ціна{currency && `, ${currency}`}</th>
-            <th className="num">Кількість</th>
-            <th>Показувати</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r, i) => {
-            const name = rowName(inv, i)
-            const label = (what: string): string => (name ? `${what}: ${name}` : what)
-            return (
-              <tr key={inv.products[i].productId ?? i}>
-                {props.map((p) => (
-                  <td key={p.propertyId}>{inv.products[i].propertyValues.find((v) => v.propertyId === p.propertyId)?.values.join(', ') ?? '—'}</td>
-                ))}
-                <td>
-                  <input type="text" aria-label={label('SKU')} value={r.sku} onChange={(e) => edit(i, 'sku', e.target.value)} />
-                </td>
-                <td className="num inv-narrow">
-                  <input type="text" inputMode="decimal" aria-label={label('Ціна')} value={r.price} onChange={(e) => edit(i, 'price', e.target.value)} />
-                </td>
-                <td className="num inv-narrow">
-                  <input type="text" inputMode="numeric" aria-label={label('Кількість')} value={r.quantity} onChange={(e) => edit(i, 'quantity', e.target.value)} />
-                </td>
-                <td>
-                  <input type="checkbox" aria-label={label('Показувати')} checked={r.enabled} onChange={(e) => edit(i, 'enabled', e.target.checked)} />
-                </td>
-              </tr>
-            )
-          })}
-        </tbody>
-      </table>
-      {props.length > 0 && (
-        <p className="hint">Значення, що не залежить від властивості, змінюється одразу в усіх відповідних варіантах.</p>
-      )}
-      {problems.length > 0 && (
-        <ul className="hint warn" data-testid="inventory-problems">
-          {problems.map((p) => (
-            <li key={p}>{p}</li>
-          ))}
-        </ul>
-      )}
-      {error && (
-        <div className="test-result err" role="alert">
-          {error}
+          <p className="inv-depends-note">Вимкнено — значення однакове для всіх варіантів: зміна в одному рядку переноситься в усі відповідні.</p>
         </div>
       )}
-      {note && <div className="test-result ok">{note}</div>}
-      <div className="settings-actions">
-        <button className="btn primary" disabled={!changed || problems.length > 0 || saving} onClick={() => void save()}>
+
+      <div className="inv-variants">
+        <table className="inv-table">
+          <thead>
+            <tr>
+              {props.map((p) => (
+                <th key={p.propertyId}>{p.name}</th>
+              ))}
+              <th>
+                <span className="inv-th">
+                  Артикул <InfoTip glossary="sku" size={13} />
+                </span>
+              </th>
+              <th className="num">Ціна{currency && `, ${currency}`}</th>
+              <th className="num">Кількість</th>
+              <th className="inv-col-show">Показувати</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => {
+              const name = rowName(inv, i)
+              const label = (what: string): string => (name ? `${what}: ${name}` : what)
+              const err = fieldErrors[i]
+              /** aria + class of a price/quantity field: invalid → red border, described by its error. */
+              const invalid = (k: FieldKey) =>
+                err[k] ? { 'aria-invalid': true as const, 'aria-describedby': `${fieldId(i, k)}-err` } : {}
+              return (
+                <tr key={inv.products[i].productId ?? i} className={r.enabled ? undefined : 'is-off'}>
+                  {props.map((p) => (
+                    <td key={p.propertyId} className="inv-prop" data-label={p.name}>
+                      {inv.products[i].propertyValues.find((v) => v.propertyId === p.propertyId)?.values.join(', ') ?? '—'}
+                    </td>
+                  ))}
+                  <td data-label="Артикул">
+                    <input
+                      type="text"
+                      id={fieldId(i, 'sku')}
+                      className={cls('inv-input', i, 'sku')}
+                      aria-label={label('Артикул')}
+                      placeholder="—"
+                      value={r.sku}
+                      onChange={(e) => edit(i, 'sku', e.target.value)}
+                    />
+                  </td>
+                  <td className="num" data-label={`Ціна${currency && `, ${currency}`}`}>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      id={fieldId(i, 'price')}
+                      className={cls('inv-input inv-input-num', i, 'price') + (err.price ? ' is-invalid' : '')}
+                      aria-label={label('Ціна')}
+                      {...invalid('price')}
+                      value={r.price}
+                      onChange={(e) => edit(i, 'price', e.target.value)}
+                    />
+                    {err.price && (
+                      <span id={`${fieldId(i, 'price')}-err`} className="sr-only">
+                        {`Помилка: ${err.price}`}
+                      </span>
+                    )}
+                  </td>
+                  <td className="num" data-label="Кількість">
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      id={fieldId(i, 'quantity')}
+                      className={cls('inv-input inv-input-num', i, 'quantity') + (err.quantity ? ' is-invalid' : '')}
+                      aria-label={label('Кількість')}
+                      {...invalid('quantity')}
+                      value={r.quantity}
+                      onChange={(e) => edit(i, 'quantity', e.target.value)}
+                    />
+                    {err.quantity && (
+                      <span id={`${fieldId(i, 'quantity')}-err`} className="sr-only">
+                        {`Помилка: ${err.quantity}`}
+                      </span>
+                    )}
+                  </td>
+                  <td className="inv-col-show" data-label="Показувати">
+                    <Toggle size="sm" ariaLabel={label('Показувати')} checked={r.enabled} onChange={(c) => edit(i, 'enabled', c)} />
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="inv-hint">
+        Перемикач «Показувати» <InfoTip glossary="features.inventory.showVariant" size={13} /> ховає варіант від покупців, не видаляючи його.
+        Ціна — додатне число (напр. 12,50), кількість — від 0 до {INV_MAX_QUANTITY}.
+      </p>
+
+      {problemCount > 0 && (
+        <div data-testid="inventory-problems">
+          <Callout tone="warn" role="note" compact title="Перш ніж зберегти, виправте:">
+            <ul className="inv-problems">
+              {fieldProblems.map((p) => (
+                <li key={p.target}>
+                  <button type="button" className="inv-problem-link" title="Перейти до поля" onClick={() => document.getElementById(p.target)?.focus()}>
+                    {p.text}
+                  </button>
+                </li>
+              ))}
+              {otherProblems.map((p) => (
+                <li key={p}>{p}</li>
+              ))}
+            </ul>
+          </Callout>
+        </div>
+      )}
+      {error && <Callout tone="error">{error}</Callout>}
+      {note && (
+        <Callout tone="success" compact>
+          {note}
+        </Callout>
+      )}
+      <div className="inv-actions">
+        <Button variant="primary" icon="upload" busy={saving} disabled={!changed || problemCount > 0} onClick={() => void save()}>
           {saving ? 'Збереження…' : 'Зберегти на Etsy'}
-        </button>
-        <button
-          className="btn"
+        </Button>
+        <Button
+          variant="ghost"
           disabled={!changed || saving}
           onClick={() => {
             reset(inv)
@@ -203,7 +401,12 @@ export function InventorySection({ listing, onChanged }: { listing: MyListing; o
           }}
         >
           Скасувати зміни
-        </button>
+        </Button>
+        {changed && !saving && (
+          <Badge tone="warn" icon="edit">
+            Є незбережені зміни
+          </Badge>
+        )}
       </div>
     </div>
   )

@@ -288,7 +288,7 @@ describe('listingMeta actions: attributes', () => {
 
   it('saveAttribute: a sign-in without listings_w names the permission; an Etsy 400 is the client error', async () => {
     const { ctx, fetch } = featureCtx(routes(), { status: signedIn({ scopes: ['listings_r'] }) })
-    await expect(run('saveAttribute', { listingId: LISTING, propertyId: 200, valueIds: [1], values: ['Black'] }, ctx)).rejects.toThrow('редагування лістингів')
+    await expect(run('saveAttribute', { listingId: LISTING, propertyId: 200, valueIds: [1], values: ['Black'] }, ctx)).rejects.toThrow('редагування товарів')
     expect(fetch.calls).toHaveLength(0)
     const bad = featureCtx(routes({ [`PUT ${A}/shops/{s}/listings/{l}/properties/{p}`]: { status: 400, body: { error: 'Invalid value' } } }))
     await expect(run('saveAttribute', { listingId: LISTING, propertyId: 200, valueIds: [1], values: ['Black'] }, bad.ctx)).rejects.toMatchObject({
@@ -397,7 +397,7 @@ describe('listingMeta actions: personalization', () => {
       [[], 'хоча б одне питання'],
       [Array.from({ length: 6 }, () => q({})), 'не більше 5'],
       [[q({ text: 'x'.repeat(46) })], 'довший за 45'],
-      [[q({ type: 'dropdown' })], 'хоча б один варіант'],
+      [[q({ type: 'dropdown' })], 'хоча б одну відповідь'],
       [[q({ type: 'dropdown', options: [{ label: 'x'.repeat(21) }] })], 'довший за 20'],
       [[q({ type: 'labeled_upload', maxFiles: 3, options: [{ label: 'A' }] })], 'дорівнювати максимуму файлів'],
       [[q({ required: true, addOnPrice: 2 })], 'доплата можлива лише'],
@@ -420,7 +420,7 @@ describe('listingMeta actions: personalization', () => {
     await expect(run('savePersonalization', { listingId: LISTING, questions }, ctx)).rejects.toMatchObject({ kind: 'server' })
     expect(fetch.calls).toHaveLength(1)
     const ro = featureCtx(routes(), { status: signedIn({ scopes: ['listings_r'] }) })
-    await expect(run('savePersonalization', { listingId: LISTING, questions }, ro.ctx)).rejects.toThrow('редагування лістингів')
+    await expect(run('savePersonalization', { listingId: LISTING, questions }, ro.ctx)).rejects.toThrow('редагування товарів')
   })
 
   it('removePersonalization: DELETE deleteListingPersonalization with OAuth', async () => {
@@ -483,7 +483,7 @@ describe('listingMeta actions: translations', () => {
     await expect(run('saveTranslation', { ...base, title: 5 }, ctx)).rejects.toThrow('Поле title має бути текстом.')
     expect(fetch.calls).toHaveLength(0)
     const ro = featureCtx(routes(), { status: signedIn({ scopes: ['listings_r'] }) })
-    await expect(run('saveTranslation', base, ro.ctx)).rejects.toThrow('редагування лістингів')
+    await expect(run('saveTranslation', base, ro.ctx)).rejects.toThrow('редагування товарів')
   })
 })
 
@@ -499,7 +499,7 @@ describe('listingMeta actions: deleteListing', () => {
 
   it('needs listings_d; Etsy 409 (state not deletable) fails; signed out fails', async () => {
     const noD = featureCtx(routes(), { status: signedIn({ scopes: ALL_SCOPES.filter((s) => s !== 'listings_d') }) })
-    await expect(run('deleteListing', { listingId: LISTING }, noD.ctx)).rejects.toThrow('видалення лістингів')
+    await expect(run('deleteListing', { listingId: LISTING }, noD.ctx)).rejects.toThrow('видалення товарів')
     expect(noD.fetch.calls).toHaveLength(0)
     const conflict = featureCtx(routes({ [`DELETE ${A}/listings/{l}`]: { status: 409, body: { error: 'Cannot delete' } } }))
     await expect(run('deleteListing', { listingId: LISTING }, conflict.ctx)).rejects.toBeInstanceOf(EtsyApiError)
@@ -757,7 +757,7 @@ describe('listingMeta MCP tools', () => {
       [[{ text: 'A', type: 'text_input' }], 'questions[0].required must be a boolean'],
       [[{ text: 'A', type: 'text_input', required: true, max_characters: 0 }], 'max_characters must be a positive integer'],
       [[{ text: 'A', type: 'dropdown', required: true, options: [{ label: 3 }] }], 'options[0].label must be a string'],
-      [[{ text: 'A', type: 'dropdown', required: true }], 'хоча б один варіант'],
+      [[{ text: 'A', type: 'dropdown', required: true }], 'хоча б одну відповідь'],
       [['A'], 'questions[0] must be an object']
     ]
     for (const [questions, msg] of cases) {

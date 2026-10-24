@@ -3,10 +3,18 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { OrderMoney, OrderPayment } from '@shared/features/orders'
 import { formatEtsyDate, formatPrice } from '@shared/format'
+import { Badge, Loading as UiLoading } from '../../ui'
+import { ErrorNote, Facts, Status } from '../shopConfig/kit'
 import { featureCall } from '../call'
 
 export const fmtMoney = (m: OrderMoney | null | undefined): string => (m ? formatPrice(m.amount, m.divisor, m.currency) : '—')
 export const fmtMoneys = (list: OrderMoney[]): string => (list.length ? list.map(fmtMoney).join(' + ') : '—')
+
+/** "+24,90 USD" / "−0,20 USD": a ledger amount with its sign (a typographic minus) for the eye. */
+export function signedMoney(m: OrderMoney): string {
+  const abs = fmtMoney({ ...m, amount: Math.abs(m.amount) })
+  return m.amount > 0 ? `+${abs}` : m.amount < 0 ? `−${abs}` : abs
+}
 
 export interface Loaded<T> {
   value: T | null
@@ -50,74 +58,71 @@ export function useOrders<T>(action: string, args: Record<string, unknown> | nul
   return { value: data && data.key === key ? data.value : null, error, loading, reload, set }
 }
 
-export function Alert({ text }: { text: string | null }): JSX.Element | null {
-  if (!text) return null
-  return (
-    <div className="test-result err" role="alert">
-      {text}
-    </div>
-  )
+/** An error (role="alert"). */
+export function Alert({ text, title }: { text: string | null; title?: string }): JSX.Element | null {
+  return <ErrorNote error={text} title={title} />
 }
 
+/** A success note (role="status"). */
 export function Note({ text }: { text: string | null }): JSX.Element | null {
-  if (!text) return null
-  return (
-    <div className="test-result ok" role="status">
-      {text}
-    </div>
-  )
+  return <Status error={null} note={text} />
 }
 
-export const Loading = (): JSX.Element => <div className="hint">Завантаження…</div>
+export const Loading = ({ children }: { children?: string }): JSX.Element => <UiLoading inline>{children ?? 'Завантаження…'}</UiLoading>
+
+/** Etsy's payment status words → Ukrainian (unknown ones as Etsy wrote them). */
+const PAYMENT_STATUS: Record<string, string> = {
+  settled: 'зараховано',
+  authed: 'авторизовано',
+  pending: 'очікує',
+  refunded: 'повернуто',
+  completed: 'виконано',
+  complete: 'виконано',
+  failed: 'не вдалося'
+}
+const paymentStatus = (s: string): string => PAYMENT_STATUS[s.toLowerCase()] ?? s
 
 /** Payments (OAS Payment) as fact lists: gross, fees, net, posted / adjusted amounts, refunds. */
 export function PaymentsList({ payments }: { payments: OrderPayment[] }): JSX.Element {
-  if (!payments.length) return <div className="hint">Платежів немає.</div>
+  if (!payments.length) return <p className="fx-muted">Платежів немає.</p>
   return (
-    <>
+    <div className="ord-payments">
       {payments.map((p) => (
-        <div key={p.paymentId} className="orders-payment" data-testid={`payment-${p.paymentId}`}>
-          <div className="orders-sub-title">
-            Платіж #{p.paymentId}
-            {p.receiptId != null && <span className="dim"> · замовлення #{p.receiptId}</span>}
-            {p.status && <span className="dim"> · {p.status}</span>}
+        <div key={p.paymentId} className="ord-payment" data-testid={`payment-${p.paymentId}`}>
+          <div className="ord-payment-head">
+            <span className="fx-title">Платіж #{p.paymentId}</span>
+            {p.receiptId != null && <span className="fx-meta">замовлення #{p.receiptId}</span>}
+            {p.status && <Badge tone={/settled|complete/i.test(p.status) ? 'accent' : 'neutral'}>{paymentStatus(p.status)}</Badge>}
+            <span className="fx-meta">{formatEtsyDate(p.createdAt)}</span>
           </div>
-          <dl className="listing-facts">
-            <dt>Сплачено покупцем</dt>
-            <dd>{fmtMoney(p.gross)}</dd>
-            <dt>Комісії</dt>
-            <dd>{fmtMoney(p.fees)}</dd>
-            <dt>Вам (чистими)</dt>
-            <dd>{fmtMoney(p.net)}</dd>
-            {p.postedNet && (
-              <>
-                <dt>Зараховано після відправлення</dt>
-                <dd>{fmtMoney(p.postedNet)}</dd>
-              </>
-            )}
-            {p.adjustedNet && (
-              <>
-                <dt>Після повернень</dt>
-                <dd>{fmtMoney(p.adjustedNet)}</dd>
-              </>
-            )}
-            <dt>Дата</dt>
-            <dd>{formatEtsyDate(p.createdAt)}</dd>
-          </dl>
+          <Facts
+            className="fx-facts--money"
+            items={[
+              { label: 'Сплачено покупцем', glossary: 'features.orders.grandTotal', value: fmtMoney(p.gross) },
+              { label: 'Комісії', glossary: 'features.orders.fees', value: p.fees ? `−${fmtMoney(p.fees)}` : '—' },
+              { label: 'Вам (чистими)', glossary: 'features.orders.net', value: fmtMoney(p.net), strong: true },
+              p.postedNet && { label: 'Зараховано після відправлення', glossary: 'features.orders.posted', value: fmtMoney(p.postedNet) },
+              p.adjustedNet && { label: 'Після повернень', glossary: 'features.orders.adjusted', value: fmtMoney(p.adjustedNet) }
+            ]}
+          />
           {p.adjustments.length > 0 && (
-            <ul className="plain-list">
+            <ul className="fx-list">
               {p.adjustments.map((a) => (
-                <li key={a.id}>
-                  Повернення {fmtMoney(a.amount)}
-                  {a.reason && ` — ${a.reason}`}
-                  {a.status && <span className="dim"> · {a.status}</span>}
-                  <span className="dim"> · {formatEtsyDate(a.createdAt)}</span>
+                <li key={a.id} className="fx-list-row">
+                  <span>
+                    Повернення {fmtMoney(a.amount)}
+                    {a.reason && ` — ${a.reason}`}
+                  </span>
+                  <span className="fx-meta">
+                    {a.status && `${paymentStatus(a.status)} · `}
+                    {formatEtsyDate(a.createdAt)}
+                  </span>
                 </li>
               ))}
             </ul>
           )}
         </div>
       ))}
-    </>
+    </div>
   )
 }

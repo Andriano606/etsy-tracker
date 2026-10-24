@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest'
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { MyShopModal } from '../../../src/renderer/src/components/MyShopModal'
 import { useStore } from '../../../src/renderer/src/store'
+import { GLOSSARY } from '../../../src/shared/glossary'
 import { etsyIn, mockFeature, setupRenderer, type Api } from '../helpers'
 
 let api: Api
@@ -39,18 +40,48 @@ describe('Мій магазин → Акаунт', () => {
     expect(api.featureCall).toHaveBeenCalledWith('account', 'summary', {})
     const tab = screen.getByTestId('account-tab')
     expect(tab).toHaveTextContent('Andrii K')
-    expect(tab).toHaveTextContent('me@example.com')
-    expect(tab).toHaveTextContent('TidyFoxSheets (#68736507)')
-    expect(tab).toHaveTextContent('читання лістингів, email акаунта')
-    expect(tab).toHaveTextContent('Main st 1, Lviv, Ukraine')
-    expect(tab).toHaveTextContent('для доставки за замовчуванням')
-    expect(tab).toHaveTextContent('Немає дозволу на адреси акаунта')
+    // The shop by its name only (Etsy's internal shop number means nothing to a beginner).
+    expect(within(tab).getAllByRole('definition').map((d) => d.textContent)).toEqual(['me@example.com', 'TidyFoxSheets'])
+    expect(tab).not.toHaveTextContent('68736507')
+    // The ⓘ sits next to a visible label saying what the card is.
+    expect(within(tab).getByText(/^Ваш акаунт Etsy/)).toBeInTheDocument()
+    expect(within(tab).getByRole('button', { name: 'Що таке «Акаунт Etsy»?' })).toHaveAccessibleDescription(GLOSSARY['features.account.account'].short)
+    expect(within(tab).getByRole('list', { name: 'Видані дозволи' }).textContent).toBe('читання товарівemail акаунта')
+    expect(within(tab).getByRole('button', { name: 'Що таке «Дозволи»?' })).toHaveAccessibleDescription(GLOSSARY.permissions.short)
+    expect(within(tab).getByText('Main st 1, Lviv, Ukraine')).toBeInTheDocument()
+    expect(within(tab).getByText('для доставки за замовчуванням')).toHaveAccessibleDescription(/коли ви самі щось купуєте/)
+    expect(within(tab).getByRole('status')).toHaveTextContent('Немає дозволу на адреси акаунта')
   })
 
-  it('an error is shown', async () => {
+  it('a sign-in without email/address permissions: says what is unknown, no address section', async () => {
+    mockFeature({ 'account.summary': { ...summary, email: null, firstName: null, lastName: null, addresses: null, shopId: null, shopName: null, grantedScopes: null, notes: [] } })
+    await openTab()
+    const tab = screen.getByTestId('account-tab')
+    expect(tab).toHaveTextContent('Ім’я не вказано')
+    expect(within(tab).getAllByRole('definition').map((d) => d.textContent)).toEqual(['невідома', 'немає'])
+    expect(tab).toHaveTextContent('Etsy не сказав, які дозволи має вхід.')
+    expect(within(tab).queryByText('Адреси')).toBeNull()
+    expect(within(tab).queryByRole('status')).toBeNull()
+  })
+
+  it('no saved addresses: an empty state', async () => {
+    mockFeature({ 'account.summary': { ...summary, addresses: [], notes: [] } })
+    await openTab()
+    expect(screen.getByText('Адрес немає.')).toBeInTheDocument()
+  })
+
+  it('an error is shown, with "Спробувати ще" that asks Etsy again', async () => {
     mockFeature({ 'account.summary': { ok: false, error: 'Увійдіть в Etsy' } })
     await openTab()
     expect(screen.getByRole('alert')).toHaveTextContent('Увійдіть в Etsy')
+    expect(api.featureCall).toHaveBeenCalledTimes(1)
+    mockFeature({ 'account.summary': summary })
+    await act(async () => {
+      fireEvent.click(within(screen.getByRole('alert')).getByRole('button', { name: 'Спробувати ще' }))
+    })
+    expect(api.featureCall).toHaveBeenCalledTimes(2)
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByTestId('account-tab')).toHaveTextContent('Andrii K')
   })
 
   it('a sign-in with fewer permissions than the app asks for is flagged', async () => {
@@ -58,6 +89,6 @@ describe('Мій магазин → Акаунт', () => {
     api.getEtsyAuth.mockResolvedValue(etsyIn({ scopes: ['listings_r', 'listings_w', 'shops_r', 'shops_w'] }))
     render(<MyShopModal />)
     await act(async () => {})
-    expect(screen.getByTestId('missing-scopes')).toHaveTextContent('видалення лістингів, замовлення й фінанси')
+    expect(screen.getByTestId('missing-scopes')).toHaveTextContent('видалення товарів, замовлення й фінанси')
   })
 })

@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { McpStatus } from '@shared/types'
 import {
   MCP_SERVER_NAME,
+  validateMcpPort,
   MCP_TOOL_SUMMARY,
   claudeCodeCommand,
   claudeCodeReplaceCommand,
@@ -10,18 +11,51 @@ import {
 } from '@shared/mcpConfig'
 import { formatDateTime } from '@shared/format'
 import { useStore } from '../store'
-import { useEscape } from './useEscape'
+import { Badge, Button, Callout, EmptyState, Field, Icon, InfoTip, Modal, Segmented, Term, Toggle } from '../ui'
 
 /** How often the open modal refreshes the server state (requests, last client). */
 export const MCP_POLL_MS = 2000
 
+type ClientKind = 'code' | 'desktop' | 'other'
+
+const CLIENTS = [
+  { value: 'code' as const, label: 'Claude Code', hint: 'Claude у терміналі' },
+  { value: 'desktop' as const, label: 'Claude Desktop', hint: 'Програма Claude для комп’ютера' },
+  { value: 'other' as const, label: 'Інший клієнт', hint: 'Будь-яка програма, що підтримує MCP-сервери за адресою' }
+]
+
+const EXAMPLES = ['Які нові товари з’явилися в магазинах?', 'Покажи найпопулярніші товари зі знижкою', 'Що пишуть у відгуках про цей товар?']
+
+/** What ConfirmModal can show besides the message: its own heading, a verb on the button, the red style. */
+export interface ConfirmOptions {
+  message: string
+  title?: string
+  confirmLabel?: string
+  danger?: boolean
+}
+
+/**
+ * Like the store's requestConfirm (same dialog, same resolve path), but with a
+ * heading and a button that say what happens ("Видалити ключ", "Дозволити
+ * зміни") — ConfirmModal reads these optional fields of the request.
+ */
+export function confirmWith(opts: ConfirmOptions): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const request = { ...opts, onResolve: resolve }
+    useStore.setState({ confirmRequest: request })
+  })
+}
+
 /** A ready-to-paste snippet with its own "Копіювати" button. */
-function CopyBlock({ id, label, text }: { id: string; label: string; text: string }): JSX.Element {
+export function CopyBlock({ id, label, text }: { id: string; label: ReactNode; text: string }): JSX.Element {
   const [state, setState] = useState<'idle' | 'ok' | 'err'>('idle')
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  useEffect(() => () => {
-    if (timer.current) clearTimeout(timer.current)
-  }, [])
+  useEffect(
+    () => () => {
+      if (timer.current) clearTimeout(timer.current)
+    },
+    []
+  )
 
   const copy = async (): Promise<void> => {
     const ok = await window.api.copyText(text).catch(() => false)
@@ -33,10 +67,15 @@ function CopyBlock({ id, label, text }: { id: string; label: string; text: strin
   return (
     <div className="copy-block" data-testid={`copy-${id}`}>
       <div className="copy-block-head">
-        <span>{label}</span>
-        <button type="button" className={`btn small${state === 'ok' ? ' copied' : ''}`} onClick={() => void copy()}>
-          {state === 'ok' ? 'Скопійовано ✓' : state === 'err' ? 'Не вдалося' : 'Копіювати'}
-        </button>
+        <span className="copy-block-label">{label}</span>
+        <Button
+          size="sm"
+          icon={state === 'ok' ? 'check' : state === 'err' ? 'warning' : 'copy'}
+          className={state === 'ok' ? 'copied' : state === 'err' ? 'copy-failed' : undefined}
+          onClick={() => void copy()}
+        >
+          {state === 'ok' ? 'Скопійовано' : state === 'err' ? 'Не вдалося' : 'Копіювати'}
+        </Button>
       </div>
       <pre className="copy-block-text">{text}</pre>
     </div>
@@ -44,44 +83,165 @@ function CopyBlock({ id, label, text }: { id: string; label: string; text: strin
 }
 
 function StatusLine({ st }: { st: McpStatus }): JSX.Element {
-  if (!st.enabled) return <div className="hint">Вимкнено.</div>
-  if (st.error) {
+  if (!st.enabled) {
     return (
-      <div className="hint err" role="alert">
-        Не працює: {st.error}
+      <div className="mcp-status is-off">
+        <span className="mcp-dot" aria-hidden="true" />
+        <span>Вимкнено.</span>
+        <span className="mcp-status-meta">Claude не має доступу до даних програми.</span>
       </div>
     )
   }
-  if (!st.running) return <div className="hint">Запускається…</div>
+  if (st.error) {
+    return (
+      <div className="mcp-status is-error" role="alert">
+        <span className="mcp-dot" aria-hidden="true" />
+        <span>
+          Не працює: {st.error} <span className="mcp-status-meta">Номер порту можна змінити в розділі «Для досвідчених».</span>
+        </span>
+      </div>
+    )
+  }
+  if (!st.running) {
+    return (
+      <div className="mcp-status is-off">
+        <span className="mcp-dot" aria-hidden="true" />
+        <span>Запускається…</span>
+      </div>
+    )
+  }
   return (
-    <div className="hint" data-testid="mcp-running">
-      <span className="ok">● Працює</span> на <code>{st.url}</code>
-      {' · '}
-      {st.requests > 0
-        ? `запитів: ${st.requests.toLocaleString('uk-UA')}, останній ${formatDateTime(st.lastRequestAt)}${st.lastClient ? ` (${st.lastClient})` : ''}`
-        : 'ще жодного запиту'}
+    <div className="mcp-status is-on" data-testid="mcp-running">
+      <span className="mcp-dot" aria-hidden="true" />
+      <span className="min-w-0">
+        <b>Працює</b> на <code>{st.url}</code>
+        <span className="mcp-status-meta">
+          {' · '}
+          {st.requests > 0
+            ? `запитів: ${st.requests.toLocaleString('uk-UA')}, останній ${formatDateTime(st.lastRequestAt)}${st.lastClient ? ` (${st.lastClient})` : ''}`
+            : 'ще жодного запиту'}
+        </span>
+      </span>
     </div>
   )
 }
 
+/** validateMcpPort's message, or null for a valid port. */
+function portCheck(raw: string): string | null {
+  try {
+    validateMcpPort(raw)
+    return null
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e)
+  }
+}
+
+const cap = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1)
+
+function ToolList({ tools, testId }: { tools: typeof MCP_TOOL_SUMMARY; testId?: string }): JSX.Element {
+  return (
+    <ul className="mcp-tools" data-testid={testId}>
+      {tools.map((t) => (
+        <li key={t.name}>
+          <span className="mcp-tool-text">{cap(t.text)}</span>
+          <code className="mcp-tool-name">{t.name}</code>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+/** The steps for one kind of Claude app, with its ready command / config. */
+function ConnectSteps({ client, st }: { client: ClientKind; st: McpStatus & { token: string } }): JSX.Element {
+  if (client === 'code') {
+    return (
+      <ol className="mcp-steps">
+        <li>
+          <p>
+            Відкрийте <Term glossary="settings.terminal">термінал</Term> і вставте команду — сервер стане доступним у всіх
+            ваших проєктах:
+          </p>
+          <CopyBlock id="claude-code" label="Команда для Claude Code" text={claudeCodeCommand(st.port, st.token)} />
+          <details className="settings-details is-inline">
+            <summary>
+              <Icon name="chevron-right" size={16} className="settings-details-chevron" />
+              Уже підключали раніше, а тепер змінився порт чи токен?
+            </summary>
+            <div className="settings-details-body">
+              <CopyBlock
+                id="claude-code-replace"
+                label={`Замінити вже доданий «${MCP_SERVER_NAME}»`}
+                text={claudeCodeReplaceCommand(st.port, st.token)}
+              />
+            </div>
+          </details>
+        </li>
+        <li>
+          <p>
+            Перезапустіть Claude Code і введіть <code>/mcp</code> — сервер <code>{MCP_SERVER_NAME}</code> має бути
+            «connected».
+          </p>
+        </li>
+      </ol>
+    )
+  }
+  if (client === 'desktop') {
+    return (
+      <ol className="mcp-steps">
+        <li>
+          <p>
+            Встановіть Node.js (безкоштовно, з сайту nodejs.org) — через нього Claude Desktop під’єднується до програми.
+          </p>
+        </li>
+        <li>
+          <p>
+            У Claude Desktop відкрийте Settings → Developer → Edit Config і вставте це у файл claude_desktop_config.json
+            (якщо там уже є інші сервери — додайте лише блок «{MCP_SERVER_NAME}»):
+          </p>
+          <CopyBlock id="claude-desktop" label="Налаштування для Claude Desktop" text={claudeDesktopConfig(st.port, st.token)} />
+        </li>
+        <li>
+          <p>Повністю закрийте й знову відкрийте Claude Desktop.</p>
+        </li>
+      </ol>
+    )
+  }
+  return (
+    <ol className="mcp-steps">
+      <li>
+        <p>
+          Для файлу .mcp.json у теці проєкту або будь-якої іншої програми, що вміє підключатися до MCP-сервера за адресою:
+        </p>
+        <CopyBlock id="mcp-json" label="Налаштування сервера" text={mcpJsonConfig(st.port, st.token)} />
+      </li>
+    </ol>
+  )
+}
+
 /**
- * The MCP modal: switch the local MCP server on/off, pick its port, and copy
- * a ready command/config for Claude Code, a project's .mcp.json or Claude
- * Desktop. The commands use the saved port and token.
+ * The MCP modal: switch the local MCP server on/off (applied at once), copy a
+ * ready command/config for Claude Code, Claude Desktop or another client, allow
+ * changes to the own store, and — under "Для досвідчених" — the port and token.
+ * The commands use the saved port and token.
  */
 export function McpModal(): JSX.Element | null {
-  const { showMcp, setShowMcp, mcpStatus: st, setMcpStatus, requestConfirm, etsyAuth } = useStore()
-  const [enabled, setEnabled] = useState(false)
-  const [port, setPort] = useState('')
+  const { showMcp, setShowMcp } = useStore()
+  if (!showMcp) return null
+  return <McpDialog onClose={() => setShowMcp(false)} />
+}
+
+function McpDialog({ onClose }: { onClose: () => void }): JSX.Element {
+  const { mcpStatus: st, setMcpStatus, etsyAuth } = useStore()
+  const [port, setPort] = useState(st ? String(st.port) : '')
   const [error, setError] = useState<string | null>(null)
-  const [saving, setSaving] = useState(false)
+  const [portError, setPortError] = useState<string | null>(null)
+  const [switching, setSwitching] = useState(false)
+  const [savingPort, setSavingPort] = useState(false)
+  const [client, setClient] = useState<ClientKind>('code')
+  const [advanced, setAdvanced] = useState(!!st?.error)
 
-  const close = (): void => setShowMcp(false)
-  useEscape(close, showMcp)
-
-  // Fresh state on every opening, then poll while open (requests, last client, errors).
+  // Fresh state on opening, then poll while open (requests, last client, errors).
   useEffect(() => {
-    if (!showMcp) return
     let alive = true
     const refresh = (): void => {
       void window.api
@@ -97,43 +257,59 @@ export function McpModal(): JSX.Element | null {
       alive = false
       clearInterval(t)
     }
-  }, [showMcp, setMcpStatus])
+  }, [setMcpStatus])
 
-  // The form follows the saved settings when the modal opens / after a save.
-  const savedKey = st ? `${st.enabled}:${st.port}` : ''
+  // The port field follows the saved port (on opening / after a save).
+  const savedPort = st ? String(st.port) : ''
   useEffect(() => {
-    if (!st) return
-    setEnabled(st.enabled)
-    setPort(String(st.port))
-  }, [savedKey, showMcp])
+    if (savedPort) setPort(savedPort)
+  }, [savedPort])
 
+  // A server that can't start (busy port) → show the port field.
+  const failing = !!st?.enabled && !!st.error
   useEffect(() => {
-    if (!showMcp) setError(null)
-  }, [showMcp])
+    if (failing) setAdvanced(true)
+  }, [failing])
 
-  if (!showMcp) return null
+  const dirty = !!st && port.trim() !== String(st.port)
+  // Checked while typing (the same rule main applies); a busy port is main's answer.
+  const portInvalid = dirty ? portCheck(port) : null
 
-  const dirty = !!st && (enabled !== st.enabled || port.trim() !== String(st.port))
-
-  const save = async (): Promise<void> => {
-    setSaving(true)
+  const setEnabled = async (on: boolean): Promise<void> => {
+    setSwitching(true)
     setError(null)
     try {
-      const res = await window.api.setMcp({ enabled, port: port.trim() })
+      const res = await window.api.setMcp({ enabled: on })
       if (!res.ok) setError(res.error)
       else setMcpStatus(res.status)
     } finally {
-      setSaving(false)
+      setSwitching(false)
     }
   }
 
-  // Applied at once (not part of the port form): MCP clients may change the own store.
+  const savePort = async (): Promise<void> => {
+    setSavingPort(true)
+    setPortError(null)
+    try {
+      const res = await window.api.setMcp({ enabled: !!st?.enabled, port: port.trim() })
+      if (!res.ok) setPortError(res.error)
+      else setMcpStatus(res.status)
+    } finally {
+      setSavingPort(false)
+    }
+  }
+
+  // Applied at once: MCP clients may change the own store.
   const toggleWrites = async (on: boolean): Promise<void> => {
     if (
       on &&
-      !(await requestConfirm(
-        'Дозволити Claude змінювати ваш магазин на Etsy? Він зможе створювати лістинги (чернетки, а якщо ви попросите — публікувати їх за $0.20), редагувати лістинги й тексти магазину. Claude Code однаково питатиме дозволу на кожну дію.'
-      ))
+      !(await confirmWith({
+        title: 'Зміни у вашому магазині',
+        message:
+          'Дозволити Claude змінювати ваш магазин на Etsy? Він зможе створювати товари (чернетки, а якщо ви попросите — публікувати їх за $0,20), редагувати товари й тексти магазину. Claude Code однаково питатиме дозволу на кожну дію.',
+        confirmLabel: 'Дозволити зміни',
+        danger: true
+      }))
     ) {
       return
     }
@@ -144,54 +320,197 @@ export function McpModal(): JSX.Element | null {
   }
 
   const regenerate = async (): Promise<void> => {
-    const ok = await requestConfirm(
-      'Створити новий токен? Усі вже підключені клієнти перестануть працювати, доки ви не оновите в них команду чи конфіг.'
-    )
+    const ok = await confirmWith({
+      title: 'Новий токен доступу',
+      message:
+        'Створити новий токен? Усі вже підключені клієнти перестануть працювати, доки ви не оновите в них команду чи конфіг.',
+      confirmLabel: 'Створити новий токен'
+    })
     if (!ok) return
     setMcpStatus(await window.api.regenerateMcpToken())
   }
 
-  return (
-    <div className="modal-backdrop" onClick={close}>
-      <div
-        className="modal mcp-modal"
-        role="dialog"
-        aria-labelledby="mcp-title"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h2 id="mcp-title">MCP — дані для Claude</h2>
-        <p className="hint">
-          Локальний MCP-сервер дає будь-якому Claude (Claude Code, Claude Desktop, іншим MCP-клієнтам)
-          <b> читати</b> все, що зібрала програма: магазини, товари, описи, ціни й знижки, популярність,
-          відгуки, фото, історію змін і статистику. Лише читання, лише з цього комп’ютера
-          (127.0.0.1), лише поки програма відкрита. Для Claude це просто каталог «магазинів» і
-          «товарів» — без назви майданчика, посилань на нього й сирих даних API.
-        </p>
+  const readTools = MCP_TOOL_SUMMARY.filter((t) => !t.write)
+  const writeTools = MCP_TOOL_SUMMARY.filter((t) => t.write)
+  const token = st?.token ?? null
 
-        <section className="settings-section">
-          <h3>Сервер</h3>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault()
-              void save()
-            }}
-          >
-            <div className="field">
-              <label className="check">
-                <input
-                  type="checkbox"
-                  checked={enabled}
-                  onChange={(e) => {
-                    setEnabled(e.target.checked)
-                    setError(null)
-                  }}
-                />{' '}
-                Увімкнути MCP-сервер
-              </label>
+  return (
+    <Modal
+      title="Підключити Claude (MCP)"
+      subtitle="Помічник Claude зможе читати зібрані дані й відповідати на ваші запитання про них"
+      size="lg"
+      onClose={onClose}
+      className="mcp-modal"
+      footer={
+        <>
+          <span className="ui-modal-foot-start settings-foot-note">
+            <Icon name="lock" size={14} />
+            Лише на цьому комп’ютері й лише поки програма відкрита.
+          </span>
+          <Button onClick={onClose}>Закрити</Button>
+        </>
+      }
+    >
+      <section className="ui-section mcp-intro">
+        <p className="ui-section-desc">
+          <Term glossary="claude" /> — помічник зі штучним інтелектом. Підключіть його до програми через{' '}
+          <Term glossary="mcp">MCP-сервер</Term> — і просто питайте його про магазини, за якими стежите: товари, ціни й
+          знижки, популярність, відгуки, фото, історію змін і статистику. Для Claude це просто каталог «магазинів» і
+          «товарів» — без назви майданчика й посилань на нього.
+        </p>
+        <ul className="settings-facts mcp-can">
+          <li>
+            <Icon name="eye" size={16} />
+            <span>
+              Без окремого дозволу Claude <b>лише читає</b>: дані, які програма вже зібрала, а деякі інструменти — свіжі
+              дані з Etsy (вони витрачають <Term glossary="quota">денний ліміт запитів</Term>).
+            </span>
+          </li>
+          <li>
+            <Icon name="edit" size={16} />
+            <span>Змінювати ваш власний магазин він може, лише якщо ви це дозволите нижче. Чужі магазини — ніколи.</span>
+          </li>
+        </ul>
+        <div className="mcp-examples">
+          <span className="mcp-examples-label">Наприклад, запитайте:</span>
+          <ul aria-label="Приклади запитань">
+            {EXAMPLES.map((q) => (
+              <li key={q}>«{q}»</li>
+            ))}
+          </ul>
+        </div>
+      </section>
+
+      <section className="ui-section">
+        <h3 className="ui-section-title">Сервер</h3>
+        <div className="settings-toggle-card">
+          <Toggle
+            label="Увімкнути MCP-сервер"
+            glossary="mcp"
+            hint="Claude зможе підключатися до програми, поки вона відкрита."
+            checked={!!st?.enabled}
+            disabled={!st || switching}
+            onChange={(on) => void setEnabled(on)}
+          />
+          {st && <StatusLine st={st} />}
+        </div>
+        {error && (
+          <Callout tone="error" compact className="settings-msg">
+            {error}
+          </Callout>
+        )}
+      </section>
+
+      <section className="ui-section" data-testid={token ? 'mcp-connect' : undefined}>
+        <h3 className="ui-section-title">Як підключити Claude</h3>
+        {st && token ? (
+          <>
+            {!st.enabled ? (
+              <Callout tone="warn" role="note" compact className="settings-msg">
+                Сервер вимкнено — Claude не зможе підключитися, доки ви не увімкнете його вище.
+              </Callout>
+            ) : st.error ? (
+              <Callout tone="warn" role="note" compact className="settings-msg">
+                Сервер зараз не працює — Claude не зможе підключитися, доки ви не виправите помилку вище.
+              </Callout>
+            ) : null}
+            {dirty && (
+              <Callout tone="warn" role="note" compact className="settings-msg">
+                Збережіть зміни — команди нижче для збережених налаштувань.
+              </Callout>
+            )}
+            <div className="mcp-client-pick">
+              <span className="mcp-client-label">
+                Де ви користуєтесь Claude? <InfoTip glossary="settings.claudeApp" />
+              </span>
+              <Segmented label="Програма Claude" value={client} onChange={setClient} options={CLIENTS} />
             </div>
-            <div className="field">
-              <label htmlFor="mcp-port">Порт</label>
-              <div className="row">
+            <ConnectSteps client={client} st={{ ...st, token }} />
+          </>
+        ) : (
+          <EmptyState compact icon="power" title="Сервер ще не вмикали">
+            Увімкніть сервер — тут з’являться готові команди для підключення.
+          </EmptyState>
+        )}
+      </section>
+
+      <section className="ui-section" data-testid="mcp-writes">
+        <h3 className="ui-section-title">Мій магазин через Claude</h3>
+        <div className="settings-toggle-card">
+          <Toggle
+            label="Дозволити Claude змінювати мій магазин"
+            glossary="settings.mcpWrites"
+            hint="Створювати товари з фото й файлами, редагувати, вмикати й вимикати їх, змінювати тексти магазину. Читати свої товари (і чернетки) Claude може й без цього."
+            checked={!!st?.allowWrites}
+            disabled={!st}
+            onChange={(on) => void toggleWrites(on)}
+          />
+        </div>
+        {!etsyAuth?.loggedIn && (
+          <Callout tone="info" role="note" compact className="settings-msg">
+            Спершу увійдіть у свій магазин: «Мій магазин» у бічній панелі.
+          </Callout>
+        )}
+        {st?.allowWrites && (
+          <Callout tone="warn" role="note" compact className="settings-msg" title="Claude може змінювати ваш магазин на Etsy">
+            Зміни одразу бачать покупці, а публікація товару платна. Вимкніть цей дозвіл, коли він не потрібен.
+          </Callout>
+        )}
+      </section>
+
+      <section className="ui-section">
+        <h3 className="ui-section-title">
+          Що вміє Claude <InfoTip glossary="settings.mcpTools" />
+        </h3>
+        <details className="settings-details">
+          <summary>
+            <Icon name="chevron-right" size={16} className="settings-details-chevron" />
+            <Icon name="eye" size={16} />
+            Читати
+            <Badge>{readTools.length}</Badge>
+          </summary>
+          <div className="settings-details-body">
+            <p className="settings-note mcp-tools-note">
+              Більшість читають те, що програма вже зібрала. Ті, що шукають по всьому Etsy або дають «живі дані»,
+              звертаються до Etsy напряму й витрачають денний ліміт запитів <InfoTip glossary="quota" />.
+            </p>
+            <ToolList tools={readTools} />
+          </div>
+        </details>
+        <details className="settings-details">
+          <summary>
+            <Icon name="chevron-right" size={16} className="settings-details-chevron" />
+            <Icon name="edit" size={16} />
+            Змінювати мій магазин — лише з дозволом
+            <Badge tone="warn">{writeTools.length}</Badge>
+          </summary>
+          <div className="settings-details-body">
+            <ToolList tools={writeTools} testId="mcp-write-tools" />
+          </div>
+        </details>
+      </section>
+
+      <section className="ui-section">
+        <details className="settings-details" open={advanced} onToggle={(e) => setAdvanced(e.currentTarget.open)}>
+          <summary>
+            <Icon name="chevron-right" size={16} className="settings-details-chevron" />
+            Для досвідчених: порт і токен
+          </summary>
+          <div className="settings-details-body">
+            <form
+              className="mcp-port-row"
+              onSubmit={(e) => {
+                e.preventDefault()
+                if (dirty && !portInvalid) void savePort()
+              }}
+            >
+              <Field
+                label="Порт"
+                glossary="port"
+                aside="1024–65535"
+                hint="Змінюйте, лише якщо цей номер уже зайняла інша програма."
+                error={portInvalid ?? portError ?? undefined}
+              >
                 <input
                   id="mcp-port"
                   inputMode="numeric"
@@ -199,114 +518,39 @@ export function McpModal(): JSX.Element | null {
                   value={port}
                   onChange={(e) => {
                     setPort(e.target.value)
-                    setError(null)
+                    setPortError(null)
                   }}
                 />
-                <button type="submit" className="btn primary" disabled={saving || !dirty}>
-                  {saving ? 'Зберігаю…' : 'Зберегти'}
-                </button>
-              </div>
-            </div>
-            {error && (
-              <div className="hint err" role="alert">
-                {error}
-              </div>
-            )}
-            {st && <StatusLine st={st} />}
-          </form>
-        </section>
+              </Field>
+              <Button type="submit" variant="primary" busy={savingPort} disabled={!dirty || !!portInvalid}>
+                {savingPort ? 'Зберігаю…' : 'Зберегти порт'}
+              </Button>
+            </form>
 
-        {st?.token ? (
-          <section className="settings-section" data-testid="mcp-connect">
-            <h3>Підключення</h3>
-            {dirty && (
-              <div className="hint warn">Збережіть зміни — команди нижче для збережених налаштувань.</div>
+            {token && (
+              <div className="mcp-token">
+                <div className="mcp-token-text">
+                  <div className="ui-field-head">
+                    <span className="ui-field-label">Токен</span>
+                    <InfoTip glossary="mcpToken" />
+                  </div>
+                  <p className="settings-note">
+                    Уже вписаний у команди вище. Створіть новий, якщо команда чи конфіг потрапили до сторонніх.
+                  </p>
+                </div>
+                <Button icon="refresh" onClick={() => void regenerate()}>
+                  Новий токен
+                </Button>
+              </div>
             )}
-            <CopyBlock
-              id="claude-code"
-              label="Claude Code — у всіх проєктах (вставте в термінал)"
-              text={claudeCodeCommand(st.port, st.token)}
-            />
-            <CopyBlock
-              id="claude-code-replace"
-              label={`Claude Code — якщо «${MCP_SERVER_NAME}» уже додано (новий токен чи порт)`}
-              text={claudeCodeReplaceCommand(st.port, st.token)}
-            />
-            <CopyBlock
-              id="mcp-json"
-              label="Файл .mcp.json у теці проєкту (або інший клієнт з HTTP-серверами)"
-              text={mcpJsonConfig(st.port, st.token)}
-            />
-            <CopyBlock
-              id="claude-desktop"
-              label="Claude Desktop — claude_desktop_config.json (потрібен Node.js: npx mcp-remote)"
-              text={claudeDesktopConfig(st.port, st.token)}
-            />
-            <p className="hint">
-              Після додавання перезапустіть Claude і перевірте: у Claude Code — <code>/mcp</code>, сервер{' '}
-              <code>{MCP_SERVER_NAME}</code> має бути «connected». Потім просто питайте: «які нові товари
-              з’явилися в магазинах?», «покажи найпопулярніші товари зі знижкою»…
-            </p>
-            {!st.tokenEncrypted && (
-              <div className="hint warn">
+            {token && st && !st.tokenEncrypted && (
+              <Callout tone="warn" role="note" compact className="settings-msg">
                 Токен збережено без шифрування (системне сховище ключів недоступне).
-              </div>
+              </Callout>
             )}
-            <div className="settings-actions">
-              <button type="button" className="btn" onClick={() => void regenerate()}>
-                Новий токен
-              </button>
-            </div>
-          </section>
-        ) : (
-          <p className="hint">Увімкніть сервер — тут з’являться готові команди для підключення.</p>
-        )}
-
-        <section className="settings-section" data-testid="mcp-writes">
-          <h3>Мій магазин через Claude</h3>
-          <div className="field">
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={!!st?.allowWrites}
-                disabled={!st}
-                onChange={(e) => void toggleWrites(e.target.checked)}
-              />{' '}
-              Дозволити Claude змінювати мій магазин
-            </label>
-            <div className="hint">
-              Створювати лістинги з фото й файлами, редагувати їх, вмикати / вимикати, змінювати тексти магазину.
-              Читати свої лістинги (і чернетки) Claude може й без цього.{' '}
-              {!etsyAuth?.loggedIn && <span className="warn-text">Спершу увійдіть у свій магазин: «✏️ Мій магазин».</span>}
-            </div>
           </div>
-        </section>
-
-        <section className="settings-section">
-          <h3>Що може читати Claude</h3>
-          <ul className="mcp-tools">
-            {MCP_TOOL_SUMMARY.filter((t) => !t.write).map((t) => (
-              <li key={t.name}>
-                <code>{t.name}</code> — {t.text}
-              </li>
-            ))}
-          </ul>
-          <h3>Що може змінювати (якщо дозволено)</h3>
-          <ul className="mcp-tools" data-testid="mcp-write-tools">
-            {MCP_TOOL_SUMMARY.filter((t) => t.write).map((t) => (
-              <li key={t.name}>
-                <code>{t.name}</code> — {t.text}
-              </li>
-            ))}
-          </ul>
-        </section>
-
-        <div className="modal-actions">
-          <button className="btn" onClick={close}>
-            Закрити
-          </button>
-        </div>
-      </div>
-    </div>
+        </details>
+      </section>
+    </Modal>
   )
 }

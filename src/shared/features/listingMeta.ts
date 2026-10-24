@@ -183,7 +183,7 @@ export function personalizationProblems(qs: PersonalizationQuestion[]): string[]
     }
     const withOptions = q.type === 'dropdown' || q.type === 'labeled_upload'
     if (!withOptions && q.options.length) out.push(`${at}: варіанти бувають лише у списку і файлів з підписами.`)
-    if (withOptions && !q.options.length) out.push(`${at}: додайте хоча б один варіант.`)
+    if (withOptions && !q.options.length) out.push(`${at}: додайте хоча б одну відповідь.`)
     const labelMax = q.type === 'dropdown' ? DROPDOWN_LABEL_MAX : UPLOAD_LABEL_MAX
     if (q.options.some((o) => !o.label.trim())) out.push(`${at}: варіант не може бути порожнім.`)
     for (const o of q.options) {

@@ -20,12 +20,13 @@ export function ShopIcon({
         width={size}
         height={size}
         referrerPolicy="no-referrer"
+        decoding="async"
         onError={() => setBroken(true)}
       />
     )
   }
   return (
-    <span className="shop-icon initial" style={{ width: size, height: size }}>
+    <span className="shop-icon initial" style={{ width: size, height: size, fontSize: Math.round(size * 0.44) }} aria-hidden="true">
       {(name[0] ?? '?').toUpperCase()}
     </span>
   )

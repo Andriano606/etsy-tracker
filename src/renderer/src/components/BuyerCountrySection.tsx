@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react'
 import { COMMON_COUNTRIES, DEFAULT_BUYER_COUNTRY, countryLabel, normalizeCountry } from '@shared/countries'
 import { useStore } from '../store'
+import { RevealOnShow } from './MinioSection'
+import { Button, Callout, Field, Icon, InfoTip, Select, Term } from '../ui'
 
 const OTHER = '__other'
 
 /**
- * Settings → "Країна покупця": Etsy's buyer-facing prices (VAT, UK shipping,
+ * Settings → "Ціни для покупця": Etsy's buyer-facing prices (VAT, UK shipping,
  * active promotions) are computed for one buyer country. A short list of
  * common countries plus free input of any ISO 3166-1 alpha-2 code. Applies
  * from the next scan — stored prices stay as they were scanned.
@@ -25,7 +27,10 @@ export function BuyerCountrySection(): JSX.Element {
   }, [current])
 
   const value = choice === OTHER ? typed : choice
-  const valid = normalizeCountry(value) != null
+  const normalized = normalizeCountry(value)
+  const valid = normalized != null
+  const unchanged = normalized === current
+  const badCode = choice === OTHER && typed.trim() !== '' && !valid
 
   const onSave = async (): Promise<void> => {
     const res = await saveBuyerCountry(value)
@@ -39,45 +44,82 @@ export function BuyerCountrySection(): JSX.Element {
   }
 
   return (
-    <section className="settings-section" data-testid="buyer-country-section">
-      <h3>Країна покупця</h3>
-      <p className="hint">
-        Etsy показує покупцям ціну з ПДВ їхньої країни (у Великій Британії — ще й з доставкою) та
-        з урахуванням активних знижок. Застосунок запитує таку ціну для вибраної країни; базова ціна
-        продавця (без ПДВ і знижок) теж зберігається. Зараз: <b>{countryLabel(current)}</b>.
+    <section className="ui-section" data-testid="buyer-country-section">
+      <h3 className="ui-section-title">
+        Країна покупця <InfoTip glossary="buyerCountry" />
+      </h3>
+      <p className="ui-section-desc">
+        Покупці з різних країн бачать на Etsy різну ціну того самого товару: з <Term glossary="vat" /> своєї країни, з
+        урахуванням <Term glossary="promotion">акцій</Term>, а у Великій Британії — ще й з доставкою. Виберіть країну, для
+        якої програма показуватиме ціни.
       </p>
+
+      <figure className="settings-example" aria-label="Приклад розрахунку ціни">
+        <figcaption>Приклад для покупця з України</figcaption>
+        <ol className="settings-example-steps">
+          <li>
+            <span className="settings-example-price num">2,50 USD</span>
+            <span className="settings-example-what">
+              <Term glossary="basePrice">ціна продавця</Term>
+            </span>
+          </li>
+          <li aria-hidden="true" className="settings-example-arrow">
+            <Icon name="chevron-right" size={16} />
+          </li>
+          <li>
+            <span className="settings-example-price num">3,00 USD</span>
+            <span className="settings-example-what">+ ПДВ 20 %</span>
+          </li>
+          <li aria-hidden="true" className="settings-example-arrow">
+            <Icon name="chevron-right" size={16} />
+          </li>
+          <li>
+            <span className="settings-example-price num is-final">1,20 USD</span>
+            <span className="settings-example-what">з акцією −60 %</span>
+          </li>
+        </ol>
+      </figure>
+
+      <div className="settings-current">
+        <Icon name="globe" size={16} />
+        <span>
+          Зараз: <b>{countryLabel(current)}</b>
+        </span>
+      </div>
+
       <form
         onSubmit={(e) => {
           e.preventDefault()
           void onSave()
         }}
       >
-        <div className="field">
-          <label htmlFor="buyer-country">Країна</label>
-          <div className="row">
-            <select
+        <div className="ui-form-grid">
+          <Field label="Країна" hint="Найпоширеніші країни; решта — у пункті «Інша…».">
+            <Select
               id="buyer-country"
+              fullWidth
               value={choice}
-              onChange={(e) => {
-                setChoice(e.target.value)
+              onChange={(v) => {
+                setChoice(v)
                 setSaved(false)
                 setError(null)
               }}
+              options={[...COMMON_COUNTRIES.map((c) => ({ value: c.code, label: `${c.name} (${c.code})` })), { value: OTHER, label: 'Інша…' }]}
+            />
+          </Field>
+          {choice === OTHER && (
+            <Field
+              label="Код країни"
+              glossary="settings.countryCode"
+              hint={badCode ? undefined : valid ? `Це ${countryLabel(normalized!)}.` : 'Дві латинські літери, наприклад JP, NO, CH.'}
+              error={badCode ? 'Невідомий код країни — потрібні дві латинські літери, як-от JP, NO, CH.' : undefined}
             >
-              {COMMON_COUNTRIES.map((c) => (
-                <option key={c.code} value={c.code}>
-                  {c.name} ({c.code})
-                </option>
-              ))}
-              <option value={OTHER}>Інша…</option>
-            </select>
-            {choice === OTHER && (
               <input
-                aria-label="Код країни (ISO 3166-1)"
                 placeholder="напр. JP"
                 maxLength={2}
                 spellCheck={false}
                 autoComplete="off"
+                className="settings-code-input"
                 value={typed}
                 onChange={(e) => {
                   setTyped(e.target.value.toUpperCase())
@@ -85,29 +127,30 @@ export function BuyerCountrySection(): JSX.Element {
                   setError(null)
                 }}
               />
-            )}
-          </div>
-          {choice === OTHER && typed.trim() !== '' && !valid && (
-            <div className="hint err" role="alert">
-              Невідомий код країни — потрібен двобуквений код ISO 3166-1 (напр. JP, NO, CH).
-            </div>
+            </Field>
           )}
-          {error && (
-            <div className="hint err" role="alert">
-              {error}
-            </div>
-          )}
-          {saved && (
-            <div className="hint ok" role="status">
+        </div>
+        {error && (
+          <Callout tone="error" compact className="settings-msg">
+            {error}
+          </Callout>
+        )}
+        {saved && (
+          <RevealOnShow>
+            <Callout tone="success" compact className="settings-msg">
               Збережено. Нова країна застосується з наступного сканування.
-            </div>
-          )}
-        </div>
-        <div className="settings-actions">
-          <button type="submit" className="btn primary" disabled={!valid}>
+            </Callout>
+          </RevealOnShow>
+        )}
+        <div className="ui-row settings-buttons">
+          <Button type="submit" variant="primary" icon="check" disabled={!valid || unchanged}>
             Зберегти країну
-          </button>
+          </Button>
         </div>
+        <p className="settings-note">
+          Нова країна діє з наступного сканування; уже збережені ціни не зміняться. Базову ціну продавця програма зберігає
+          завжди, а список товарів від країни не залежить.
+        </p>
       </form>
     </section>
   )

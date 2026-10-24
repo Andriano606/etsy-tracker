@@ -116,7 +116,7 @@ const pub = (listingId: number): string => `/v3/application/listings/${listingId
 const own = (shopId: number, listingId: number): string => `/v3/application/shops/${shopId}/listings/${listingId}`
 const results = <T>(p: Paged<T> | undefined): T[] => (Array.isArray(p?.results) ? p.results : [])
 
-const NO_PHOTO = () => new MediaError('Такого фото в цьому лістингу немає.', 'No such photo in this product.')
+const NO_PHOTO = () => new MediaError('У цього товару немає такого фото.', 'No such photo in this product.')
 
 // ---------------------------------------------------------------- reads
 
@@ -141,7 +141,7 @@ export async function getVideos(client: EtsyClient, listingId: number): Promise<
 /** getListingVideo (public) — e.g. whether Etsy finished processing an upload. */
 export async function getVideo(client: EtsyClient, listingId: number, videoId: number): Promise<MediaVideo> {
   const v = await client.call<EtsyListingVideo>(`${pub(listingId)}/videos/${videoId}`)
-  if (!v?.video_id) throw new MediaError('Такого відео в цьому лістингу немає.', 'No such video in this product.')
+  if (!v?.video_id) throw new MediaError('У цього товару немає такого відео.', 'No such video in this product.')
   return toVideo(v)
 }
 
@@ -156,7 +156,7 @@ export async function getFiles(client: EtsyClient, shopId: number, listingId: nu
 /** getListingFile (OAuth listings_r); an empty answer = no such file. */
 export async function getFile(client: EtsyClient, shopId: number, listingId: number, fileId: number): Promise<MediaFile> {
   const f = await client.call<EtsyListingFile>(`${own(shopId, listingId)}/files/${fileId}`, { oauth: true })
-  if (!f?.listing_file_id) throw new MediaError('Такого файлу в цьому лістингу немає.', 'No such file in this product.')
+  if (!f?.listing_file_id) throw new MediaError('У цього товару немає такого файлу.', 'No such file in this product.')
   return toFile(f, 1)
 }
 
@@ -232,7 +232,7 @@ export async function addPhotos(
   const have = (await getPhotos(client, listingId)).length
   if (have + uploads.length > MAX_IMAGES) {
     throw new MediaError(
-      `У лістингу може бути до ${MAX_IMAGES} фото: зараз ${have}, можна додати ще ${Math.max(0, MAX_IMAGES - have)}.`,
+      `У товару може бути до ${MAX_IMAGES} фото: зараз ${have}, можна додати ще ${Math.max(0, MAX_IMAGES - have)}.`,
       `A product can have at most ${MAX_IMAGES} photos: it has ${have}.`
     )
   }
@@ -276,7 +276,7 @@ export async function replacePhoto(
   const target = photos[position - 1]
   if (!target) {
     throw new MediaError(
-      `На позиції ${position} фото немає (у лістингу ${photos.length} фото).`,
+      `На позиції ${position} фото немає (у товару ${photos.length} фото).`,
       `There is no photo at position ${position} (the product has ${photos.length}).`
     )
   }
@@ -311,7 +311,7 @@ export async function restorePhoto(
 ): Promise<void> {
   const photos = await getPhotos(client, listingId)
   if (photos.length >= MAX_IMAGES) {
-    throw new MediaError(`У лістингу вже ${MAX_IMAGES} фото.`, `The product already has ${MAX_IMAGES} photos.`)
+    throw new MediaError(`У товару вже ${MAX_IMAGES} фото.`, `The product already has ${MAX_IMAGES} photos.`)
   }
   const rank = photos[position - 1]?.rank ?? (photos.at(-1)?.rank ?? 0) + 1
   await postImage(client, shopId, listingId, { listingImageId: imageId, rank, altText, watermarked })
@@ -352,7 +352,7 @@ export async function movePhotoUp(
     })
   } catch (e) {
     throw new MediaError(
-      `Фото пересунуто, але фото #${displaced.id}, що стояло на позиції ${toPosition}, не вдалося повернути в лістинг: ${why(e)}`,
+      `Фото пересунуто, але фото #${displaced.id}, що стояло на позиції ${toPosition}, не вдалося повернути в товар: ${why(e)}`,
       `The photo moved, but photo ${displaced.id} that was at position ${toPosition} could not be put back`,
       e
     )
@@ -381,7 +381,7 @@ export async function deleteVideo(client: EtsyClient, shopId: number, listingId:
   await client.call(`${own(shopId, listingId)}/videos/${videoId}`, { method: 'DELETE', oauth: true })
 }
 
-const VIDEO_QUOTA = 'Etsy дозволяє не більше 10 завантажень відео на лістинг за добу — спробуйте завтра.'
+const VIDEO_QUOTA = 'Etsy дозволяє не більше 10 завантажень відео на товар за добу — спробуйте завтра.'
 const VIDEO_QUOTA_EN = 'At most 10 video uploads per product per day — try again tomorrow'
 const isStatus = (e: unknown, status: number): boolean => e instanceof EtsyApiError && e.status === status
 const isQuota = (e: unknown): boolean => isStatus(e, 429)
@@ -478,7 +478,7 @@ export async function addFiles(
   const files = await getFiles(client, shopId, listingId)
   if (files.length + uploads.length > MAX_DIGITAL_FILES) {
     throw new MediaError(
-      `У лістингу може бути до ${MAX_DIGITAL_FILES} файлів: зараз ${files.length}, можна додати ще ${Math.max(0, MAX_DIGITAL_FILES - files.length)}.`,
+      `У товару може бути до ${MAX_DIGITAL_FILES} файлів: зараз ${files.length}, можна додати ще ${Math.max(0, MAX_DIGITAL_FILES - files.length)}.`,
       `A product can have at most ${MAX_DIGITAL_FILES} files: it has ${files.length}.`
     )
   }

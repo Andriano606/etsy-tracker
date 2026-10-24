@@ -365,13 +365,13 @@ export async function updateSingle(client: EtsyClient, listingId: number, change
   const inv = await getInventory(client, listingId)
   if (!inv.products.length) {
     throw new InvError(
-      'Etsy не має запису інвентарю для цього лістингу (його ще не редагували інструментами інвентарю Etsy) — змініть ціну й кількість на Etsy.com.',
+      'Etsy не має запису інвентарю для цього товару (його ще не редагували інструментами інвентарю Etsy) — змініть ціну й кількість на Etsy.com.',
       'This product has no variant data yet; use update_my_product_inventory with one variant without options to set its price and quantity.'
     )
   }
   if (!inventorySummary(inv).single) {
     throw new InvError(
-      'У цього лістингу кілька варіантів — змініть ціни в розділі «Ціна, кількість і варіації» (Мій магазин → Лістинги → Редагувати).',
+      'У цього товару кілька варіантів — змініть ціни в розділі «Ціна, кількість і варіанти» (Мій магазин → Товари → Редагувати).',
       'This product has several variants; use update_my_product_inventory with the full list of variants instead.'
     )
   }

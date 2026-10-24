@@ -7,6 +7,7 @@ import type { ShopStatsPayload, StatsReviewBucket, StatsScanPoint } from '../../
 import { emptyStats, mkListing, mkScan, mkShop, setupRenderer, type Api } from '../helpers'
 import { M } from '../../../src/renderer/src/components/Charts'
 import { fullDateTime } from '../../../src/renderer/src/chartScale'
+import { GLOSSARY } from '../../../src/shared/glossary'
 
 let api: Api
 beforeEach(() => {
@@ -101,7 +102,9 @@ describe('📊 Статистика', () => {
     const dlg = await openStats()
     expect(api.getShopStats).toHaveBeenCalledWith(1, 'all')
     expect(useStore.getState().statsShopId).toBe(1)
-    expect(within(dlg).getByRole('radio', { name: 'Усе' })).toHaveAttribute('aria-checked', 'true')
+    // The period is a segmented control (a real radio group).
+    expect(within(dlg).getByRole('radiogroup', { name: 'Період' })).toBeInTheDocument()
+    expect(within(dlg).getByRole('radio', { name: 'Усе' })).toBeChecked()
     escape()
     expect(useStore.getState().statsShopId).toBeNull()
     expect(screen.queryByRole('dialog')).toBeNull()
@@ -110,7 +113,11 @@ describe('📊 Статистика', () => {
   it('0 points: empty states instead of charts', async () => {
     const dlg = await openStats(emptyStats(1))
     expect(within(dlg).getAllByText('У цьому періоді немає успішних сканувань.').length).toBeGreaterThan(3)
-    expect(within(dlg).getByText('Потрібно щонайменше 2 сканування')).toBeInTheDocument()
+    // Both sales charts say there is no scan (not "need 2 scans") and offer the way out.
+    const sales = within(dlg).getByTestId('chart-sales')
+    expect(within(sales).getAllByText('У цьому періоді немає успішних сканувань.')).toHaveLength(2)
+    expect(within(sales).getAllByText(/Виберіть довший період/)).toHaveLength(2)
+    expect(within(dlg).queryByText('Потрібно щонайменше 2 сканування')).toBeNull()
     expect(within(dlg).getAllByText('Відгуки ще не синхронізовано.').length).toBe(2)
     expect(within(dlg).getAllByText(/Потрібно щонайменше 2 сканування зі статистикою товарів/).length).toBe(2)
     expect(dlg.querySelectorAll('.chart')).toHaveLength(0)
@@ -122,8 +129,11 @@ describe('📊 Статистика', () => {
     expect(within(sales).queryByRole('group', { name: 'Продано всього' })).toBeNull()
     expect(sales.querySelectorAll('.chart')).toHaveLength(0)
     const empties = sales.querySelectorAll('.chart-empty')
-    expect(empties[0]).toHaveTextContent(/Потрібно щонайменше 2 сканування — зараз: 110\s000 \(01\.10\.2026, /)
-    expect(empties[1]).toHaveTextContent(/^Потрібно щонайменше 2 сканування$/)
+    expect(empties[0]).toHaveTextContent(/^Потрібно щонайменше 2 сканування.*Зараз: 110\s000 \(01\.10\.2026, /)
+    expect(empties[1]).toHaveTextContent(/^Потрібно щонайменше 2 сканування/)
+    expect(empties[1]).not.toHaveTextContent(/інтервалом/)
+    // The KPI tiles say there is nothing to compare yet.
+    expect(within(within(dlg).getByTestId('stats-kpis')).getAllByText('поки одне сканування')).toHaveLength(5)
     for (const id of ['chart-favorers', 'chart-active', 'chart-shop-reviews', 'chart-listing-sums']) {
       expect(within(dlg).getByTestId(id).querySelectorAll('.chart')).toHaveLength(0)
     }
@@ -137,7 +147,9 @@ describe('📊 Статистика', () => {
         scans: [pt(0, { transactionSoldCount: null, numFavorers: null, listingActiveCount: null, reviewCount: null, reviewAverage: null, listingViews: null, listingFavorers: null })]
       })
     )
-    expect(within(dlg).getAllByText(/починаючи з версії 2/).length).toBeGreaterThan(3)
+    expect(within(dlg).getAllByText(/Старіші сканування цих чисел не записували/).length).toBeGreaterThan(3)
+    expect(dlg).not.toHaveTextContent(/версії \d/)
+    expect(within(dlg).getAllByText('Немає даних').length).toBeGreaterThan(3)
   })
 
   it('many points: lines, dots, rate bars, weekly review bars, KPI deltas', async () => {
@@ -153,7 +165,14 @@ describe('📊 Статистика', () => {
     expect(within(reviews).getByRole('heading', { name: 'Відгуки по місяцях' })).toBeInTheDocument()
     expect(reviews.querySelectorAll('path.bar')).toHaveLength(1)
     const kpis = within(dlg).getByTestId('stats-kpis')
-    expect(within(kpis).getByText(/▲ \+315/)).toBeInTheDocument() // sold 110 000 → 110 315
+    expect(within(kpis).getByText('+315')).toBeInTheDocument() // sold 110 000 → 110 315
+    expect(within(kpis).getByText('+315')).toHaveClass('is-up')
+    // The caption names both scans the change is between (not only a hover title).
+    const since = (t: number) => fullDateTime(t).replace(/\.\d{4},/, ',')
+    const span = `з ${since(T0)} до ${since(T0 + 9 * 1.7 * DAY)}`
+    expect(within(kpis).getAllByText(`зміна ${span}`).length).toBe(3) // sold, favorers, reviews
+    // An unchanged value says so instead of "+0".
+    expect(within(kpis).getAllByText(`без змін ${span}`).length).toBe(2) // rating, active listings
     // Every chart has its data table twin.
     expect(within(sales).getByText('Дані (9)')).toBeInTheDocument()
   })
@@ -162,7 +181,8 @@ describe('📊 Статистика', () => {
     const dlg = await openStats(many(4))
     await act(async () => fireEvent.click(within(dlg).getByRole('radio', { name: '30 днів' })))
     expect(api.getShopStats).toHaveBeenLastCalledWith(1, '30d')
-    expect(within(dlg).getByRole('radio', { name: '30 днів' })).toHaveAttribute('aria-checked', 'true')
+    expect(within(dlg).getByRole('radio', { name: '30 днів' })).toBeChecked()
+    expect(within(dlg).getByRole('radio', { name: 'Усе' })).not.toBeChecked()
     await act(async () => fireEvent.click(within(dlg).getByRole('radio', { name: '7 днів' })))
     expect(api.getShopStats).toHaveBeenLastCalledWith(1, '7d')
   })
@@ -219,6 +239,76 @@ describe('📊 Статистика', () => {
     const reviews = within(dlg).getByTestId('top-reviews')
     expect(within(reviews).getByText('12')).toBeInTheDocument()
     expect(within(reviews).queryByText('+12')).toBeNull()
+    // A total says what it counts, in the right plural form.
+    expect(within(reviews).getByText('12').nextElementSibling).toHaveTextContent(/^відгуків$/)
+    expect(within(reviews).getByText('3').nextElementSibling).toHaveTextContent(/^відгуки$/)
+  })
+
+  it('units and tooltips agree with the number (1 продаж, 3 продажі, 5 продажів)', async () => {
+    const p = many(4)
+    p.salesRate = p.salesRate.map((r, i) => ({ ...r, sold: [1, 3, 5][i], perDay: [1, 3, 5][i] / r.days }))
+    p.top.views = [
+      { ...p.top.views[0], end: 1 },
+      { ...p.top.views[1], end: 22 }
+    ]
+    p.reviews.weeks = [week(0, 1), week(1, 2), week(2, 5)]
+    const dlg = await openStats(p)
+    const rate = within(dlg).getByRole('group', { name: 'Продажі за день між скануваннями' })
+    act(() => void fireEvent.focus(rate))
+    fireEvent.keyDown(rate, { key: 'Home' })
+    expect(within(rate).getByRole('status')).toHaveTextContent(/\+1 продаж за/)
+    fireEvent.keyDown(rate, { key: 'ArrowRight' })
+    expect(within(rate).getByRole('status')).toHaveTextContent(/\+3 продажі за/)
+    fireEvent.keyDown(rate, { key: 'ArrowRight' })
+    expect(within(rate).getByRole('status')).toHaveTextContent(/\+5 продажів за/)
+    const bars = within(dlg).getByRole('group', { name: 'Відгуки по тижнях' })
+    act(() => void fireEvent.focus(bars))
+    fireEvent.keyDown(bars, { key: 'Home' })
+    expect(within(bars).getByRole('status')).toHaveTextContent(/^1 відгук/)
+    fireEvent.keyDown(bars, { key: 'ArrowRight' })
+    expect(within(bars).getByRole('status')).toHaveTextContent(/^2 відгуки/)
+    const views = within(dlg).getByTestId('top-views')
+    expect(within(views).getByText('1 перегляд')).toBeInTheDocument()
+    expect(within(views).getByText('22 перегляди')).toBeInTheDocument()
+  })
+
+  it('a shop with nothing for sale says so — not "need 2 scans" or "no data"', async () => {
+    const scans = [0, 1, 2].map((i) =>
+      pt(i, { listingActiveCount: 0, listingViews: null, listingFavorers: null, total: 0, added: 0, changed: 0 })
+    )
+    const dlg = await openStats(
+      emptyStats(1, 'all', { scans, top: { ...emptyStats(1).top, fromScanId: 1, toScanId: 1, fromAt: scans[0].at, toAt: scans[0].at } })
+    )
+    for (const id of ['top-views', 'top-favorers', 'chart-listing-sums', 'chart-discounted']) {
+      expect(within(dlg).getByTestId(id), id).toHaveTextContent('У магазині немає товарів у продажу')
+    }
+    expect(dlg).not.toHaveTextContent(/зі статистикою товарів/)
+    expect(within(dlg).getByTestId('chart-discounted')).not.toHaveTextContent(/не знають цін/)
+    // The active-listings line is still drawn (a flat 0), with no negative tick.
+    const active = within(dlg).getByRole('group', { name: 'Активних товарів' })
+    expect([...active.querySelectorAll('text.tick.y')].map((t) => t.textContent)).not.toContainEqual(expect.stringMatching(/[-−]/))
+  })
+
+  it('no change in the period: a thin strip of scan marks, no colour legend, no empty grid', async () => {
+    const scans = [0, 1, 2].map((i) => pt(i, { added: 0, changed: 0 }))
+    const dlg = await openStats(emptyStats(1, 'all', { scans }))
+    const changes = within(dlg).getByTestId('chart-changes')
+    const chart = within(changes).getByRole('group', { name: 'Зміни за сканування' })
+    expect(chart).toHaveClass('compact')
+    expect(chart.querySelectorAll('text.tick.y')).toHaveLength(0)
+    expect(chart.querySelectorAll('circle.scan-tick').length + chart.querySelectorAll('circle.marker').length).toBe(3)
+    expect(within(changes).queryByRole('button', { name: 'Що таке «Новий товар»?' })).toBeNull()
+    expect(within(changes).getByRole('button', { name: 'Що таке «Базове сканування»?' })).toBeInTheDocument()
+    expect(within(changes).getByText(/товари не змінювались/)).toBeInTheDocument()
+  })
+
+  it('"Дані (N)" has an ⓘ beside it, outside the toggle', async () => {
+    const dlg = await openStats(many(3))
+    const fav = within(dlg).getByTestId('chart-favorers')
+    const tip = within(fav).getByRole('button', { name: 'Що таке «Дані графіка»?' })
+    expect(tip).toHaveAccessibleDescription(GLOSSARY['stats.dataTable'].short)
+    expect(tip.closest('summary')).toBeNull()
+    expect(fav.querySelector('summary')).not.toHaveAttribute('title')
   })
 
   it('a top row for a listing we never stored is not a button', async () => {
@@ -232,9 +322,20 @@ describe('📊 Статистика', () => {
   it('a failed load says so instead of charts', async () => {
     api.getShopStats.mockRejectedValue(new Error('boom'))
     const dlg = await openStats()
-    expect(within(dlg).getByText('Не вдалося завантажити статистику.')).toBeInTheDocument()
-    expect(within(dlg).queryByText('Завантаження…')).toBeNull()
+    expect(within(dlg).getByRole('alert')).toHaveTextContent('Не вдалося завантажити статистику.')
+    expect(within(dlg).queryByText('Завантаження статистики…')).toBeNull()
     expect(dlg.querySelectorAll('.chart')).toHaveLength(0)
+  })
+
+  it('a failed load can be retried', async () => {
+    api.getShopStats.mockRejectedValueOnce(new Error('boom'))
+    api.getShopStats.mockResolvedValueOnce(many(3))
+    const dlg = await openStats()
+    await act(async () => fireEvent.click(within(dlg).getByRole('button', { name: 'Спробувати ще' })))
+    expect(api.getShopStats).toHaveBeenCalledTimes(2)
+    expect(api.getShopStats).toHaveBeenLastCalledWith(1, 'all')
+    expect(within(dlg).queryByRole('alert')).toBeNull()
+    expect(dlg.querySelectorAll('.chart').length).toBeGreaterThan(3)
   })
 
   it('a new successful scan of the shop refetches the open view', async () => {
@@ -259,12 +360,12 @@ describe('📊 Статистика', () => {
     escape()
     await act(async () => useStore.getState().openStats(2))
     dlg = screen.getByRole('dialog', { name: /Статистика WoodToysUA/ })
-    expect(within(dlg).getByRole('radio', { name: 'Усе' })).toHaveAttribute('aria-checked', 'true')
+    expect(within(dlg).getByRole('radio', { name: 'Усе' })).toBeChecked()
     expect(api.getShopStats).toHaveBeenLastCalledWith(2, 'all')
     escape()
     await act(async () => useStore.getState().openStats(1))
     dlg = screen.getByRole('dialog', { name: /Статистика CeramicStudioUA/ })
-    expect(within(dlg).getByRole('radio', { name: 'Усе' })).toHaveAttribute('aria-checked', 'true')
+    expect(within(dlg).getByRole('radio', { name: 'Усе' })).toBeChecked()
   })
 
   it('sales/day: scans under 1 h apart say so; rate bars span their whole interval', async () => {
@@ -331,9 +432,12 @@ describe('📊 Статистика', () => {
         ]
       })
     )
-    expect(dlg).toHaveTextContent(`зміни рахуються від сканування ${fullDateTime(anchor.at)}`)
+    expect(dlg).toHaveTextContent(`Зміни рахуються від сканування ${fullDateTime(anchor.at)}`)
+    expect(screen.getByRole('button', { name: 'Що таке «Точка відліку»?' })).toHaveAccessibleDescription(
+      GLOSSARY['stats.anchorScan'].short
+    )
     const kpis = within(dlg).getByTestId('stats-kpis')
-    expect(within(kpis).getByText(/▲ \+70/)).toHaveAttribute('title', `Зміна: ${fullDateTime(anchor.at)} → ${fullDateTime(inside.at)}`)
+    expect(within(kpis).getByText('+70')).toHaveAttribute('title', `Зміна: ${fullDateTime(anchor.at)} → ${fullDateTime(inside.at)}`)
     const sales = within(dlg).getByTestId('chart-sales')
     const line = within(sales).getByRole('group', { name: 'Продано всього' })
     // Two points (the anchor + one in the period); only the in-period one gets a dot, the line is clipped.
@@ -370,6 +474,104 @@ describe('📊 Статистика', () => {
   })
 })
 
+describe('📊 Статистика: plain-language explanations', () => {
+  it('every KPI tile explains its number with an ⓘ from the glossary', async () => {
+    const dlg = await openStats(many(3))
+    const kpis = within(dlg).getByTestId('stats-kpis')
+    const tips: Array<[string, string]> = [
+      ['Продажі магазину', GLOSSARY.salesCount.short],
+      ['Обране магазину', GLOSSARY.shopFavorers.short],
+      ['Відгуків у магазині', GLOSSARY['stats.reviewsOnEtsy'].short],
+      ['Рейтинг магазину', GLOSSARY['stats.ratingOnEtsy'].short],
+      ['Активних товарів', GLOSSARY['stats.activeCount'].short],
+      ['Відгуків збережено', GLOSSARY['stats.reviewsStored'].short]
+    ]
+    for (const [term, short] of tips) {
+      expect(within(kpis).getByRole('button', { name: `Що таке «${term}»?` })).toHaveAccessibleDescription(short)
+    }
+    // The ⓘ names exactly the label the user looks at.
+    const tiles = [...kpis.querySelectorAll<HTMLElement>('.ui-stat')]
+    expect(tiles.map((t) => t.querySelector('.ui-stat-label-text')!.textContent)).toEqual(tips.map(([term]) => term))
+    for (const t of tiles) {
+      const label = t.querySelector('.ui-stat-label-text')!.textContent
+      expect(within(t).getByRole('button')).toHaveAccessibleName(`Що таке «${label}»?`)
+    }
+    // No raw API field names anywhere in the window.
+    expect(dlg).not.toHaveTextContent(/transaction_sold_count|num_favorers|listing_active_count/)
+  })
+
+  it('every chart card has a title, an ⓘ and a sentence on what it shows', async () => {
+    const dlg = await openStats(many(3))
+    for (const id of ['chart-sales', 'chart-reviews', 'chart-favorers', 'chart-active', 'chart-shop-reviews', 'chart-listing-sums', 'chart-changes', 'chart-discounted', 'stats-top']) {
+      const card = within(dlg).getByTestId(id)
+      expect(card.querySelector('h4'), id).not.toBeNull()
+      expect(card.querySelector('.stats-card-title-row .ui-infotip'), id).not.toBeNull()
+      expect(card.querySelector('.stats-card-desc')?.textContent?.length ?? 0, id).toBeGreaterThan(30)
+    }
+    // "Sales per day" is labelled as an estimate, not Etsy data.
+    const sales = within(dlg).getByTestId('chart-sales')
+    expect(within(sales).getByText('розрахунок')).toBeInTheDocument()
+    expect(within(sales).getByText(/Не число з Etsy, а оцінка програми/)).toBeInTheDocument()
+    expect(within(sales).getByRole('button', { name: 'Що таке «Продажі за день»?' })).toHaveAccessibleDescription(
+      GLOSSARY.salesPerDay.short
+    )
+    // The cards are grouped under plain headings.
+    expect(within(dlg).getByRole('heading', { level: 3, name: 'Магазин' })).toBeInTheDocument()
+    expect(within(dlg).getByRole('heading', { level: 3, name: 'Товари' })).toBeInTheDocument()
+  })
+
+  it('the changes legend explains each kind of change', async () => {
+    const dlg = await openStats(many(3))
+    const changes = within(dlg).getByTestId('chart-changes')
+    expect(within(changes).getByRole('button', { name: 'Що таке «Новий товар»?' })).toHaveAccessibleDescription(GLOSSARY.listingNew.short)
+    expect(within(changes).getByRole('button', { name: 'Що таке «Базове сканування»?' })).toHaveAccessibleDescription(GLOSSARY.baseline.short)
+  })
+
+  it('sales/day with no sale in any interval says so instead of an empty plot', async () => {
+    const scans = [pt(0, { transactionSoldCount: 5 }), pt(1, { transactionSoldCount: 5 })]
+    const dlg = await openStats(
+      emptyStats(1, 'all', {
+        scans,
+        salesRate: [{ fromScanId: 1, toScanId: 2, from: scans[0].at, to: scans[1].at, days: 1.7, sold: 0, perDay: 0 }]
+      })
+    )
+    const sales = within(dlg).getByTestId('chart-sales')
+    expect(within(sales).getByText('Між скануваннями продажів не було.')).toBeInTheDocument()
+    expect(within(sales).queryByRole('group', { name: 'Продажі за день між скануваннями' })).toBeNull()
+    expect(within(sales).getByText('Дані (1)')).toBeInTheDocument()
+  })
+
+  it('a shop without reviews has no rating yet (not "0")', async () => {
+    const dlg = await openStats(emptyStats(1, 'all', { scans: [pt(0, { reviewCount: 0, reviewAverage: 0 }), pt(1, { reviewCount: 0, reviewAverage: 0 })] }))
+    const kpis = within(dlg).getByTestId('stats-kpis')
+    expect(within(kpis).getByText('оцінок ще немає')).toBeInTheDocument()
+    expect(within(kpis).getByText('Рейтинг магазину').closest('.ui-stat')).toHaveTextContent(/Рейтинг магазину.*—/)
+    // No line at "0 stars" (or a 0,05 axis): the card says there are no reviews yet.
+    const card = within(dlg).getByTestId('chart-shop-reviews')
+    expect(card).toHaveTextContent('У магазину ще немає відгуків')
+    expect(card.querySelectorAll('.chart')).toHaveLength(0)
+    expect(within(card).getAllByRole('row')[1]).toHaveTextContent(/0—$/)
+  })
+
+  it('the review count while the history is still loading is a lower bound', async () => {
+    const data = many(3)
+    data.reviews.complete = false
+    const dlg = await openStats(data)
+    expect(within(within(dlg).getByTestId('stats-kpis')).getByText('≥ 30')).toBeInTheDocument()
+    expect(within(within(dlg).getByTestId('chart-reviews')).getByText(/Історія відгуків ще завантажується/)).toBeInTheDocument()
+  })
+
+  it('"Дані (N)" is a real table: a caption, column headers, newest first', async () => {
+    const dlg = await openStats(many(3))
+    const fav = within(dlg).getByTestId('chart-favorers')
+    const table = within(fav).getByRole('table', { name: 'Обране магазину за скануваннями' })
+    expect(within(table).getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['Сканування', 'Обране'])
+    const rows = within(table).getAllByRole('row').slice(1)
+    expect(rows[0]).toHaveTextContent(/7\s020$/)
+    expect(rows[2]).toHaveTextContent(/7\s000$/)
+  })
+})
+
 describe('📊 Статистика: товарів зі знижкою', () => {
   it('draws the count per scan, with the data table (discounted / with a buyer price)', async () => {
     const p = many(4)
@@ -387,7 +589,7 @@ describe('📊 Статистика: товарів зі знижкою', () => 
 
   it('scans without buyer prices (before v4, or Etsy refused them) say so', async () => {
     const dlg = await openStats(many(3))
-    expect(within(within(dlg).getByTestId('chart-discounted')).getByText(/починаючи з версії 4/)).toBeInTheDocument()
+    expect(within(within(dlg).getByTestId('chart-discounted')).getByText(/не знають цін для покупця/)).toBeInTheDocument()
   })
 
   it('one scan with buyer prices: the value as a stat', async () => {
@@ -395,7 +597,7 @@ describe('📊 Статистика: товарів зі знижкою', () => 
     p.scans = p.scans.map((s, i) => ({ ...s, discounted: i === 2 ? 4 : null, buyerPriced: i === 2 ? 57 : null }))
     const dlg = await openStats(p)
     expect(within(dlg).getByTestId('chart-discounted').querySelector('.chart-empty')).toHaveTextContent(
-      /Потрібно щонайменше 2 сканування — зараз: 4/
+      /Потрібно щонайменше 2 сканування.*Зараз: 4/
     )
   })
 })

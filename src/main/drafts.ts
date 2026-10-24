@@ -174,7 +174,7 @@ export function saveDraft(
         | undefined
       if (!cur) throw new DraftError(`Чернетки #${draftId} немає.`)
       if (cur.sent_listing_id != null) {
-        throw new DraftError(`Чернетку вже надіслано на Etsy (лістинг #${cur.sent_listing_id}) — змінюйте його через «✏️ Керувати».`)
+        throw new DraftError(`Чернетку вже надіслано на Etsy (товар #${cur.sent_listing_id}) — змінюйте його через «✏️ Керувати».`)
       }
       db.prepare('UPDATE listing_drafts SET fields_json = ?, updated_at = ?, last_error = NULL WHERE id = ?').run(
         JSON.stringify(fields),
@@ -240,7 +240,7 @@ export async function sendDraft(deps: SendDeps, id: number, publish: boolean): P
   const d = getDraft(deps.db, id)
   if (!d) return { ok: false, error: `Чернетки #${id} немає.` }
   if (d.sentListingId != null) {
-    return { ok: false, listingId: d.sentListingId, error: `Чернетку вже надіслано на Etsy (лістинг #${d.sentListingId}).` }
+    return { ok: false, listingId: d.sentListingId, error: `Чернетку вже надіслано на Etsy (товар #${d.sentListingId}).` }
   }
   const files = createFileRegistry()
   const token = (m: DraftMedia): string => files.add(`draft:${m.id}`, m.name, m.size).token

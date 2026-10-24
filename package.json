@@ -18,7 +18,9 @@
     "start": "electron-vite preview",
     "dist": "npm run build && electron-builder --linux",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "ui:fixtures": "node scripts/ui-harness/copy-db.cjs && vite-node scripts/ui-harness/fixtures.ts -- .ui-harness/copy.db .ui-harness/fixtures.json",
+    "ui:shots": "electron scripts/ui-harness/main.cjs"
   },
   "dependencies": {
     "@fontsource/ibm-plex-mono": "^5.2.7",

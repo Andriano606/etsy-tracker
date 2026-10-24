@@ -13,5 +13,11 @@ export const ui: FeatureUi = {
     { id: 'orders', label: 'Замовлення', Component: OrdersTab },
     { id: 'orders-finance', label: 'Фінанси', Component: FinanceTab }
   ],
-  ownListingSections: [{ id: 'orders-sales', label: 'Продажі', Component: ListingSalesSection }]
+  ownListingSections: [
+    Object.assign(
+      { id: 'orders-sales', label: 'Продажі', Component: ListingSalesSection },
+      // Read by the host (panelMeta) for the section's summary row.
+      { icon: 'receipt' as const, description: 'Скільки разів цей товар купили, скільки штук і скільки він приніс.' }
+    )
+  ]
 }

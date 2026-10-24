@@ -1,10 +1,88 @@
+import type { ReactNode } from 'react'
 import type { Listing, Promotion, Review, ScanChange, ScanPromotions, ShopSummary } from '@shared/types'
-import { formatCount, formatEtsyDate, formatPromoPeriod, ratingStars, textExcerpt } from '@shared/format'
+import { formatCount, formatDateTime, formatEtsyDate, formatPromoPeriod, ratingStars, textExcerpt } from '@shared/format'
+import { GLOSSARY } from '@shared/glossary'
 import { formatMoney } from '@shared/price'
 import { imageSrc, reviewImageSrc } from '../imageUrl'
-import { ChangeRows, KIND_LABEL, changedSummary } from './ChangeList'
+import { Callout, Icon, InfoTip, type IconName } from '../ui'
+import { ChangeRows, KIND_LABEL, changedSummary, countOf } from './ChangeList'
 import { ListingCard } from './ListingCard'
 import { WasPrice } from './PriceParts'
+import { KIND_DESC } from './ScanHistory'
+
+/**
+ * A collapsible group of the scan results: a chevron, "Label: N" (+ extra),
+ * a plain-words line saying what the group means, and the content.
+ */
+export function ResultsGroup({
+  icon,
+  label,
+  desc,
+  open,
+  className,
+  testId,
+  children
+}: {
+  icon: IconName
+  label: ReactNode
+  desc: ReactNode
+  open?: boolean
+  className?: string
+  testId?: string
+  children: ReactNode
+}): JSX.Element {
+  return (
+    <details className={'results-group' + (className ? ' ' + className : '')} open={open} data-testid={testId}>
+      <summary className="group-summary">
+        <Icon name="chevron-right" size={16} className="group-chevron" />
+        <span className="group-icon" aria-hidden="true">
+          <Icon name={icon} size={15} />
+        </span>
+        <span className="group-main">
+          <span className="group-label">{label}</span>
+          <span className="group-desc">{desc}</span>
+        </span>
+      </summary>
+      <div className="group-body">{children}</div>
+    </details>
+  )
+}
+
+/** A listing thumbnail + title button (a review's or a promotion's listing). */
+function ListingLink({
+  listingId,
+  title,
+  imageId,
+  onOpen
+}: {
+  listingId: number
+  title: string | null | undefined
+  imageId: number | null | undefined
+  onOpen: (listingId: number) => void
+}): JSX.Element {
+  const name = title ?? `Товар ${listingId}`
+  return (
+    <button className="review-listing" onClick={() => onOpen(listingId)} title={name}>
+      {imageId != null ? (
+        <img src={imageSrc({ id: imageId }, '75x75')} alt="" referrerPolicy="no-referrer" />
+      ) : (
+        <span className="no-img">—</span>
+      )}
+      <span className="review-listing-title">{name}</span>
+    </button>
+  )
+}
+
+/** "(показано 200 з 430)" when main capped the list. */
+function shownOf(shown: number, all: number): JSX.Element | null {
+  if (all <= shown) return null
+  return (
+    <span className="dim">
+      {' '}
+      (показано {formatCount(shown)} з {formatCount(all)})
+    </span>
+  )
+}
 
 /**
  * "Нові відгуки: N" — reviews first seen as new (never backfilled ones) by this
@@ -23,32 +101,24 @@ export function NewReviews({
   if (!reviews.length) return null
   const all = Math.max(total ?? 0, reviews.length)
   return (
-    <details className="results-group new-reviews" open data-testid="new-reviews">
-      <summary>
-        Нові відгуки: {formatCount(all)}
-        {all > reviews.length && (
-          <span className="dim">
-            {' '}
-            (показано {formatCount(reviews.length)} з {formatCount(all)})
-          </span>
-        )}
-      </summary>
+    <ResultsGroup
+      icon="review"
+      className="new-reviews"
+      testId="new-reviews"
+      open
+      label={
+        <>
+          Нові відгуки: {formatCount(all)}
+          {shownOf(reviews.length, all)}
+        </>
+      }
+      desc={GLOSSARY.newReviews.short}
+    >
       <ul className="review-list">
         {reviews.map((r) => (
           <li key={r.id} className="review-item">
             {r.listingId != null && (
-              <button
-                className="review-listing"
-                onClick={() => onOpenListing(r.listingId!)}
-                title={r.listingTitle ?? `Товар ${r.listingId}`}
-              >
-                {r.listingImageId != null ? (
-                  <img src={imageSrc({ id: r.listingImageId }, '75x75')} alt="" referrerPolicy="no-referrer" />
-                ) : (
-                  <span className="no-img">—</span>
-                )}
-                <span className="review-listing-title">{r.listingTitle ?? `Товар ${r.listingId}`}</span>
-              </button>
+              <ListingLink listingId={r.listingId} title={r.listingTitle} imageId={r.listingImageId} onOpen={onOpenListing} />
             )}
             <div className="review-body">
               <div className="review-head">
@@ -65,7 +135,7 @@ export function NewReviews({
           </li>
         ))}
       </ul>
-    </details>
+    </ResultsGroup>
   )
 }
 
@@ -79,33 +149,18 @@ function PromotionRow({ p, onOpenListing }: { p: Promotion; onOpenListing: (id: 
   const period = formatPromoPeriod(p.discountStart, p.discountEnd)
   return (
     <li className="promo-item">
-      <button className="review-listing" onClick={() => onOpenListing(p.listingId)} title={p.listingTitle ?? `Товар ${p.listingId}`}>
-        {p.listingImageId != null ? (
-          <img src={imageSrc({ id: p.listingImageId }, '75x75')} alt="" referrerPolicy="no-referrer" />
-        ) : (
-          <span className="no-img">—</span>
-        )}
-        <span className="review-listing-title">{p.listingTitle ?? `Товар ${p.listingId}`}</span>
-      </button>
+      <ListingLink listingId={p.listingId} title={p.listingTitle} imageId={p.listingImageId} onOpen={onOpenListing} />
       <span className="promo-terms">
         <span className="badge-discount">{pct}</span>{' '}
-        {formatMoney(p.discounted, p.currency ?? '')}
+        <span className="promo-price">{formatMoney(p.discounted, p.currency ?? '')}</span>
         {p.original && <WasPrice>{formatMoney(p.original, p.currency ?? '')}</WasPrice>}
         {period && <span className="dim"> · {period}</span>}
-        <span className="dim"> · {p.country}</span>
+        <span className="dim" title={`Ціни для покупця з ${p.country}`}>
+          {' '}
+          · {p.country}
+        </span>
       </span>
     </li>
-  )
-}
-
-/** "(показано 200 з 430)" when main capped the list. */
-function shownOf(shown: number, all: number): JSX.Element | null {
-  if (all <= shown) return null
-  return (
-    <span className="dim">
-      {' '}
-      (показано {formatCount(shown)} з {formatCount(all)})
-    </span>
   )
 }
 
@@ -137,13 +192,16 @@ export function PromotionsGroup({
     nEnded ? `закінчилися ${formatCount(nEnded)}` : ''
   ].filter(Boolean)
   return (
-    <details className="results-group promotions" data-testid="scan-promotions">
-      <summary>Акції: {parts.join(', ')}</summary>
+    <ResultsGroup
+      icon="percent"
+      className="promotions"
+      testId="scan-promotions"
+      label={`Акції: ${parts.join(', ')}`}
+      desc="Продавець почав або закінчив знижки на ці товари. Ціни — для покупця з вибраної країни."
+    >
       {started.length > 0 && (
         <>
-          <h4>
-            Почалися{shownOf(started.length, nStarted)}
-          </h4>
+          <h4>Почалися{shownOf(started.length, nStarted)}</h4>
           <ul className="review-list" data-testid="promotions-started">
             {started.map((p) => (
               <PromotionRow key={p.id} p={p} onOpenListing={onOpenListing} />
@@ -153,9 +211,7 @@ export function PromotionsGroup({
       )}
       {ended.length > 0 && (
         <>
-          <h4>
-            Закінчилися{shownOf(ended.length, nEnded)}
-          </h4>
+          <h4>Закінчилися{shownOf(ended.length, nEnded)}</h4>
           <ul className="review-list" data-testid="promotions-ended">
             {ended.map((p) => (
               <PromotionRow key={p.id} p={p} onOpenListing={onOpenListing} />
@@ -163,8 +219,15 @@ export function PromotionsGroup({
           </ul>
         </>
       )}
-    </details>
+    </ResultsGroup>
   )
+}
+
+const KIND_ICON: Record<ScanChange['kind'], IconName> = {
+  added: 'sparkle',
+  returned: 'arrow-up',
+  removed: 'minus',
+  changed: 'edit'
 }
 
 /** The latest successful scan's outcome: new listings first, the rest collapsible. */
@@ -194,12 +257,19 @@ export function ScanResults({
 
   if (scan.isBaseline) {
     return (
-      <section className="results baseline" data-testid="scan-results">
-        <div className="results-title">Базове сканування: збережено {scan.total} товарів</div>
-        <div className="hint">
-          Це перше сканування магазину — воно лише запам’ятовує поточні товари. Натисніть
-          «Сканувати повторно» пізніше, щоб побачити, що додалося.
+      <section className="results baseline" data-testid="scan-results" aria-label="Результат сканування">
+        <div className="results-head">
+          <h2 className="results-title">
+            <Icon name="check" size={18} />
+            <span>Базове сканування: збережено {countOf(scan.total, 'товар', 'товари', 'товарів')}</span>
+          </h2>
+          <InfoTip glossary="baseline" />
+          <span className="results-when num">{formatDateTime(scan.finishedAt)}</span>
         </div>
+        <p className="results-note">
+          Це перше сканування магазину — програма лише запам’ятала всі його товари. Натисніть «Сканувати
+          повторно» пізніше, і тут з’явиться, що додалося, зникло чи змінилось.
+        </p>
         {reviewsGroup}
       </section>
     )
@@ -210,46 +280,69 @@ export function ScanResults({
   const openChange = (c: ScanChange): void => {
     if (c.listing) onOpen(c.listing)
   }
+  const groups = (['returned', 'removed', 'changed'] as const).filter((k) => of(k).length > 0)
 
   return (
-    <section className="results" data-testid="scan-results">
-      <div className="results-title">
-        Нові з минулого сканування: <span className="results-count">{scan.added}</span>
+    <section className="results" data-testid="scan-results" aria-labelledby="scan-results-title">
+      <div className="results-head">
+        <h2 className="results-title" id="scan-results-title">
+          Що змінилось з минулого сканування
+        </h2>
+        <InfoTip glossary="shop.whatsNew" />
+        <span className="results-when num" title="Коли закінчилось останнє успішне сканування">
+          {formatDateTime(scan.finishedAt)}
+        </span>
       </div>
-      {added.length > 0 ? (
-        <div className="grid new-grid">
-          {added.map(
-            (c) =>
-              c.listing && (
-                <ListingCard key={c.id} listing={c.listing} isNew onOpen={onOpen} />
-              )
-          )}
+
+      <div className="results-new">
+        <div className="head-row results-sub-row">
+          <h3 className="results-sub">
+            <Icon name="sparkle" size={15} />
+            <span>Нові товари: </span>
+            <span className="results-count">{scan.added}</span>
+          </h3>
+          <InfoTip glossary="listingNew" />
         </div>
-      ) : (
-        <div className="hint">Нових товарів немає.</div>
-      )}
+        {added.length > 0 ? (
+          <div className="grid new-grid">
+            {added.map(
+              (c) => c.listing && <ListingCard key={c.id} listing={c.listing} isNew onOpen={onOpen} />
+            )}
+          </div>
+        ) : (
+          <p className="results-empty">Нових товарів немає.</p>
+        )}
+      </div>
+
       {scan.truncated && (
-        <div className="hint warn">
-          У магазині більше товарів, ніж Etsy дозволяє прочитати (≈12 100), тому зниклі товари
-          не визначалися.
-        </div>
+        <Callout tone="warn" compact>
+          У магазині більше товарів, ніж Etsy дозволяє прочитати (≈12 100), тому зниклі товари не визначалися.
+        </Callout>
       )}
-      {(['returned', 'removed', 'changed'] as const).map((kind) => {
+
+      {groups.map((kind) => {
         const list = of(kind)
-        if (!list.length) return null
+        const summary = kind === 'changed' ? changedSummary(list) : ''
         return (
-          <details key={kind} className="results-group">
-            <summary>
-              {KIND_LABEL[kind]}: {list.length}
-              {kind === 'changed' && changedSummary(list) && (
-                <span className="dim" data-testid="changed-summary">
-                  {' '}
-                  ({changedSummary(list)})
-                </span>
-              )}
-            </summary>
+          <ResultsGroup
+            key={kind}
+            icon={KIND_ICON[kind]}
+            className={`kind-${kind}`}
+            label={
+              <>
+                {KIND_LABEL[kind]}: {list.length}
+                {summary && (
+                  <span className="dim" data-testid="changed-summary">
+                    {' '}
+                    ({summary})
+                  </span>
+                )}
+              </>
+            }
+            desc={KIND_DESC[kind]}
+          >
             <ChangeRows changes={list} onOpen={openChange} />
-          </details>
+          </ResultsGroup>
         )
       })}
       <PromotionsGroup

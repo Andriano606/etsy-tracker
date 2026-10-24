@@ -1,0 +1,453 @@
+/* Feature hosts (feature:call): lazy sections (LazyDetails), feature windows,
+   and the small building blocks the feature UIs share: tables, lists of rows,
+   fact lists, chips. Tokens: styles/base.css. */
+
+/* ---- LazyDetails: a collapsible card ---- */
+.feature-details {
+  min-width: 0;
+  margin-top: var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-2);
+  transition: border-color var(--dur) var(--ease);
+}
+.feature-details:hover {
+  border-color: var(--border-strong);
+}
+.feature-details[open] {
+  border-color: var(--border-strong);
+}
+.feature-details > .feature-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+  padding: var(--sp-3) var(--sp-4);
+  cursor: pointer;
+  list-style: none;
+  border-radius: var(--r-md);
+  color: var(--text);
+  user-select: none;
+}
+.feature-details > .feature-summary::-webkit-details-marker {
+  display: none;
+}
+.feature-details > .feature-summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.feature-summary-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--r-sm);
+  background: var(--bg-3);
+  color: var(--text-body);
+}
+.feature-details[open] .feature-summary-icon {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.feature-summary-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.feature-summary-label {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  line-height: var(--lh-tight, 1.25);
+  overflow-wrap: anywhere;
+}
+.feature-summary-desc {
+  font-size: var(--fs-xs);
+  font-weight: 400;
+  line-height: 1.4;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+.feature-summary-chevron {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  transition: transform var(--dur) var(--ease);
+}
+.feature-details[open] > .feature-summary .feature-summary-chevron {
+  transform: rotate(180deg);
+}
+.feature-body {
+  min-width: 0;
+  padding: var(--sp-1) var(--sp-4) var(--sp-4);
+  font-size: var(--fs-sm);
+  color: var(--text-body);
+}
+.feature-details[open] > .feature-body {
+  border-top: 1px solid var(--hairline);
+  padding-top: var(--sp-3);
+}
+@media (prefers-reduced-motion: reduce) {
+  .feature-details,
+  .feature-summary-chevron {
+    transition: none;
+  }
+}
+
+/* ---- The windows ---- */
+.feature-panels {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.feature-panels > .feature-details {
+  margin-top: 0;
+}
+.feature-intro {
+  margin: 0 0 var(--sp-3);
+}
+
+/* ---- Lists, tables ---- */
+.plain-list {
+  margin: 4px 0 10px;
+  padding-left: 18px;
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+}
+/* A table that may be wider than its card scrolls inside this wrapper, never the window. */
+.table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+}
+.table-wrap > .data-table {
+  margin: 0;
+}
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-xs);
+}
+.data-table th,
+.data-table td {
+  text-align: left;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--hairline);
+  vertical-align: top;
+}
+.data-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+.data-table th {
+  color: var(--text-dim);
+  font-weight: 500;
+  white-space: nowrap;
+  background: var(--bg-3);
+}
+.data-table th .ui-infotip {
+  margin-left: 2px;
+  vertical-align: -2px;
+}
+
+/* A list of rows (thumbnail · text · actions): listings, photos, sections. */
+.feat-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+}
+.feat-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--hairline);
+}
+.feat-row:last-child {
+  border-bottom: 0;
+}
+.feat-row.is-open {
+  background: var(--accent-soft);
+}
+/* …and the expanded content under it (compete.css .feat-row-expanded) reads as one block. */
+.feat-row.is-open:has(+ .feat-row-expanded) {
+  border-bottom-color: transparent;
+}
+.feat-row-thumb {
+  flex: 0 0 auto;
+  width: 64px;
+  height: 48px;
+  border-radius: var(--r-xs);
+  object-fit: cover;
+  background: var(--bg-3);
+}
+span.feat-row-thumb {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+}
+.feat-row-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.feat-row-title {
+  font-size: var(--fs-sm);
+  color: var(--text);
+  font-weight: 500;
+}
+.feat-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 12px;
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+.feat-row-meta .ui-icon {
+  vertical-align: -2px;
+  margin-right: 3px;
+}
+/* An icon + number with a tooltip (♡ 17, ★ 2): focusable so the keyboard gets the tooltip too. */
+.feat-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: var(--r-xs);
+  font-variant-numeric: tabular-nums;
+  cursor: help;
+}
+.feat-stat > .ui-icon {
+  margin-right: 0;
+}
+.feat-stat:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.feat-row-actions {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}
+.feat-price {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* "label — value" facts; two columns, one when the card is narrow. */
+.feat-facts-wrap {
+  container-type: inline-size;
+}
+.feat-facts {
+  display: grid;
+  grid-template-columns: minmax(120px, max-content) minmax(0, 1fr);
+  gap: 6px var(--sp-4);
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+.feat-facts dt {
+  display: flex;
+  align-items: center;
+  align-self: start;
+  gap: 4px;
+  min-height: 1.5em;
+  color: var(--text-dim);
+}
+.feat-facts dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+@container (max-width: 420px) {
+  .feat-facts {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+  .feat-facts dd {
+    margin-bottom: var(--sp-2);
+  }
+}
+
+/* Small grey pills (tags, options, values). */
+.feat-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.feat-chip {
+  display: inline-block;
+  max-width: 100%;
+  padding: 2px 8px;
+  border-radius: var(--r-pill);
+  background: var(--bg-3);
+  border: 1px solid var(--hairline);
+  font-size: var(--fs-xs);
+  color: var(--text-body);
+  overflow-wrap: anywhere;
+}
+
+/* A sub-heading inside a section body. */
+.feat-subhead {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin: var(--sp-4) 0 var(--sp-2);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.feat-subhead:first-child {
+  margin-top: 0;
+}
+.feat-subhead .ui-spacer {
+  flex: 1 1 auto;
+}
+
+/* "Показано 20 з 140" + "Показати ще". */
+.feat-more {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+.feat-pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ---- "Мій магазин → Акаунт" ---- */
+.account-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  min-width: 0;
+}
+.account-kicker {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  color: var(--text-dim);
+}
+.account-avatar {
+  flex: 0 0 auto;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.account-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.account-who {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.account-name {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  color: var(--text);
+}
+.account-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 2px var(--sp-3);
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+.account-facts dt {
+  color: var(--text-dim);
+}
+.account-facts dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--text-body);
+}
+.account-scopes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.account-addresses {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr));
+  gap: var(--sp-2);
+}
+.account-address {
+  min-width: 0;
+  padding: var(--sp-3);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+}
+.account-address-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px var(--sp-2);
+  font-weight: 500;
+  color: var(--text);
+}
+.account-address-line {
+  margin-top: 4px;
+  font-size: var(--fs-sm);
+  color: var(--text-body);
+  overflow-wrap: anywhere;
+}
+
+/* "Nothing here" inside a feature card: calmer than a screen's empty state. */
+.feature-body .ui-empty--compact {
+  padding: var(--sp-3) var(--sp-4);
+}
+.feature-body .ui-empty--compact .ui-empty-icon {
+  width: 32px;
+  height: 32px;
+}
+.feature-body .ui-empty--compact .ui-empty-title {
+  font-size: var(--fs-sm);
+}
+.feature-body .ui-empty--compact .ui-empty-text {
+  font-size: var(--fs-xs);
+}

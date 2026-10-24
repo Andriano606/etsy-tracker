@@ -121,8 +121,10 @@ export interface ImageSyncDeps {
 export interface ImageSyncRequest {
   /** null/undefined = every shop. */
   shopId?: number | null
-  /** Also retry images that already failed `maxAttempts` times. */
+  /** Check stored objects really exist, and retry every failed image (the manual run). */
   force?: boolean
+  /** Retry every failed image, also those that failed `maxAttempts` times (after a scan) — no stat check. */
+  retryErrors?: boolean
 }
 
 export interface ImageSyncer {
@@ -305,7 +307,7 @@ export function createImageSyncer(deps: ImageSyncDeps): ImageSyncer {
       }
     }
 
-    const scope = { shopId: req.shopId ?? null, maxAttempts: req.force ? null : maxAttempts }
+    const scope = { shopId: req.shopId ?? null, maxAttempts: req.force || req.retryErrors ? null : maxAttempts }
     type Task = { kind: 'listing'; row: ImageRow } | { kind: 'review'; row: ReviewImageRow }
     const rows: Task[] = [
       ...listImagesToSync(db, scope).map((row): Task => ({ kind: 'listing', row })),
@@ -346,9 +348,10 @@ export function createImageSyncer(deps: ImageSyncDeps): ImageSyncer {
       // Merge into the run that has not started yet.
       if ((queued.shopId ?? null) !== (req.shopId ?? null)) queued.shopId = null
       queued.force = !!(queued.force || req.force)
+      queued.retryErrors = !!(queued.retryErrors || req.retryErrors)
       return queuedRun
     }
-    queued = { shopId: req.shopId ?? null, force: !!req.force }
+    queued = { shopId: req.shopId ?? null, force: !!req.force, retryErrors: !!req.retryErrors }
     const run = chain.then(() => {
       const r = queued!
       queued = null

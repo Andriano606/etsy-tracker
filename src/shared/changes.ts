@@ -10,12 +10,12 @@ export const FIELD_LABEL: Record<ChangedField, string> = {
   tags: 'теги',
   materials: 'матеріали',
   styles: 'стиль',
-  whoMade: 'хто виготовив',
-  whenMade: 'коли виготовлено',
+  whoMade: 'хто зробив',
+  whenMade: 'коли зроблено',
   taxonomyId: 'категорія',
   shopSectionId: 'розділ магазину',
   listingType: 'тип товару',
-  processing: 'час виготовлення',
+  processing: 'час на підготовку',
   isPersonalizable: 'персоналізація',
   isCustomizable: 'індивідуальні замовлення',
   hasVariations: 'варіанти',
@@ -68,9 +68,9 @@ export function changedLabel(newValue: TrackedFields | null | undefined): string
 
 /** Etsy enum values → Ukrainian, for the details section. */
 export const WHO_MADE_LABEL: Record<string, string> = {
-  i_did: 'продавець',
-  someone_else: 'інша особа',
-  collective: 'колектив продавця'
+  i_did: 'сам продавець',
+  someone_else: 'інша людина чи компанія',
+  collective: 'команда продавця'
 }
 
 export function whenMadeLabel(v: string | null | undefined): string | null {

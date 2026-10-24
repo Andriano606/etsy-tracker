@@ -3,7 +3,7 @@
 // cards with photos, a price summary, paging, and "Стежити за магазином".
 
 import './market.css'
-import { type FormEvent, useEffect, useRef, useState } from 'react'
+import { type FormEvent, type KeyboardEvent, useEffect, useId, useRef, useState } from 'react'
 import {
   MARKET_MAX_OFFSET,
   MARKET_PAGE_SIZE,
@@ -18,7 +18,11 @@ import {
   type MarketSort
 } from '@shared/features/market'
 import { formatCount, formatPrice } from '@shared/format'
+import type { ShopSummary } from '@shared/types'
+import { useStore } from '../store'
+import { Badge, Button, Callout, EmptyState, Field, GLOSSARY, Icon, InfoTip, Loading, Select, Term, Tooltip } from '../ui'
 import { featureCall } from './call'
+import { ErrorNote, IconStat, scrollBehavior } from './compete/common'
 import { LazyDetails } from './LazyDetails'
 import type { FeatureUi } from './types'
 
@@ -28,19 +32,25 @@ const money = (value: number, currency: string): string => formatPrice(value, 1,
 
 export function CategoryPicker({
   value,
-  onChange
+  onChange,
+  describedBy
 }: {
   value: MarketCategory | null
   onChange: (c: MarketCategory | null) => void
+  describedBy?: string
 }): JSX.Element {
   const [query, setQuery] = useState('')
   const [matches, setMatches] = useState<MarketCategoryMatches | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  /** The suggestion the arrow keys point at (-1 = none). */
+  const [active, setActive] = useState(-1)
   const seq = useRef(0)
+  const listId = useId()
 
   const search = async (q: string): Promise<void> => {
     setQuery(q)
+    setActive(-1)
     const n = ++seq.current
     if (!q.trim()) {
       setMatches(null)
@@ -61,50 +71,104 @@ export function CategoryPicker({
     }
   }
 
+  const options = matches?.categories ?? []
+  const open = options.length > 0
+  const pick = (c: MarketCategory): void => {
+    onChange(c)
+    setQuery('')
+    setMatches(null)
+    setActive(-1)
+  }
+  // A combobox: ↓/↑ walk the suggestions, Enter picks one, Escape closes the list (not the window).
+  const onKeyDown = (e: KeyboardEvent<HTMLInputElement>): void => {
+    if (!open) return
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault()
+      const step = e.key === 'ArrowDown' ? 1 : -1
+      setActive((a) => (a < 0 && step < 0 ? options.length - 1 : (a + step + options.length) % options.length))
+    } else if (e.key === 'Enter' && active >= 0) {
+      e.preventDefault()
+      pick(options[active])
+    } else if (e.key === 'Escape') {
+      e.preventDefault()
+      e.stopPropagation()
+      setMatches(null)
+      setActive(-1)
+    }
+  }
+  const optionId = (i: number): string => `${listId}-o${i}`
+  // Keep the highlighted suggestion visible in the scrolling list.
+  useEffect(() => {
+    if (active >= 0) document.getElementById(optionId(active))?.scrollIntoView?.({ block: 'nearest' })
+  }, [active])
+
   if (value) {
     return (
-      <div className="chosen-cat" data-testid="market-category">
-        <input id="market-cat" readOnly value={value.path} />
-        <button type="button" className="btn small" aria-label="Змінити категорію" onClick={() => onChange(null)}>
+      <div className="market-chosen-cat" data-testid="market-category">
+        <span className="market-chosen-icon" aria-hidden="true">
+          <Icon name="folder" size={15} />
+        </span>
+        <input id="market-cat" readOnly value={value.path} title={value.path} aria-describedby={describedBy} />
+        <Button size="sm" icon="close" aria-label="Змінити категорію" tooltip="Прибрати категорію і вибрати іншу" onClick={() => onChange(null)}>
           Змінити
-        </button>
+        </Button>
       </div>
     )
   }
   return (
-    <>
-      <input id="market-cat" placeholder="Почніть вводити, напр. wall art або mugs" value={query} onChange={(e) => void search(e.target.value)} />
-      {loading && <div className="hint">Завантаження…</div>}
+    <div className="market-cat-picker">
+      <div className="market-input-icon">
+        <Icon name="search" size={15} />
+        <input
+          id="market-cat"
+          role="combobox"
+          aria-autocomplete="list"
+          aria-expanded={open}
+          aria-controls={open ? listId : undefined}
+          aria-activedescendant={open && active >= 0 ? optionId(active) : undefined}
+          placeholder="Почніть вводити англійською, напр. wall art або mugs"
+          value={query}
+          autoComplete="off"
+          aria-describedby={describedBy}
+          onChange={(e) => void search(e.target.value)}
+          onKeyDown={onKeyDown}
+        />
+      </div>
+      {loading && <Loading inline>Завантаження…</Loading>}
       {error && (
-        <div className="test-result err" role="alert">
+        <Callout tone="error" compact>
           {error}
-        </div>
+        </Callout>
       )}
-      {matches && !loading && matches.categories.length === 0 && <div className="hint">Нічого не знайдено.</div>}
-      {matches && matches.categories.length > 0 && (
-        <ul className="cat-results" role="listbox" aria-label="Категорії">
-          {matches.categories.map((c) => (
-            <li key={c.id}>
-              <button
-                type="button"
+      {matches && !loading && matches.categories.length === 0 && <div className="market-cat-empty">Нічого не знайдено.</div>}
+      {matches && open && (
+        <div className="market-cat-results">
+          <ul id={listId} role="listbox" aria-label="Категорії">
+            {options.map((c, i) => (
+              <li
+                key={c.id}
+                id={optionId(i)}
                 role="option"
-                aria-selected={false}
-                onClick={() => {
-                  onChange(c)
-                  setQuery('')
-                  setMatches(null)
-                }}
+                aria-selected={i === active}
+                className={i === active ? 'is-active' : undefined}
+                title={c.path}
+                // mousedown would blur the input first; keep the focus in it
+                onMouseDown={(e) => e.preventDefault()}
+                onMouseEnter={() => setActive(i)}
+                onClick={() => pick(c)}
               >
                 {c.path}
-              </button>
-            </li>
-          ))}
-          {matches.total > matches.categories.length && (
-            <li className="hint">Показано {matches.categories.length} з {formatCount(matches.total)} — уточніть запит.</li>
+              </li>
+            ))}
+          </ul>
+          {matches.total > options.length && (
+            <div className="market-cat-more">
+              Показано {options.length} з {formatCount(matches.total)} — уточніть запит.
+            </div>
           )}
-        </ul>
+        </div>
       )}
-    </>
+    </div>
   )
 }
 
@@ -113,8 +177,10 @@ const VALUES_SHOWN = 40
 export function CategoryProperties({ taxonomyId }: { taxonomyId: number }): JSX.Element {
   const [props, setProps] = useState<MarketProperty[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [attempt, setAttempt] = useState(0)
   useEffect(() => {
     let alive = true
+    setError(null)
     void featureCall<MarketProperty[]>('market', 'properties', { taxonomyId }).then((r) => {
       if (!alive) return
       if (r.ok) setProps(r.value)
@@ -123,29 +189,37 @@ export function CategoryProperties({ taxonomyId }: { taxonomyId: number }): JSX.
     return () => {
       alive = false
     }
-  }, [taxonomyId])
-  if (error) {
-    return (
-      <div className="test-result err" role="alert">
-        {error}
-      </div>
-    )
-  }
-  if (!props) return <div className="hint">Завантаження…</div>
-  if (props.length === 0) return <div className="hint">У цієї категорії немає властивостей.</div>
+  }, [taxonomyId, attempt])
+  if (error) return <ErrorNote error={error} onRetry={() => setAttempt((n) => n + 1)} />
+  if (!props) return <Loading inline>Завантаження…</Loading>
+  if (props.length === 0) return <div className="market-muted">У цієї категорії немає властивостей.</div>
   return (
-    <ul className="plain-list" data-testid="market-properties">
+    <ul className="market-props" data-testid="market-properties">
       {props.map((p) => {
         const values = p.possibleValues.map((v) => v.name)
         return (
-          <li key={p.propertyId}>
-            <strong>{p.displayName || p.name}</strong>
-            {p.isRequired && <span className="dim"> · обов’язкова</span>}
-            {p.isMultivalued && <span className="dim"> · кілька значень{p.maxValuesAllowed ? ` (до ${p.maxValuesAllowed})` : ''}</span>}
-            {p.scales.length > 0 && <span className="dim"> · шкали: {p.scales.map((s) => s.name).join(', ')}</span>}
-            <div className="hint">
+          <li key={p.propertyId} className="market-prop" data-testid="market-property">
+            <div className="market-prop-head">
+              <strong>{p.displayName || p.name}</strong>
+              {p.isRequired && (
+                <Badge tone="warn" hint={GLOSSARY['features.market.requiredProperty'].short}>
+                  обов’язкова
+                </Badge>
+              )}
+              {p.isMultivalued && (
+                <Badge tone="neutral" hint={GLOSSARY['features.market.multivalued'].short}>
+                  кілька значень{p.maxValuesAllowed ? ` (до ${p.maxValuesAllowed})` : ''}
+                </Badge>
+              )}
+              {p.scales.length > 0 && (
+                <Badge tone="neutral" hint={GLOSSARY['features.market.scale'].short}>
+                  шкали: {p.scales.map((s) => s.name).join(', ')}
+                </Badge>
+              )}
+            </div>
+            <div className="market-prop-values">
               {values.length === 0
-                ? 'Довільне значення.'
+                ? 'Довільне значення — продавець вписує своє.'
                 : values.slice(0, VALUES_SHOWN).join(', ') + (values.length > VALUES_SHOWN ? ` … і ще ${values.length - VALUES_SHOWN}` : '')}
             </div>
           </li>
@@ -161,61 +235,111 @@ type Note = { ok: boolean; text: string }
 
 function ResultCard({
   l,
+  tracked,
   note,
   busy,
-  onTrack
+  onTrack,
+  onShow
 }: {
   l: MarketListing
+  /** The shop, when the user already tracks it. */
+  tracked: ShopSummary | undefined
   note: Note | undefined
   busy: boolean
   onTrack: () => void
+  /** Close the window and open the tracked shop in the app. */
+  onShow: (shopId: number) => void
 }): JSX.Element {
+  const price = l.priceAmount != null && l.priceDivisor && l.currency ? formatPrice(l.priceAmount, l.priceDivisor, l.currency) : '—'
   return (
-    <div className="listing-card market-card" data-testid="market-result">
-      <div className="thumb">{l.imageUrl ? <img src={l.imageUrl} alt="" loading="lazy" /> : <span className="no-img">Без фото</span>}</div>
-      <div className="card-body">
-        <div className="card-title" title={l.title}>
-          {l.title}
-        </div>
-        <div className="card-price">
-          {l.priceAmount != null && l.priceDivisor && l.currency ? formatPrice(l.priceAmount, l.priceDivisor, l.currency) : '—'}
-        </div>
-        <div className="market-meta">
-          {l.numFavorers != null && <span title="Додали в обране">❤ {formatCount(l.numFavorers)}</span>}
-          {l.views != null && <span title="Перегляди">👁 {formatCount(l.views)}</span>}
-          <span>Магазин #{l.shopId}</span>
-        </div>
-        <div className="market-actions">
-          <button type="button" className="btn small" disabled={!l.url} onClick={() => l.url && void window.api.openExternal(l.url)}>
-            Відкрити на Etsy
-          </button>
-          <button type="button" className="btn small" disabled={busy} onClick={onTrack}>
-            Стежити за магазином
-          </button>
-        </div>
-        {note && (
-          <div className={`test-result ${note.ok ? 'ok' : 'err'}`} role={note.ok ? 'status' : 'alert'}>
-            {note.text}
-          </div>
+    <article className="market-card" data-testid="market-result">
+      <div className="market-thumb">
+        {l.imageUrl ? (
+          <img src={l.imageUrl} alt="" loading="lazy" referrerPolicy="no-referrer" />
+        ) : (
+          <span className="market-no-img">
+            <Icon name="image" size={20} />
+            Без фото
+          </span>
         )}
       </div>
-    </div>
+      <div className="market-card-body">
+        <h3 className="market-card-title clamp-2" title={l.title}>
+          {l.title}
+        </h3>
+        <div className="market-card-price">
+          <span className="num">{price}</span>
+          <InfoTip glossary="basePrice" label="Що це за ціна?" />
+        </div>
+        <div className="market-meta">
+          {l.numFavorers != null && <IconStat icon="heart" label="В обраному" hint={GLOSSARY.favorites.short} value={formatCount(l.numFavorers)} />}
+          {l.views != null && <IconStat icon="eye" label="Переглядів" hint={GLOSSARY.views.short} value={formatCount(l.views)} />}
+        </div>
+        {tracked ? (
+          <div className="market-shop market-shop--tracked">
+            <Icon name="store" size={13} />
+            <span className="truncate" title={tracked.shopName}>
+              {tracked.shopName}
+            </span>
+            <Badge tone="accent" icon="check" hint="Цей магазин уже у вашому списку зліва — програма стежить за його товарами.">
+              ви стежите
+            </Badge>
+          </div>
+        ) : (
+          <Tooltip content={GLOSSARY['features.market.shopNumber'].short}>
+            <span className="market-shop feat-stat" tabIndex={0}>
+              <Icon name="store" size={13} />
+              Магазин #{l.shopId}
+            </span>
+          </Tooltip>
+        )}
+        <div className="market-actions">
+          {tracked ? (
+            <Button size="sm" icon="store" variant="subtle" tooltip="Закрити пошук і відкрити цей магазин у програмі" onClick={() => onShow(tracked.id)}>
+              Відкрити в програмі
+            </Button>
+          ) : (
+            <Button size="sm" icon="plus" variant="subtle" disabled={busy} busy={busy} tooltip={GLOSSARY['features.market.follow'].short} onClick={onTrack}>
+              Стежити за магазином
+            </Button>
+          )}
+          <Button size="sm" icon="external" variant="ghost" disabled={!l.url} onClick={() => l.url && void window.api.openExternal(l.url)}>
+            Відкрити на Etsy
+          </Button>
+        </div>
+        {note && (
+          <Callout tone={note.ok ? 'success' : 'error'} compact>
+            {note.text}
+          </Callout>
+        )}
+      </div>
+    </article>
   )
 }
 
 function Summary({ r }: { r: MarketSearchResult }): JSX.Element {
   const stats = marketPriceStats(r.listings)
   return (
-    <div className="market-summary" data-testid="market-summary">
-      <div>
-        Знайдено на Etsy: <strong>{formatCount(r.count)}</strong> · завантажено {formatCount(r.listings.length)}
+    <section className="market-summary" data-testid="market-summary" aria-label="Підсумок пошуку">
+      <div className="market-summary-head">
+        <Icon name="search" size={15} />
+        <span>
+          <Term glossary="features.market.found">Знайдено на Etsy</Term>: <strong className="num">{formatCount(r.count)}</strong> · завантажено{' '}
+          {formatCount(r.listings.length)}
+        </span>
       </div>
-      {stats.map((s) => (
-        <div key={s.currency} className="hint">
-          {s.currency} ({s.count}): від {money(s.min, s.currency)} · медіана {money(s.median, s.currency)} · до {money(s.max, s.currency)}
+      {stats.length > 0 && (
+        <div className="market-summary-prices">
+          <span className="market-summary-label">Ціни серед завантажених:</span>
+          {stats.map((s) => (
+            <div key={s.currency} className="market-price-row">
+              {s.currency} ({s.count}): від {money(s.min, s.currency)} · <Term glossary="features.market.median">медіана</Term>{' '}
+              <strong>{money(s.median, s.currency)}</strong> · до {money(s.max, s.currency)}
+            </div>
+          ))}
         </div>
-      ))}
-    </div>
+      )}
+    </section>
   )
 }
 
@@ -242,6 +366,8 @@ const queryOf = (f: Form): Record<string, unknown> => ({
   limit: MARKET_PAGE_SIZE
 })
 
+const isEmpty = (f: Form): boolean => !f.keywords.trim() && !f.category && !f.minPrice.trim() && !f.maxPrice.trim() && !f.shopLocation.trim()
+
 export function MarketSearch(): JSX.Element {
   const [form, setForm] = useState<Form>(EMPTY)
   const [query, setQuery] = useState<Record<string, unknown> | null>(null)
@@ -251,14 +377,22 @@ export function MarketSearch(): JSX.Element {
   const [notes, setNotes] = useState<Record<number, Note>>({})
   /** Shops whose "Стежити за магазином" is in flight (each finishes on its own). */
   const [tracking, setTracking] = useState<ReadonlySet<number>>(new Set())
+  /** The offset of the request that failed (what "Спробувати ще" repeats). */
+  const [failedOffset, setFailedOffset] = useState(0)
+  const shops = useStore((s) => s.shops)
   const set = (patch: Partial<Form>): void => setForm((f) => ({ ...f, ...patch }))
+  const resultsRef = useRef<HTMLDivElement>(null)
+  /** A new search answered: bring the results into view (at 900×560 the form fills the window). */
+  const reveal = useRef(false)
 
   const run = async (q: Record<string, unknown>, offset: number): Promise<void> => {
     setLoading(true)
     setError(null)
     const r = await featureCall<MarketSearchResult>('market', 'search', { ...q, offset })
     setLoading(false)
+    if (offset === 0) reveal.current = true
     if (!r.ok) {
+      setFailedOffset(offset)
       setError(r.error)
       return
     }
@@ -298,102 +432,168 @@ export function MarketSearch(): JSX.Element {
     })
   }
 
+  useEffect(() => {
+    if (!reveal.current || loading) return
+    reveal.current = false
+    resultsRef.current?.scrollIntoView?.({ block: 'start', behavior: scrollBehavior() })
+  }, [result, error, loading])
+
+  const showShop = (shopId: number): void => {
+    const st = useStore.getState()
+    st.openFeatureModal(null)
+    void st.selectShop(shopId)
+  }
+
   const nextOffset = result ? result.offset + result.limit : 0
   const more = result != null && query != null && result.listings.length < result.count && nextOffset <= MARKET_MAX_OFFSET
 
   return (
     <div className="market-search">
-      <form onSubmit={submit}>
-        <div className="field-row">
-          <div className="field">
-            <label htmlFor="market-keywords">Ключові слова</label>
-            <input id="market-keywords" value={form.keywords} maxLength={200} onChange={(e) => set({ keywords: e.target.value })} />
-          </div>
-          <div className="field">
-            <label htmlFor="market-location">Розташування магазину</label>
-            <input
-              id="market-location"
-              placeholder="напр. Ukraine або Germany"
-              value={form.shopLocation}
-              maxLength={100}
-              onChange={(e) => set({ shopLocation: e.target.value })}
-            />
-          </div>
-        </div>
-        <div className="field">
-          <label htmlFor="market-cat">Категорія</label>
-          <CategoryPicker value={form.category} onChange={(category) => set({ category })} />
+      <form className="market-form ui-card" onSubmit={submit} aria-label="Умови пошуку">
+        <Field label="Ключові слова" glossary="features.market.keywords" id="market-keywords" className="market-keywords">
+          {(p) => (
+            <div className="market-input-icon">
+              <Icon name="search" size={15} />
+              <input
+                {...p}
+                value={form.keywords}
+                maxLength={200}
+                placeholder="Що шукає покупець, напр. budget planner"
+                onChange={(e) => set({ keywords: e.target.value })}
+              />
+            </div>
+          )}
+        </Field>
+        <div className="market-grid-2">
+          <Field label="Категорія" glossary="category" id="market-cat" hint="Розділ каталогу Etsy — звужує пошук до одного виду товарів.">
+            {(p) => <CategoryPicker value={form.category} onChange={(category) => set({ category })} describedBy={p['aria-describedby']} />}
+          </Field>
+          <Field label="Розташування магазину" glossary="features.market.shopLocation" id="market-location">
+            <input placeholder="напр. Ukraine або Germany" value={form.shopLocation} maxLength={100} onChange={(e) => set({ shopLocation: e.target.value })} />
+          </Field>
         </div>
         {form.category && (
-          <LazyDetails key={form.category.id} label="Властивості категорії" testId="market-category-properties">
+          <LazyDetails
+            key={form.category.id}
+            label="Властивості категорії"
+            icon="tag"
+            description={GLOSSARY['features.market.categoryProperties'].short}
+            testId="market-category-properties"
+          >
             {() => <CategoryProperties taxonomyId={form.category!.id} />}
           </LazyDetails>
         )}
-        <div className="field-row">
-          <div className="field">
-            <label htmlFor="market-min">Ціна від</label>
-            <input id="market-min" type="number" min={0} step="any" value={form.minPrice} onChange={(e) => set({ minPrice: e.target.value })} />
-          </div>
-          <div className="field">
-            <label htmlFor="market-max">Ціна до</label>
-            <input id="market-max" type="number" min={0} step="any" value={form.maxPrice} onChange={(e) => set({ maxPrice: e.target.value })} />
-          </div>
-          <div className="field">
-            <label htmlFor="market-sort">Сортування</label>
-            <select id="market-sort" value={form.sort} onChange={(e) => set({ sort: e.target.value as MarketSort })}>
-              {MARKET_SORT_KEYS.map((k) => (
-                <option key={k} value={k}>
-                  {MARKET_SORTS[k].label}
-                </option>
-              ))}
-            </select>
-          </div>
+        <div className="market-grid-3">
+          <Field label="Ціна від" glossary="features.market.priceRange" id="market-min">
+            <input type="number" min={0} step="any" inputMode="decimal" placeholder="0" value={form.minPrice} onChange={(e) => set({ minPrice: e.target.value })} />
+          </Field>
+          <Field label="Ціна до" id="market-max">
+            <input type="number" min={0} step="any" inputMode="decimal" placeholder="без межі" value={form.maxPrice} onChange={(e) => set({ maxPrice: e.target.value })} />
+          </Field>
+          <Field label="Сортування" glossary="features.market.sort" id="market-sort">
+            <Select
+              value={form.sort}
+              onChange={(v) => set({ sort: v as MarketSort })}
+              options={MARKET_SORT_KEYS.map((k) => ({ value: k, label: MARKET_SORTS[k].label }))}
+            />
+          </Field>
         </div>
-        <div className="hint">
-          Потрібні ключові слова, категорія, розташування або ціна. Сортування діє лише разом із ключовими словами, категорією чи
-          розташуванням. У якій валюті Etsy порівнює ціну «від/до», не задокументовано; ціни в результатах — у валюті продавця, без
-          перерахунку.
-        </div>
-        <div className="settings-actions market-submit">
-          <button type="submit" className="btn primary" disabled={loading}>
+        <div className="market-form-actions">
+          <Button type="submit" variant="primary" icon="search" busy={loading}>
             Шукати
-          </button>
+          </Button>
+          <Button
+            variant="ghost"
+            disabled={loading || (isEmpty(form) && form.sort === 'relevance')}
+            onClick={() => setForm(EMPTY)}
+            tooltip="Очистити всі поля форми (знайдене залишиться)"
+          >
+            Очистити
+          </Button>
+          <p className="market-form-note">
+            Заповніть хоча б одне поле. Ціни в результатах — у валюті продавця, без перерахунку.
+          </p>
         </div>
       </form>
 
-      {error && (
-        <div className="test-result err" role="alert">
-          {error}
-        </div>
-      )}
-      {result && (
-        <>
-          <Summary r={result} />
-          {!result.sorted && <div className="hint">Без ключових слів, категорії чи розташування Etsy не сортує — спершу найновіші.</div>}
-          {result.imagesError && <div className="hint warn">{result.imagesError}</div>}
-          {result.listings.length === 0 ? (
-            <div className="hint">Нічого не знайдено.</div>
-          ) : (
-            <div className="grid market-grid">
-              {result.listings.map((l) => (
-                <ResultCard key={l.listingId} l={l} note={notes[l.shopId]} busy={tracking.has(l.shopId)} onTrack={() => void track(l.shopId)} />
-              ))}
-            </div>
-          )}
-        </>
-      )}
-      {loading && <div className="hint">Завантаження…</div>}
-      {more && !loading && (
-        <div className="settings-actions market-more">
-          <button type="button" className="btn" onClick={() => query && void run(query, nextOffset)}>
-            Показати ще
-          </button>
-        </div>
-      )}
+      <div className="market-results" aria-live="polite" ref={resultsRef}>
+        {error && (
+          <Callout
+            tone="error"
+            title="Пошук не вдався"
+            action={
+              query && (
+                <Button icon="refresh" onClick={() => void run(query, failedOffset)}>
+                  Спробувати ще
+                </Button>
+              )
+            }
+          >
+            {error}
+          </Callout>
+        )}
+        {!result && !loading && !error && (
+          <EmptyState icon="search" title="Шукайте серед усіх товарів Etsy">
+            Введіть, що шукає покупець, або виберіть категорію — і подивіться, які товари продаються, за якою ціною і хто їх продає. Цікавий
+            магазин можна одразу додати до стеження.
+          </EmptyState>
+        )}
+        {result && (
+          <>
+            <Summary r={result} />
+            {!result.sorted && (
+              <Callout tone="info" compact>
+                Без ключових слів, категорії чи розташування Etsy не сортує — спершу найновіші.
+              </Callout>
+            )}
+            {result.imagesError && (
+              <Callout tone="warn" compact>
+                {result.imagesError}
+              </Callout>
+            )}
+            {result.listings.length === 0 ? (
+              <EmptyState icon="search" title="Нічого не знайдено.">
+                Спробуйте інші або коротші слова, ширшу категорію чи приберіть обмеження ціни.
+              </EmptyState>
+            ) : (
+              <div className="market-grid">
+                {result.listings.map((l) => (
+                  <ResultCard
+                    key={l.listingId}
+                    l={l}
+                    tracked={shops.find((s) => s.id === l.shopId)}
+                    note={notes[l.shopId]}
+                    busy={tracking.has(l.shopId)}
+                    onTrack={() => void track(l.shopId)}
+                    onShow={showShop}
+                  />
+                ))}
+              </div>
+            )}
+          </>
+        )}
+        {loading && <Loading>Завантаження…</Loading>}
+        {more && !loading && (
+          <div className="market-more">
+            <span className="market-muted">
+              Показано {formatCount(result.listings.length)} з {formatCount(result.count)}
+            </span>
+            <Button icon="chevron-down" onClick={() => query && void run(query, nextOffset)}>
+              Показати ще
+            </Button>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
 
 export const ui: FeatureUi = {
-  topModals: [{ id: 'market', button: '🔎 Пошук по Etsy', title: 'Пошук по всьому Etsy', Component: MarketSearch }]
+  topModals: [
+    Object.assign(
+      { id: 'market', button: '🔎 Пошук по Etsy', title: 'Пошук по всьому Etsy', Component: MarketSearch },
+      // Read by the host (panelMeta) as the window's subtitle.
+      { description: 'Товари всіх магазинів Etsy — щоб оцінити ціни, попит і конкурентів. Програма лише читає: нічого не купує й не змінює.' }
+    )
+  ]
 }

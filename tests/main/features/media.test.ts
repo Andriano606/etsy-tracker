@@ -178,7 +178,7 @@ describe('media: load', () => {
     const out = setup({}, signedOut)
     await expect(runAction(mediaFeature, 'load', { listingId: L }, out.ctx)).rejects.toThrow('Увійдіть в Etsy')
     const noRead = setup({}, signedIn({ scopes: ['listings_w'] }))
-    await expect(runAction(mediaFeature, 'load', { listingId: L }, noRead.ctx)).rejects.toThrow('читання лістингів')
+    await expect(runAction(mediaFeature, 'load', { listingId: L }, noRead.ctx)).rejects.toThrow('читання товарів')
     const bad = setup()
     await expect(runAction(mediaFeature, 'load', { listingId: 'x' }, bad.ctx)).rejects.toThrow('Некоректний listingId')
     expect([...out.fetch.calls, ...noRead.fetch.calls, ...bad.fetch.calls]).toHaveLength(0)
@@ -196,7 +196,7 @@ describe('media: video state (getListingVideo)', () => {
 
   it('an empty answer = no such video; a bad id is refused', async () => {
     const { ctx } = setup({ [`GET ${PUB}/videos/{id}`]: { status: 200 } })
-    await expect(runAction(mediaFeature, 'video', { listingId: L, videoId: 31 }, ctx)).rejects.toThrow('Такого відео')
+    await expect(runAction(mediaFeature, 'video', { listingId: L, videoId: 31 }, ctx)).rejects.toThrow('немає такого відео')
     await expect(runAction(mediaFeature, 'video', { listingId: L, videoId: 0 }, ctx)).rejects.toThrow('Некоректний videoId')
   })
 })
@@ -246,7 +246,7 @@ describe('media: photos', () => {
 
     const ro = setup({}, signedIn({ scopes: ['listings_r'] }))
     await expect(runAction(mediaFeature, 'addPhotos', { listingId: L, tokens: [ro.pick('a.jpg')] }, ro.ctx)).rejects.toThrow(
-      'редагування лістингів'
+      'редагування товарів'
     )
     expect(ro.fetch.calls).toHaveLength(0)
   })
@@ -291,7 +291,7 @@ describe('media: photos', () => {
   it('replacePhoto refuses a position without a photo, beyond 10, or a too long alt text', async () => {
     const s = setup()
     await expect(runAction(mediaFeature, 'replacePhoto', { listingId: L, position: 4, token: s.pick('a.jpg') }, s.ctx)).rejects.toThrow(
-      'На позиції 4 фото немає (у лістингу 3 фото).'
+      'На позиції 4 фото немає (у товару 3 фото).'
     )
     await expect(runAction(mediaFeature, 'replacePhoto', { listingId: L, position: 11, token: s.pick('a.jpg') }, s.ctx)).rejects.toThrow(
       'від 1 до 10'
@@ -325,7 +325,7 @@ describe('media: photos', () => {
 
   it('setAltText: an empty answer = no such photo', async () => {
     const { ctx, fetch } = setup({ [`GET ${PUB}/images/{id}`]: { status: 200 } })
-    await expect(runAction(mediaFeature, 'setAltText', { listingId: L, imageId: 12, altText: '' }, ctx)).rejects.toThrow('Такого фото')
+    await expect(runAction(mediaFeature, 'setAltText', { listingId: L, imageId: 12, altText: '' }, ctx)).rejects.toThrow('немає такого фото')
     expect(writes(fetch.calls)).toEqual([])
   })
 
@@ -354,7 +354,7 @@ describe('media: photos', () => {
   it('movePhoto: only up; a failing second step says which photo is off the listing', async () => {
     const s = setup()
     await expect(runAction(mediaFeature, 'movePhoto', { listingId: L, imageId: 11, toPosition: 2 }, s.ctx)).rejects.toThrow('лише вище')
-    await expect(runAction(mediaFeature, 'movePhoto', { listingId: L, imageId: 77, toPosition: 1 }, s.ctx)).rejects.toThrow('Такого фото')
+    await expect(runAction(mediaFeature, 'movePhoto', { listingId: L, imageId: 77, toPosition: 1 }, s.ctx)).rejects.toThrow('немає такого фото')
     expect(writes(s.fetch.calls)).toEqual([])
     let n = 0
     const f = setup({ [`POST ${OWN}/images`]: () => (++n === 2 ? { status: 500 } : { status: 201, body: img(12, 1) }) })
@@ -384,7 +384,7 @@ describe('media: photos', () => {
     expect(await parts(posts[1])).toEqual({ listing_image_id: '12', rank: '5', is_watermarked: 'true', alt_text: '' })
     const full = setup({ [`GET ${PUB}/images`]: paged(Array.from({ length: 10 }, (_, i) => img(i + 1, i + 1))) })
     await expect(runAction(mediaFeature, 'restorePhoto', { listingId: L, imageId: 12, position: 2 }, full.ctx)).rejects.toThrow(
-      'У лістингу вже 10 фото.'
+      'У товару вже 10 фото.'
     )
     expect(writes(full.fetch.calls)).toEqual([])
   })
@@ -448,7 +448,7 @@ describe('media: video', () => {
   it('the daily upload limit (429) with a current video: nothing is deleted, the video stays', async () => {
     const { ctx, fetch, pick } = setup({ [`POST ${OWN}/videos`]: { status: 429, headers: { 'retry-after': '3600' } } })
     await expect(runAction(mediaFeature, 'uploadVideo', { listingId: L, token: pick('clip.mp4') }, ctx)).rejects.toThrow(
-      'не більше 10 завантажень відео на лістинг за добу — спробуйте завтра. Поточне відео лишилося.'
+      'не більше 10 завантажень відео на товар за добу — спробуйте завтра. Поточне відео лишилося.'
     )
     expect(writes(fetch.calls)).toEqual([`POST ${OWN}/videos`])
     const q = setup({ [`GET ${PUB}/videos`]: paged([]), [`POST ${OWN}/videos`]: { status: 429, headers: { 'retry-after': '3600' } } })
@@ -516,7 +516,7 @@ describe('media: buyer files', () => {
       ['deleteFile', { fileId: 51 }]
     ] as const) {
       const s = setup({}, signedIn({ scopes: ['listings_w'] }))
-      await expect(runAction(mediaFeature, action, { listingId: L, ...args }, s.ctx)).rejects.toThrow('читання лістингів')
+      await expect(runAction(mediaFeature, action, { listingId: L, ...args }, s.ctx)).rejects.toThrow('читання товарів')
       expect(s.fetch.calls).toHaveLength(0)
     }
   })
@@ -558,7 +558,7 @@ describe('media: buyer files', () => {
     )
     const e = setup({ [`GET ${OWN}/files/{id}`]: { status: 200 } })
     await expect(runAction(mediaFeature, 'replaceFile', { listingId: L, fileId: 51, token: e.pick('v2.pdf') }, e.ctx)).rejects.toThrow(
-      'Такого файлу'
+      'немає такого файлу'
     )
     expect(writes(e.fetch.calls)).toEqual([])
   })

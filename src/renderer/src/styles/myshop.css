@@ -1,0 +1,847 @@
+/* Мій магазин (MyShopModal), drafts (DraftsModal), own-shop bits used elsewhere. */
+
+/* =========================================================================
+   Shared classes other areas use too (sidebar, shop header, feature tabs)
+   ========================================================================= */
+.add-shop.my-shop-btn {
+  margin-top: -2px;
+  border-style: solid;
+  border-color: var(--border);
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mine-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: var(--r-pill);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 16px;
+  vertical-align: middle;
+  color: var(--accent-on);
+  background: var(--accent);
+  letter-spacing: 0.2px;
+}
+.shop-header h1 .mine-badge {
+  font-size: var(--fs-2xs);
+  line-height: 18px;
+}
+.count-badge {
+  display: inline-block;
+  margin-left: 6px;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: var(--r-pill);
+  font-size: var(--fs-2xs);
+  line-height: 18px;
+  text-align: center;
+  color: var(--accent-on);
+  background: var(--accent);
+}
+.warn-text,
+.my-warn-text {
+  color: var(--warn);
+}
+.mcp-modal .settings-section h3 + .mcp-tools + h3 {
+  margin-top: 12px;
+}
+/* The legacy dialog shell some feature windows still use with this class (features/hosts.tsx). */
+.modal.my-shop-modal {
+  width: 760px;
+  max-width: calc(100vw - 32px);
+}
+/* Form helpers the feature tabs inside "Мій магазин" use. */
+.field-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--sp-3);
+}
+.field-row > .field {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+.radio-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) 18px;
+  font-size: var(--fs-sm);
+}
+.my-shop-modal .field select {
+  width: auto;
+  min-width: min(220px, 100%);
+  max-width: 100%;
+}
+.my-shop-modal .field input,
+.my-shop-modal .field textarea {
+  width: 100%;
+}
+.my-shop-modal textarea {
+  resize: vertical;
+}
+.my-shop-modal .field textarea:disabled,
+.my-shop-modal .field input:disabled,
+.my-shop-modal .ui-field textarea:disabled,
+.my-shop-modal .ui-field input:disabled {
+  opacity: 0.55;
+}
+.settings-actions.wrap {
+  flex-wrap: wrap;
+}
+.chosen-cat {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--text-body);
+  min-width: 0;
+}
+.cat-results {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-input);
+}
+.cat-results button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text-body);
+  font-size: var(--fs-sm);
+  padding: 6px 8px;
+  border-radius: var(--r-sm);
+  overflow-wrap: anywhere;
+}
+.cat-results button:hover,
+.cat-results button:focus-visible {
+  background: var(--bg-4);
+  color: var(--text);
+}
+/* Rows of listings in feature panels (orders, compete…) and here. */
+.my-listings {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+}
+.my-listings li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.my-listings img,
+.my-listings .thumb-empty {
+  width: 56px;
+  height: 44px;
+  object-fit: cover;
+  border-radius: 5px;
+  background: var(--bg-3);
+  flex-shrink: 0;
+}
+.my-listing-text {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-sm);
+}
+.my-listing-title {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-bottom: 2px;
+}
+.editor-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  font-size: var(--fs-sm);
+}
+.editor-head .btn.small {
+  margin-left: 0;
+}
+
+/* =========================================================================
+   The "Мій магазин" window
+   ========================================================================= */
+/* Signed in: a steady height (switching tabs doesn't resize the window); the body doesn't
+   scroll — the tab list and the tab panel scroll on their own. */
+.ui-modal.my-shop-modal.is-tabbed {
+  height: min(900px, calc(100vh - 32px));
+}
+.ui-modal-body.my-shop-body--tabs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  overflow: hidden;
+  padding-bottom: 0;
+}
+.my-shop-body--tabs > * {
+  flex: none;
+}
+.my-shop-body--tabs > .my-shop-tabs {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.my-shop-tabs.ui-tabs--vertical {
+  gap: var(--sp-4);
+}
+.my-shop-tabs.ui-tabs--vertical > .ui-tablist-wrap {
+  position: static;
+  align-self: stretch;
+  max-height: none;
+  flex: 0 0 clamp(168px, 22%, 220px);
+  overflow-y: auto;
+  padding: 2px var(--sp-2) var(--sp-4) 2px;
+}
+.my-shop-tabs.ui-tabs--vertical .ui-tablist {
+  overflow: visible;
+  gap: 1px;
+}
+.my-shop-tabs > .ui-tabpanel {
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 2px 6px var(--sp-6) 2px;
+  scroll-padding-bottom: 80px;
+}
+.my-shop-tabs .ui-tab .ui-tab-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Signed in: a compact block in the modal header (dot, who, until when, sign out) */
+.my-shop-modal > .ui-modal-head > .ui-modal-extra {
+  flex: 0 0 auto;
+  max-width: 50%;
+}
+.my-signedin {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+  padding: 4px 4px 4px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+  background: var(--bg-3);
+  font-size: var(--fs-sm);
+  min-width: 0;
+}
+.my-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.my-signedin-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-body);
+  line-height: 1.35;
+}
+.my-signedin-text b {
+  color: var(--text);
+  font-weight: 600;
+}
+.my-signedin-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--sp-3);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+.my-signedin > .btn,
+.my-signedin > .ui-tooltip-anchor {
+  flex: none;
+}
+.my-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+/* Text helpers */
+.my-lead {
+  margin: 0 0 var(--sp-4);
+  color: var(--text-body);
+  font-size: var(--fs-md);
+  line-height: var(--lh);
+  max-width: 68ch;
+}
+.my-muted {
+  margin: 0 0 var(--sp-3);
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  line-height: var(--lh);
+}
+.my-code {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 0.92em;
+  padding: 1px 5px;
+  border-radius: var(--r-xs);
+  background: var(--bg-4);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.my-bullets {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-body);
+  font-size: var(--fs-sm);
+  line-height: var(--lh);
+}
+.my-bullets li + li {
+  margin-top: 4px;
+}
+.my-note-strong {
+  color: var(--text-body);
+}
+
+/* Chips: permissions, tags/materials as Etsy will read them */
+.my-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.my-chip {
+  max-width: 100%;
+  padding: 1px 8px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--border);
+  background: var(--bg-3);
+  color: var(--text-body);
+  font-size: var(--fs-xs);
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+.my-chip.is-bad {
+  border-color: var(--danger-line);
+  background: var(--danger-soft);
+  color: var(--danger-text);
+}
+
+/* Sign-in steps */
+.my-signin {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.my-signin .my-lead {
+  margin-bottom: 0;
+}
+.my-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.my-step {
+  display: flex;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+  background: var(--bg-3);
+  min-width: 0;
+}
+.my-step.is-later {
+  background: transparent;
+  border-style: dashed;
+}
+.my-step-num {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+  font-size: var(--fs-sm);
+}
+.my-step.is-later .my-step-num {
+  background: var(--bg-4);
+  color: var(--text-dim);
+}
+.my-step-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.my-step-title {
+  margin: 3px 0 0;
+  color: var(--text);
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+.my-step-body .my-muted {
+  margin: 0;
+}
+.my-step-body .ui-field {
+  margin: 0;
+}
+.my-perms-label {
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+.my-paste {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+/* Cards (editor sections) */
+.my-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-4);
+  padding: var(--sp-4);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--bg-3) 55%, var(--bg-2));
+  min-width: 0;
+}
+.my-card-title {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+.my-card > .ui-field,
+.my-card .ui-form-grid > .ui-field {
+  margin-bottom: 0;
+}
+.my-card .ui-form-grid {
+  gap: var(--sp-3) var(--sp-4);
+}
+.my-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.my-block + .my-block {
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--hairline);
+}
+.my-state {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+/* Toolbar above a list */
+.my-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2) var(--sp-3);
+  margin-bottom: var(--sp-3);
+  min-width: 0;
+}
+.my-count {
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+
+/* Rows (own listings, drafts) */
+.my-rows {
+  margin: 0 0 var(--sp-3);
+  border-top: 1px solid var(--hairline);
+}
+.my-rows .my-row {
+  gap: var(--sp-3);
+  padding: 10px 4px;
+}
+.my-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.my-row-title {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: 500;
+}
+.my-row-titleline {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.my-row-titleline .my-row-title {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.my-row-titleline > * + * {
+  flex: none;
+}
+.my-row > .btn {
+  flex: none;
+}
+.my-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px var(--sp-3);
+  color: var(--text-body);
+  font-size: var(--fs-xs);
+  min-width: 0;
+}
+.my-more-row {
+  display: flex;
+  justify-content: center;
+}
+.my-thumb {
+  flex: none;
+  object-fit: cover;
+  border-radius: var(--r-sm);
+  background: var(--bg-4);
+}
+.my-rows .my-thumb--md,
+.my-thumb--md {
+  width: 60px;
+  height: 46px;
+}
+.my-thumb--sm {
+  width: 44px;
+  height: 34px;
+}
+.my-thumb--empty {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+}
+
+/* Editor head (listing editor) */
+.my-editor-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-4);
+  min-width: 0;
+}
+.my-editor-head > .btn,
+.my-editor-head > .ui-tooltip-anchor {
+  flex: none;
+}
+.my-editor-headtext {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.my-editor-title {
+  color: var(--text);
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  line-height: var(--lh-tight);
+}
+.my-back {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  margin: -4px 0 var(--sp-3) -6px;
+}
+
+/* The save bar: sticks to the bottom of whatever scrolls (the tab panel, the modal body) */
+.my-savebar {
+  position: sticky;
+  bottom: calc(-1 * var(--sp-6));
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2) var(--sp-3);
+  margin: var(--sp-4) 0 0;
+  padding: 10px var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--bg-2) 94%, black);
+  box-shadow: 0 -8px 18px -10px rgba(0, 0, 0, 0.6);
+}
+.ui-modal-body > .my-editor .my-savebar,
+.drafts-modal .my-savebar {
+  bottom: -24px;
+}
+@media (max-height: 640px) {
+  .ui-modal-body > .my-editor .my-savebar,
+  .drafts-modal .my-savebar {
+    bottom: -18px;
+  }
+}
+.my-shop-tabs .my-savebar {
+  bottom: calc(-1 * var(--sp-6));
+}
+.my-savebar-status {
+  flex: 1 1 220px;
+  min-width: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  line-height: var(--lh);
+}
+.my-savebar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  margin-left: auto;
+}
+.my-saved {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent);
+  font-weight: 500;
+}
+
+/* Feature sections under the listing editor (LazyDetails cards, styled in features.css) */
+.my-more {
+  margin-top: var(--sp-8);
+}
+.my-card > .ui-seg {
+  align-self: flex-start;
+}
+.my-more > .my-card-title {
+  margin-bottom: 4px;
+}
+.my-more .feature-details {
+  margin-top: 0;
+  margin-bottom: var(--sp-2);
+}
+.my-more .feature-body {
+  overflow-x: auto;
+}
+
+/* Profile */
+.my-profile > .my-muted {
+  margin-bottom: var(--sp-4);
+}
+
+/* =========================================================================
+   Drafts window
+   ========================================================================= */
+.my-type-note {
+  margin: 0;
+}
+.my-chosen {
+  padding: 6px 6px 6px 10px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--r-sm);
+  background: var(--bg-input);
+}
+.my-chosen-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+.my-chosen > .btn,
+.my-chosen > .ui-tooltip-anchor {
+  flex: none;
+}
+.my-cat-results {
+  margin-top: 4px;
+}
+
+/* Photos as cards; files as rows */
+.my-photos {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(150px, 100%), 1fr));
+  gap: var(--sp-2);
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.my-photo {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+  background: var(--bg-3);
+  overflow: hidden;
+}
+.my-photo-img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  background: var(--bg-4);
+}
+.my-photo-img--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+}
+.my-photo-main {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+}
+.my-photo-foot {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 4px 4px 8px;
+  min-width: 0;
+}
+.my-photo-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  font-size: var(--fs-xs);
+  line-height: 1.3;
+}
+.picked-name {
+  color: var(--text-body);
+}
+.my-photo-actions {
+  flex: none;
+  display: flex;
+}
+.my-files {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.my-file {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 4px 4px 4px 8px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+  background: var(--bg-3);
+  font-size: var(--fs-sm);
+  min-width: 0;
+  color: var(--text-dim);
+}
+.my-file + .my-file {
+  margin-top: 4px;
+}
+.my-file .picked-name {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.my-editor > .ui-callout {
+  margin-bottom: var(--sp-4);
+}
+.my-editor > [data-testid] > .ui-callout {
+  margin-bottom: var(--sp-2);
+}
+.my-sent {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.my-sent > .my-back {
+  margin-bottom: 0;
+}
+.my-sent .my-card,
+.my-sent .my-muted {
+  margin: 0;
+}
+.draft-title {
+  overflow-wrap: anywhere;
+}
+
+/* ---- a failed save, said in the sticky save bar (next to the button that was clicked) ---- */
+.my-savebar.has-error {
+  border-color: var(--danger-line);
+}
+.my-savebar-error {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  color: var(--danger-text);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+  min-width: 0;
+}
+.my-savebar-error > svg {
+  flex: none;
+  margin-top: 1px;
+}
+.my-savebar-error-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.my-savebar-error-text b {
+  font-weight: 600;
+  font-size: var(--fs-sm);
+}
+.my-savebar-error-text > span {
+  color: var(--text-body);
+}
+
+/* ---- a card whose only block names it ("Фото ⓘ 0/10" as the card title) ---- */
+.my-card-head {
+  margin-bottom: 0;
+}
+.my-card-head > .my-card-title {
+  margin: 0;
+}
+
+/* ---- "Більше налаштувань товару": deleting is last and looks like it ---- */
+.my-more .my-section--danger {
+  margin-top: var(--sp-4);
+  border-color: var(--danger-line);
+}
+.my-section--danger .feature-summary-icon,
+.my-section--danger[open] .feature-summary-icon {
+  background: var(--danger-soft);
+  color: var(--danger-text);
+}
+.my-section--danger .feature-summary-label {
+  color: var(--danger-text);
+}
+
+/* ---- the drafts window keeps one frame for the list and the editor ---- */
+.ui-modal.drafts-modal {
+  height: min(900px, calc(100vh - 32px));
+}
+
+/* ---- "Мій магазин" subtitle: one line in a narrow window (the full text is its tooltip) ---- */
+@media (max-width: 1100px) {
+  .my-shop-modal .my-subtitle {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}

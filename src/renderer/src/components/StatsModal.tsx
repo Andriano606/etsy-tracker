@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useState } from 'react'
+import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import type {
   ShopStatsPayload,
   ShopSummary,
@@ -7,12 +7,27 @@ import type {
   StatsScanPoint,
   StatsTopRow
 } from '@shared/types'
+import type { GlossaryKey } from '@shared/glossary'
 import { formatCount, formatDelta, formatRating } from '@shared/format'
 import { fullDate, fullDateTime, shortDate, timeDomain } from '../chartScale'
+import { plural } from './ChangeList'
 import { imageSrc } from '../imageUrl'
 import { useStore } from '../store'
+import {
+  Badge,
+  Button,
+  Callout,
+  Icon,
+  InfoTip,
+  Loading,
+  Modal,
+  Segmented,
+  Spinner,
+  Stat,
+  type IconName,
+  type SegmentedOption
+} from '../ui'
 import { BarChart, Legend, LineChart, Sparkline, StackedBarChart, type StackSeries } from './Charts'
-import { useEscape } from './useEscape'
 
 export const RANGE_LABEL: Record<StatsRange, string> = {
   all: 'Усе',
@@ -20,52 +35,133 @@ export const RANGE_LABEL: Record<StatsRange, string> = {
   '30d': '30 днів',
   '7d': '7 днів'
 }
-const RANGES: StatsRange[] = ['all', '90d', '30d', '7d']
+
+const RANGE_OPTIONS: ReadonlyArray<SegmentedOption<StatsRange>> = [
+  { value: 'all', label: RANGE_LABEL.all, hint: 'Уся історія — з першого сканування магазину' },
+  { value: '90d', label: RANGE_LABEL['90d'], hint: 'Останні три місяці' },
+  { value: '30d', label: RANGE_LABEL['30d'], hint: 'Останній місяць' },
+  { value: '7d', label: RANGE_LABEL['7d'], hint: 'Останній тиждень' }
+]
 
 /** Weekly bars until there would be more than this many; then monthly (switchable). */
 const MAX_AUTO_WEEKS = 120
 
 export const NEED_TWO_SCANS = 'Потрібно щонайменше 2 сканування'
+const NO_SCANS = 'У цьому періоді немає успішних сканувань.'
+const NO_DATA = 'Немає даних'
 const NO_STATS_HINT =
-  'Немає даних: ці показники записуються з кожним скануванням, починаючи з версії 2 (старші сканування їх не мають).'
+  'Старіші сканування цих чисел не записували — вони з’являться після наступного сканування.'
 
 export const NO_BUYER_PRICES_HINT =
-  'Немає даних: ціни для покупця (з ПДВ і знижками) записуються з кожним скануванням, починаючи з версії 4, якщо Etsy їх віддає.'
+  'Сканування цього періоду не знають цін для покупця (з ПДВ і знижками). Вони з’являться після наступного сканування, якщо Etsy їх віддасть.'
+
+export const NO_LISTINGS = 'У магазині немає товарів у продажу'
+
+/** Every scan of the period (anchor included) found no active listing: nothing to sum or rank. */
+export function hasNoListings(data: ShopStatsPayload): boolean {
+  const s = withAnchor(data)
+  return s.length > 0 && s.every((x) => x.listingActiveCount === 0)
+}
+
+const noListingsEmpty = (what: string): JSX.Element => (
+  <Empty title={NO_LISTINGS} icon="box">
+    {what}
+  </Empty>
+)
 
 const num = (v: number, digits = 0): string => v.toLocaleString('uk-UA', { maximumFractionDigits: digits })
 const perDayText = (v: number): string => num(v, Math.abs(v) < 10 ? 1 : 0)
 
-function Empty({ children }: { children: ReactNode }): JSX.Element {
-  return <div className="chart-empty">{children}</div>
+// ------------------------------------------------------------ building blocks
+
+/** What a chart shows when it can't draw: why, and what to do. */
+function Empty({
+  title,
+  children,
+  icon = 'chart'
+}: {
+  title: ReactNode
+  children?: ReactNode
+  icon?: IconName
+}): JSX.Element {
+  return (
+    <div className="chart-empty">
+      <span className="chart-empty-icon" aria-hidden="true">
+        <Icon name={icon} size={18} />
+      </span>
+      <div className="chart-empty-main">
+        <div className="chart-empty-title">{title}</div>
+        {children && <div className="chart-empty-text">{children}</div>}
+      </div>
+    </div>
+  )
 }
 
+const noScansEmpty = (): JSX.Element => (
+  <Empty title={NO_SCANS} icon="calendar">
+    Виберіть довший період угорі або проскануйте магазин ще раз.
+  </Empty>
+)
+
+/** A card: a title (+ ⓘ), one or two plain sentences on what it shows, optional controls, the chart(s). */
 function Card({
   title,
-  sub,
+  glossary,
+  desc,
   wide,
   children,
   testId,
   actions
 }: {
   title: string
-  sub?: ReactNode
+  glossary?: GlossaryKey
+  /** What the card shows and how to read it. */
+  desc?: ReactNode
   wide?: boolean
   children: ReactNode
   testId?: string
   /** Controls at the right of the header (e.g. weeks/months). */
   actions?: ReactNode
 }): JSX.Element {
+  const id = useId()
   return (
-    <section className={`stats-card${wide ? ' wide' : ''}`} data-testid={testId}>
-      <header>
-        <div className="stats-card-title">
-          <h3>{title}</h3>
-          {sub && <div className="stats-sub">{sub}</div>}
+    <section className={`stats-card${wide ? ' wide' : ''}`} data-testid={testId} aria-labelledby={id}>
+      <header className="stats-card-head">
+        <div className="stats-card-titles">
+          <div className="stats-card-title-row">
+            <h4 id={id}>{title}</h4>
+            {glossary && <InfoTip glossary={glossary} />}
+          </div>
+          {desc && <p className="stats-card-desc">{desc}</p>}
         </div>
-        {actions}
+        {actions && <div className="stats-card-actions">{actions}</div>}
       </header>
       {children}
     </section>
+  )
+}
+
+/** The title of a second chart inside a card (+ ⓘ, a badge, a caption under it). */
+function SubTitle({
+  children,
+  glossary,
+  badge,
+  caption
+}: {
+  children: ReactNode
+  glossary?: GlossaryKey
+  badge?: ReactNode
+  caption?: ReactNode
+}): JSX.Element {
+  return (
+    <div className="chart-subhead">
+      <div className="chart-subhead-row">
+        <h5 className="chart-subtitle">{children}</h5>
+        {glossary && <InfoTip glossary={glossary} />}
+        {badge}
+      </div>
+      {caption && <p className="chart-caption">{caption}</p>}
+    </div>
   )
 }
 
@@ -73,55 +169,68 @@ function Card({
 function DataTable({
   head,
   rows,
-  note
+  note,
+  caption
 }: {
   head: string[]
   rows: ReactNode[][]
   /** A footnote under the table (e.g. what "*" means). */
   note?: string
+  /** What the table lists (screen readers). */
+  caption?: string
 }): JSX.Element | null {
+  // The ⓘ sits right after the summary but outside it (a button inside a
+  // <summary> would be a control inside a control), placed by its measured width.
+  const summary = useRef<HTMLElement>(null)
+  const [tipX, setTipX] = useState(0)
+  useLayoutEffect(() => {
+    const w = summary.current?.offsetWidth ?? 0
+    if (w !== tipX) setTipX(w)
+  })
   if (!rows.length) return null
   return (
-    <details className="chart-table">
-      <summary>Дані ({rows.length})</summary>
-      <div className="chart-table-scroll">
-        <table className="stats-history">
-          <thead>
-            <tr>
-              {head.map((h) => (
-                <th key={h}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r, i) => (
-              <tr key={i}>
-                {r.map((c, j) => (
-                  <td key={j}>{c}</td>
+    <div className="chart-table-wrap">
+      <details className="chart-table">
+        <summary ref={summary}>
+          <Icon name="chevron-right" size={14} className="chart-table-chevron" />
+          <Icon name="list" size={14} />
+          <span>Дані ({rows.length})</span>
+        </summary>
+        <div className="chart-table-scroll">
+          <table className="stats-table">
+            {caption && <caption className="sr-only">{caption}</caption>}
+            <thead>
+              <tr>
+                {head.map((h) => (
+                  <th key={h} scope="col">
+                    {h}
+                  </th>
                 ))}
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      {note && <div className="chart-table-note">{note}</div>}
-    </details>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => (
+                <tr key={i}>
+                  {r.map((c, j) => (
+                    <td key={j}>{c}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {note && <div className="chart-table-note">{note}</div>}
+      </details>
+      <span className="chart-table-tip" style={{ left: tipX }}>
+        <InfoTip glossary="stats.dataTable" size={13} />
+      </span>
+    </div>
   )
 }
 
 const cell = (v: number | null | undefined, digits = 0): string => (v == null ? '—' : num(v, digits))
 
 // --------------------------------------------------------------- KPI tiles
-
-interface Tile {
-  label: string
-  value: string
-  delta?: number | null
-  /** Which scans the delta compares (tooltip). */
-  span?: string
-  digits?: number
-  note?: string
-}
 
 /** The period's anchor scan (the latest before it), then its own scans. */
 export function withAnchor(data: ShopStatsPayload): StatsScanPoint[] {
@@ -134,61 +243,84 @@ function firstLast(scans: StatsScanPoint[], pick: (s: StatsScanPoint) => number 
   const first = known[0]
   return {
     value: last ? pick(last) : null,
+    known: known.length,
     delta: known.length >= 2 ? pick(last)! - pick(first)! : null,
+    from: known.length >= 2 ? first.at : null,
+    to: known.length >= 2 ? last.at : null,
     span: known.length >= 2 ? `Зміна: ${fullDateTime(first.at)} → ${fullDateTime(last.at)}` : undefined
   }
 }
 
+/** "23.10, 04:15" this year, else "23.10.2025" — short enough for a tile caption. */
+function sinceText(t: number): string {
+  return new Date(t).getFullYear() === new Date().getFullYear() ? fullDateTime(t).replace(/\.\d{4},/, ',') : fullDate(t)
+}
+
+function KpiTile({
+  label,
+  glossary,
+  value,
+  fl,
+  digits = 0,
+  format = (v) => num(v, digits)
+}: {
+  label: string
+  glossary: GlossaryKey
+  value?: string
+  fl: ReturnType<typeof firstLast>
+  digits?: number
+  format?: (v: number) => string
+}): JSX.Element {
+  const rounded = fl.delta == null ? null : Math.round(fl.delta * 10 ** digits) / 10 ** digits
+  const caption =
+    fl.known === 0
+      ? 'немає даних'
+      : rounded == null
+        ? 'поки одне сканування'
+        : rounded === 0
+          ? `без змін з ${sinceText(fl.from!)} до ${sinceText(fl.to!)}`
+          : `зміна з ${sinceText(fl.from!)} до ${sinceText(fl.to!)}`
+  return (
+    <Stat
+      label={label}
+      glossary={glossary}
+      value={value ?? (fl.value == null ? '—' : format(fl.value))}
+      delta={rounded ? rounded : null}
+      deltaHint={fl.span}
+      caption={caption}
+    />
+  )
+}
+
 function KpiRow({ data }: { data: ShopStatsPayload }): JSX.Element {
   const s = withAnchor(data)
-  const sold = firstLast(s, (x) => x.transactionSoldCount)
-  const fav = firstLast(s, (x) => x.numFavorers)
-  const rc = firstLast(s, (x) => x.reviewCount)
-  const ra = firstLast(s, (x) => x.reviewAverage)
-  const act = firstLast(s, (x) => x.listingActiveCount)
-  const tiles: Tile[] = [
-    { label: 'Продано', value: cell(sold.value), delta: sold.delta, span: sold.span },
-    { label: 'Обране магазину', value: cell(fav.value), delta: fav.delta, span: fav.span },
-    { label: 'Відгуків на Etsy', value: cell(rc.value), delta: rc.delta, span: rc.span },
-    {
-      label: 'Середня оцінка',
-      value: ra.value == null ? '—' : formatRating(ra.value),
-      delta: ra.delta,
-      span: ra.span,
-      digits: 2
-    },
-    { label: 'Активних товарів', value: cell(act.value), delta: act.delta, span: act.span },
-    {
-      label: data.range === 'all' ? 'Відгуків за весь час' : 'Відгуків за період',
-      value: data.reviews.synced ? formatCount(data.reviews.total) : '—',
-      note: data.reviews.avg != null ? `⭐ ${formatRating(data.reviews.avg)}` : undefined
-    }
-  ]
+  const r = data.reviews
+  const rating = firstLast(s, (x) => x.reviewAverage)
   return (
-    <div className="kpi-row" data-testid="stats-kpis">
-      {tiles.map((t) => {
-        const rounded = t.delta == null ? null : Math.round(t.delta * 10 ** (t.digits ?? 0)) / 10 ** (t.digits ?? 0)
-        const d = rounded != null ? formatDelta(rounded, t.digits ?? 0) : ''
-        return (
-          <div className="kpi" key={t.label}>
-            <div className="kpi-label">{t.label}</div>
-            <div className="kpi-value">{t.value}</div>
-            <div className="kpi-delta">
-              {d ? (
-                <span className={`delta ${t.delta! > 0 ? 'up' : 'down'}`} title={t.span ?? 'Зміна за період'}>
-                  {t.delta! > 0 ? '▲' : '▼'} {d}
-                </span>
-              ) : t.note ? (
-                <span className="dim">{t.note}</span>
-              ) : rounded === 0 ? (
-                <span className="dim">без змін</span>
-              ) : (
-                <span className="dim">&nbsp;</span>
-              )}
-            </div>
-          </div>
-        )
-      })}
+    <div className="stats-kpis" data-testid="stats-kpis">
+      <KpiTile label="Продажі магазину" glossary="salesCount" fl={firstLast(s, (x) => x.transactionSoldCount)} />
+      <KpiTile label="Обране магазину" glossary="shopFavorers" fl={firstLast(s, (x) => x.numFavorers)} />
+      <KpiTile label="Відгуків у магазині" glossary="stats.reviewsOnEtsy" fl={firstLast(s, (x) => x.reviewCount)} />
+      {/* A shop without reviews reports an average of 0 — there is no rating yet. */}
+      {rating.value === 0 ? (
+        <Stat label="Рейтинг магазину" glossary="stats.ratingOnEtsy" value="—" caption="оцінок ще немає" />
+      ) : (
+        <KpiTile label="Рейтинг магазину" glossary="stats.ratingOnEtsy" fl={rating} digits={2} format={(v) => formatRating(v)} />
+      )}
+      <KpiTile label="Активних товарів" glossary="stats.activeCount" fl={firstLast(s, (x) => x.listingActiveCount)} />
+      {/* The reviews the app stored (not Etsy's count): its own average, named so — it can differ from the rating. */}
+      <Stat
+        label={data.range === 'all' ? 'Відгуків збережено' : 'Відгуків за період'}
+        glossary={data.range === 'all' ? 'stats.reviewsStored' : 'stats.reviewsInPeriod'}
+        value={r.synced ? (r.complete ? '' : '≥ ') + formatCount(r.total) : '—'}
+        caption={
+          !r.synced
+            ? 'відгуки ще не завантажено'
+            : r.avg != null
+              ? `середня за ними ${formatRating(r.avg)}`
+              : 'відгуків немає'
+        }
+      />
     </div>
   )
 }
@@ -215,17 +347,20 @@ function ScanLine({
   /** Shown when no scan of the period knows the value. */
   emptyHint?: ReactNode
 }): JSX.Element {
-  if (!data.scans.length) return <Empty>У цьому періоді немає успішних сканувань.</Empty>
+  if (!data.scans.length) return noScansEmpty()
   const series = withAnchor(data)
   const points = series.map((s) => ({ t: s.at, v: pick(s) }))
   const known = series.filter((s) => pick(s) != null)
-  if (!known.length) return <Empty>{emptyHint}</Empty>
+  if (!known.length) return <Empty title={NO_DATA} icon="info">{emptyHint}</Empty>
   if (known.length < 2) {
     // One point is a stat, not a chart (the KPI row shows it too).
     const s = known[0]
     return (
-      <Empty>
-        {NEED_TWO_SCANS} — зараз: <b className="empty-value">{num(pick(s)!, digits)}</b> ({fullDateTime(s.at)})
+      <Empty title={NEED_TWO_SCANS}>
+        Графік покаже, як змінюється число від сканування до сканування.{' '}
+        <span className="chart-empty-now">
+          Зараз: <b className="empty-value">{num(pick(s)!, digits)}</b> ({fullDateTime(s.at)})
+        </span>
       </Empty>
     )
   }
@@ -257,8 +392,20 @@ function SalesCard({ data, domain }: { data: ShopStatsPayload; domain: [number, 
   const known = withAnchor(data).filter((s) => s.transactionSoldCount != null)
   const rate = data.salesRate
   let rateBody: JSX.Element
-  if (known.length < 2) rateBody = <Empty>{NEED_TWO_SCANS}</Empty>
-  else if (!rate.length) rateBody = <Empty>{NEED_TWO_SCANS} з інтервалом щонайменше 1 год</Empty>
+  if (!data.scans.length) rateBody = noScansEmpty()
+  else if (known.length < 2)
+    rateBody = <Empty title={NEED_TWO_SCANS}>Оцінка з’явиться, коли буде з чим порівняти.</Empty>
+  else if (!rate.length)
+    rateBody = (
+      <Empty title={`${NEED_TWO_SCANS} з інтервалом щонайменше 1 год`} icon="clock">
+        Сканування надто близькі в часі — продажів між ними замало для оцінки.
+      </Empty>
+    )
+  else if (rate.every((r) => r.sold === 0))
+    // An empty plot of zero-height bars says nothing; say it in words (the table lists the intervals).
+    rateBody = (
+      <Empty title="Між скануваннями продажів не було.">Стовпчики з’являться, коли число продажів зросте.</Empty>
+    )
   else
     rateBody = (
       <BarChart
@@ -274,9 +421,10 @@ function SalesCard({ data, domain }: { data: ShopStatsPayload; domain: [number, 
           v: r.perDay,
           tip: (
             <>
-              <div className="tip-value">≈ {perDayText(r.perDay)} / день</div>
+              <div className="tip-value">≈ {perDayText(r.perDay)} на день</div>
               <div className="tip-label">
-                {formatDelta(r.sold) || '0'} продажів за {num(r.days, r.days < 10 ? 1 : 0)} дн.
+                {formatDelta(r.sold) || '0'} {plural(r.sold, 'продаж', 'продажі', 'продажів')} за{' '}
+                {num(r.days, r.days < 10 ? 1 : 0)} дн.
               </div>
               <div className="tip-label">
                 {fullDateTime(r.from)} → {fullDateTime(r.to)}
@@ -287,17 +435,25 @@ function SalesCard({ data, domain }: { data: ShopStatsPayload; domain: [number, 
       />
     )
   return (
-    <Card title="Продажі магазину" sub="transaction_sold_count з Etsy" wide testId="chart-sales">
+    <Card
+      title="Продажі магазину"
+      glossary="salesCount"
+      desc="Скільки всього разів купували в магазині, за даними Etsy. Лінія піднімається — були продажі; рівна — продажів не було."
+      wide
+      testId="chart-sales"
+    >
       <ScanLine label="Продано всього" data={data} pick={(s) => s.transactionSoldCount} domain={domain} />
-      <h4 className="chart-subtitle">
-        Продажі за день{' '}
-        <span className="dim">
-          — розрахунок: приріст «Продано» ÷ днів між скануваннями; стовпчик займає весь інтервал
-        </span>
-      </h4>
+      <SubTitle
+        glossary="salesPerDay"
+        badge={<Badge tone="info">розрахунок</Badge>}
+        caption="Не число з Etsy, а оцінка програми: на скільки виросли продажі ÷ скільки днів минуло між двома скануваннями. Стовпчик займає весь проміжок, тож його площа — кількість продажів."
+      >
+        Продажі за день
+      </SubTitle>
       {rateBody}
       <DataTable
-        head={['Інтервал', 'Днів', 'Продано', 'За день']}
+        caption="Продажі за день між скануваннями"
+        head={['Проміжок', 'Днів', 'Продано', 'За день']}
         rows={[...rate].reverse().map((r) => [
           `${fullDateTime(r.from)} → ${fullDateTime(r.to)}`,
           num(r.days, 2),
@@ -309,11 +465,11 @@ function SalesCard({ data, domain }: { data: ShopStatsPayload; domain: [number, 
   )
 }
 
-const CHANGE_SERIES: StackSeries[] = [
-  { key: 'added', label: 'Нові', className: 'c-added' },
-  { key: 'removed', label: 'Зникли', className: 'c-removed' },
-  { key: 'changed', label: 'Змінились', className: 'c-changed' },
-  { key: 'returned', label: 'Повернулися', className: 'c-returned' }
+const CHANGE_SERIES: Array<StackSeries & { glossary: GlossaryKey }> = [
+  { key: 'added', label: 'Нові', className: 'c-added', glossary: 'listingNew' },
+  { key: 'removed', label: 'Зникли', className: 'c-removed', glossary: 'listingRemoved' },
+  { key: 'changed', label: 'Змінились', className: 'c-changed', glossary: 'listingChanged' },
+  { key: 'returned', label: 'Повернулися', className: 'c-returned', glossary: 'listingReturned' }
 ]
 
 function ChangesCard({ data, domain }: { data: ShopStatsPayload; domain: [number, number] }): JSX.Element {
@@ -322,20 +478,25 @@ function ChangesCard({ data, domain }: { data: ShopStatsPayload; domain: [number
   return (
     <Card
       title="Зміни за сканування"
-      sub={scans.length && !any ? 'Змін у товарах не було' : 'Товари: нові / зниклі / змінені / повернулися'}
-      wide
+      glossary="stats.changesPerScan"
+      desc={
+        scans.length && !any
+          ? 'У цьому періоді товари не змінювались. Кожне сканування позначено крапкою на осі.'
+          : 'Скільки товарів з’явилось, зникло, змінилось чи повернулось під час кожного сканування. Крапка на осі — сканування.'
+      }
       testId="chart-changes"
     >
       {scans.length ? (
         <>
           <Legend
             items={[
-              ...CHANGE_SERIES.map((s) => ({ label: s.label, className: s.className })),
+              // Nothing changed: no colours to explain — only the scan marks of the strip.
+              ...(any ? CHANGE_SERIES.map((s) => ({ label: s.label, className: s.className, glossary: s.glossary })) : []),
               ...(scans.some((s) => !s.isBaseline)
                 ? [{ label: 'сканування', className: 'c-scan', kind: 'dot' as const }]
                 : []),
               ...(scans.some((s) => s.isBaseline)
-                ? [{ label: 'базове сканування', className: 'c-marker', kind: 'ring' as const }]
+                ? [{ label: 'базове сканування', className: 'c-marker', kind: 'ring' as const, glossary: 'baseline' as const }]
                 : [])
             ]}
           />
@@ -343,6 +504,7 @@ function ChangesCard({ data, domain }: { data: ShopStatsPayload; domain: [number
             label="Зміни за сканування"
             series={CHANGE_SERIES}
             domain={domain}
+            compact={!any}
             stacks={scans.map((s) => ({
               t: s.at,
               values: [s.added, s.removed, s.changed, s.returned],
@@ -360,16 +522,17 @@ function ChangesCard({ data, domain }: { data: ShopStatsPayload; domain: [number
                       </div>
                     ))
                   )}
-                  {s.truncated && <div className="tip-label">≈12 100 — список обрізано</div>}
+                  {s.truncated && <div className="tip-label">Магазин завеликий: Etsy віддав лише ≈12 100 товарів</div>}
                 </>
               )
             }))}
           />
         </>
       ) : (
-        <Empty>У цьому періоді немає успішних сканувань.</Empty>
+        noScansEmpty()
       )}
       <DataTable
+        caption="Зміни товарів за кожне сканування"
         head={['Сканування', 'Нові', 'Зникли', 'Змінились', 'Повернулися']}
         rows={scanRows({ ...data, anchor: null }, [
           (s) => (s.isBaseline ? `базове (${formatCount(s.total)})` : formatCount(s.added)),
@@ -383,6 +546,9 @@ function ChangesCard({ data, domain }: { data: ShopStatsPayload; domain: [number
 }
 
 // ------------------------------------------------------------------ reviews
+
+/** "1 відгук", "3 відгуки", "12 відгуків". */
+const reviewsText = (n: number): string => `${formatCount(n)} ${plural(n, 'відгук', 'відгуки', 'відгуків')}`
 
 function bucketText(b: StatsReviewBucket, week: boolean): string {
   const s = b.start * 1000
@@ -398,14 +564,33 @@ function ReviewsCard({ data }: { data: ShopStatsPayload }): JSX.Element {
   const unit = week ? 'тиждень' : 'місяць'
   const anyPartial = buckets.some((b) => b.partial)
   let body: JSX.Element
-  if (!r.synced) body = <Empty>Відгуки ще не синхронізовано.</Empty>
-  else if (!buckets.length) body = <Empty>За цей період відгуків немає.</Empty>
+  if (!r.synced)
+    body = (
+      <Empty title="Відгуки ще не синхронізовано." icon="review">
+        Програма завантажує відгуки сама після сканування магазину. Великі магазини догружаються за кілька сканувань.
+      </Empty>
+    )
+  else if (!buckets.length)
+    body = (
+      <Empty title="За цей період відгуків немає." icon="review">
+        Виберіть довший період угорі.
+      </Empty>
+    )
   else {
     const domain: [number, number] = [buckets[0].start * 1000, buckets[buckets.length - 1].end * 1000]
     body = (
       <>
         {anyPartial && (
-          <Legend items={[{ label: `неповний ${unit} (контур, пунктир)`, className: 'c-partial', kind: 'outline' }]} />
+          <Legend
+            items={[
+              {
+                label: `неповний ${unit} (контур, пунктир)`,
+                className: 'c-partial',
+                kind: 'outline',
+                glossary: 'stats.partialBucket'
+              }
+            ]}
+          />
         )}
         <BarChart
           label={week ? 'Відгуки по тижнях' : 'Відгуки по місяцях'}
@@ -420,23 +605,23 @@ function ReviewsCard({ data }: { data: ShopStatsPayload }): JSX.Element {
             partial: b.partial,
             tip: (
               <>
-                <div className="tip-value">{formatCount(b.count)} відгуків</div>
+                <div className="tip-value">{reviewsText(b.count)}</div>
                 <div className="tip-label">
                   {week ? 'Тиждень' : 'Місяць'} {bucketText(b, week)}
                   {b.partial ? ` (неповний ${unit})` : ''}
                 </div>
                 {b.avg != null && (
                   <div className="tip-label">
-                    ⭐ {formatRating(b.avg)} · {[5, 4, 3, 2, 1].map((n) => `${n}★ ${b.ratings[n - 1]}`).join(' · ')}
+                    Оцінка {formatRating(b.avg)} · {[5, 4, 3, 2, 1].map((n) => `${n}★ ${b.ratings[n - 1]}`).join(' · ')}
                   </div>
                 )}
               </>
             )
           }))}
         />
-        <h4 className="chart-subtitle">
-          Середня оцінка за {week ? 'тиждень' : 'місяць'}
-        </h4>
+        <SubTitle glossary="rating" caption={`Від 1 до 5 зірок. Розрив у лінії — ${week ? 'тижні' : 'місяці'} без відгуків.`}>
+          Середня оцінка за {unit}
+        </SubTitle>
         <LineChart
           label={`Середня оцінка за ${unit}`}
           points={buckets.map((b) => ({ t: ((b.start + b.end) / 2) * 1000, v: b.avg, partial: b.partial }))}
@@ -450,7 +635,7 @@ function ReviewsCard({ data }: { data: ShopStatsPayload }): JSX.Element {
           dateText={(t) => {
             const b = buckets.find((x) => x.start * 1000 <= t && t < x.end * 1000)
             return b
-              ? `${bucketText(b, week)} · ${formatCount(b.count)} відгуків${b.partial ? ` (неповний ${unit})` : ''}`
+              ? `${bucketText(b, week)} · ${reviewsText(b.count)}${b.partial ? ` (неповний ${unit})` : ''}`
               : fullDate(t, true)
           }}
         />
@@ -460,40 +645,41 @@ function ReviewsCard({ data }: { data: ShopStatsPayload }): JSX.Element {
   return (
     <Card
       title={week ? 'Відгуки по тижнях' : 'Відгуки по місяцях'}
-      sub={
+      glossary="stats.reviewsByTime"
+      desc={
         <>
-          з таблиці відгуків — найкращий доступний показник продажів
-          {r.synced && !r.complete && ' · історія ще завантажується (значення — нижня межа)'}
-          {' · '}
-          <span className="dim">{week ? 'тижні з понеділка, UTC' : 'календарні місяці, UTC'}</span>
+          Скільки відгуків покупці залишили за кожен {unit}. Etsy не показує продажі окремих товарів, тож відгуки — найкраща
+          підказка, як часто купують.
+          {r.synced && !r.complete && (
+            <span className="stats-card-note">
+              {' '}
+              Історія відгуків ще завантажується — справжні числа можуть бути більшими.
+            </span>
+          )}
         </>
       }
       wide
       testId="chart-reviews"
-      actions={r.synced && (r.weeks.length > 0 || r.months.length > 0) && (
-        <div className="seg-control small" role="radiogroup" aria-label="Групування">
-          {(
-            [
-              ['week', 'Тижні'],
-              ['month', 'Місяці']
-            ] as const
-          ).map(([k, l]) => (
-            <button
-              key={k}
-              role="radio"
-              aria-checked={(k === 'week') === week}
-              className={(k === 'week') === week ? 'active' : ''}
-              onClick={() => setGran(k)}
-            >
-              {l}
-            </button>
-          ))}
-        </div>
-      )}
+      actions={
+        r.synced &&
+        (r.weeks.length > 0 || r.months.length > 0) && (
+          <Segmented
+            size="sm"
+            label="Групування відгуків"
+            value={week ? 'week' : 'month'}
+            onChange={(v) => setGran(v)}
+            options={[
+              { value: 'week', label: 'Тижні', hint: 'Тиждень — з понеділка до неділі' },
+              { value: 'month', label: 'Місяці', hint: 'Календарні місяці' }
+            ]}
+          />
+        )
+      }
     >
       {body}
       <DataTable
-        head={[week ? 'Тиждень' : 'Місяць', 'Відгуків', '⭐', '5★', '4★', '3★', '2★', '1★']}
+        caption={week ? 'Відгуки по тижнях' : 'Відгуки по місяцях'}
+        head={[week ? 'Тиждень' : 'Місяць', 'Відгуків', 'Оцінка', '5★', '4★', '3★', '2★', '1★']}
         rows={[...buckets].reverse().map((b) => [
           bucketText(b, week) + (b.partial ? ' *' : ''),
           formatCount(b.count),
@@ -510,6 +696,7 @@ function ReviewsCard({ data }: { data: ShopStatsPayload }): JSX.Element {
 
 function TopTable({
   title,
+  icon,
   sub,
   rows,
   empty,
@@ -520,10 +707,12 @@ function TopTable({
   times
 }: {
   title: string
+  icon: IconName
   sub: string
   rows: StatsTopRow[]
-  empty: string
-  unit: string
+  empty: ReactNode
+  /** The unit after a number: "переглядів", "в обраному", … (agrees with the number). */
+  unit: (n: number) => string
   testId: string
   onOpen: (listingId: number) => void
   /** The rows count everything (not growth): show the number, no "+". */
@@ -533,15 +722,21 @@ function TopTable({
 }): JSX.Element {
   return (
     <div className="top-table" data-testid={testId}>
-      <h4>{title}</h4>
-      <div className="stats-sub">{sub}</div>
+      <h5 className="top-table-title">
+        <Icon name={icon} size={15} />
+        {title}
+      </h5>
+      <div className="top-table-sub">{sub}</div>
       {rows.length === 0 ? (
-        <div className="top-empty">{empty}</div>
+        typeof empty === 'string' ? <div className="top-empty">{empty}</div> : empty
       ) : (
         <ol>
-          {rows.map((r) => {
+          {rows.map((r, i) => {
             const inner = (
               <>
+                <span className="top-rank num" aria-hidden="true">
+                  {i + 1}
+                </span>
                 {r.imageId != null ? (
                   <img src={imageSrc({ id: r.imageId }, '75x75')} alt="" loading="lazy" />
                 ) : (
@@ -550,12 +745,15 @@ function TopTable({
                 <span className="top-title">{r.title}</span>
                 <span className="top-nums">
                   {total ? (
-                    <span className="top-total">{formatCount(r.delta)}</span>
+                    <>
+                      <span className="top-total">{formatCount(r.delta)}</span>
+                      <span className="top-end">{unit(r.delta)}</span>
+                    </>
                   ) : (
                     <>
-                      <span className="delta up">{formatDelta(r.delta)}</span>
+                      <span className="top-delta">{formatDelta(r.delta)}</span>
                       <span className="top-end">
-                        {formatCount(r.end)} {unit}
+                        {formatCount(r.end)} {unit(r.end ?? 0)}
                       </span>
                     </>
                   )}
@@ -566,7 +764,7 @@ function TopTable({
             return (
               <li key={r.listingId}>
                 {r.stored ? (
-                  <button className="top-row" onClick={() => onOpen(r.listingId)} title={r.title}>
+                  <button type="button" className="top-row" onClick={() => onOpen(r.listingId)} title={r.title}>
                     {inner}
                   </button>
                 ) : (
@@ -590,36 +788,49 @@ function TopCard({ data, onOpen }: { data: ShopStatsPayload; onOpen: (id: number
     t.fromAt != null && t.toAt != null && t.fromScanId !== t.toScanId
       ? `${fullDateTime(t.fromAt)} → ${fullDateTime(t.toAt)}`
       : null
-  const scanEmpty = span ? 'Росту між цими скануваннями не було.' : `${NEED_TWO_SCANS} зі статистикою товарів.`
+  const scanEmpty: ReactNode = hasNoListings(data)
+    ? noListingsEmpty('Перегляди й обране з’являться, коли продавець виставить товари.')
+    : span
+      ? 'Росту між цими скануваннями не було.'
+      : `${NEED_TWO_SCANS} зі статистикою товарів.`
   return (
-    <Card title="Топ товарів за ростом" sub="Клік — відкрити товар" wide testId="stats-top">
+    <Card
+      title="Найбільший ріст товарів"
+      glossary="stats.topGrowth"
+      desc="Які товари за період найбільше набрали переглядів, обраного й відгуків. Натисніть на товар, щоб відкрити його картку."
+      wide
+      testId="stats-top"
+    >
       <div className="top-grid">
         <TopTable
-          title="👁 Перегляди"
+          title="Перегляди"
+          icon="eye"
           sub={span ?? 'між першим і останнім скануванням періоду'}
           rows={t.views}
           empty={scanEmpty}
-          unit="переглядів"
+          unit={(n) => plural(n, 'перегляд', 'перегляди', 'переглядів')}
           testId="top-views"
           onOpen={onOpen}
           times={t.seriesAt}
         />
         <TopTable
-          title="❤ Обране"
+          title="Обране"
+          icon="heart"
           sub={span ?? 'між першим і останнім скануванням періоду'}
           rows={t.favorers}
           empty={scanEmpty}
-          unit="в обраному"
+          unit={() => 'в обраному'}
           testId="top-favorers"
           onOpen={onOpen}
           times={t.seriesAt}
         />
         <TopTable
-          title="⭐ Відгуки"
-          sub={data.range === 'all' ? 'за весь час (з таблиці відгуків)' : `нових відгуків за ${RANGE_LABEL[data.range]}`}
+          title="Відгуки"
+          icon="star"
+          sub={data.range === 'all' ? 'усього відгуків за весь час' : `нових відгуків за ${RANGE_LABEL[data.range]}`}
           rows={t.reviews}
           empty={data.reviews.synced ? 'За цей період відгуків немає.' : 'Відгуки ще не синхронізовано.'}
-          unit="всього"
+          unit={(n) => plural(n, 'відгук', 'відгуки', 'відгуків') + (data.range === 'all' ? '' : ' усього')}
           testId="top-reviews"
           onOpen={onOpen}
           total={data.range === 'all'}
@@ -651,75 +862,159 @@ export function statsDomain(data: ShopStatsPayload): [number, number] {
   return domain
 }
 
+function Group({ title, desc, children }: { title: string; desc: string; children: ReactNode }): JSX.Element {
+  const id = useId()
+  return (
+    <section className="stats-group" aria-labelledby={id}>
+      <div className="stats-group-head">
+        <h3 id={id}>{title}</h3>
+        <p>{desc}</p>
+      </div>
+      <div className="stats-grid">{children}</div>
+    </section>
+  )
+}
+
 export function StatsView({ data, onOpen }: { data: ShopStatsPayload; onOpen: (id: number) => void }): JSX.Element {
   const domain = statsDomain(data)
   // The changes chart is about every scan (pre-v2 ones included), so it keeps its own domain.
   const changesDomain = timeDomain(data.scans.map((s) => s.at))
+  const noListings = hasNoListings(data)
+  // Etsy knows the shop's reviews and there are none at all (a 0 count at every scan that knows it).
+  const knownCounts = withAnchor(data).filter((x) => x.reviewCount != null)
+  const noReviews = knownCounts.length > 0 && knownCounts.every((x) => x.reviewCount === 0)
   return (
     <>
+      <p className="stats-intro">
+        <Icon name="info" size={15} />
+        <span>
+          Як змінювався магазин між скануваннями. Наведіть курсор на графік (або виберіть його клавішею Tab і
+          стрілками), щоб побачити точне число; «Дані» під графіком — ті самі числа таблицею.
+          {data.anchor && (
+            <span className="stats-anchor">
+              {' '}
+              Зміни рахуються від сканування {fullDateTime(data.anchor.at)} <InfoTip glossary="stats.anchorScan" />
+            </span>
+          )}
+        </span>
+      </p>
       <KpiRow data={data} />
-      <div className="stats-grid">
+      <Group title="Магазин" desc="Продажі, відгуки, підписники й інтерес покупців до магазину загалом.">
         <SalesCard data={data} domain={domain} />
         <ReviewsCard data={data} />
-        <Card title="Обране магазину" sub="num_favorers" testId="chart-favorers">
+        <Card
+          title="Обране магазину"
+          glossary="shopFavorers"
+          desc="Скільки людей підписались на магазин. Росте — магазин стає відомішим."
+          testId="chart-favorers"
+        >
           <ScanLine label="Обране магазину" data={data} pick={(s) => s.numFavorers} domain={domain} />
-          <DataTable head={['Сканування', 'Обране']} rows={scanRows(data, [(s) => cell(s.numFavorers)])} />
+          <DataTable
+            caption="Обране магазину за скануваннями"
+            head={['Сканування', 'Обране']}
+            rows={scanRows(data, [(s) => cell(s.numFavorers)])}
+          />
         </Card>
-        <Card title="Активних товарів" sub="listing_active_count" testId="chart-active">
+        <Card
+          title="Активних товарів"
+          glossary="stats.activeCount"
+          desc="Скільки товарів було в продажу під час кожного сканування. Стрибок угору — продавець додав нові товари."
+          testId="chart-active"
+        >
           <ScanLine label="Активних товарів" data={data} pick={(s) => s.listingActiveCount} domain={domain} />
-          <DataTable head={['Сканування', 'Активних']} rows={scanRows(data, [(s) => cell(s.listingActiveCount)])} />
-        </Card>
-        <Card title="Відгуки магазину" sub="кількість і середня оцінка на Etsy" testId="chart-shop-reviews">
-          <ScanLine label="Кількість відгуків" data={data} pick={(s) => s.reviewCount} domain={domain} />
-          <h4 className="chart-subtitle">Середня оцінка</h4>
-          <ScanLine
-            label="Середня оцінка"
-            data={data}
-            pick={(s) => s.reviewAverage}
-            domain={domain}
-            digits={2}
-            minSpan={0.2}
-            ceil={5}
-          />
           <DataTable
-            head={['Сканування', 'Відгуків', '⭐']}
-            rows={scanRows(data, [(s) => cell(s.reviewCount), (s) => cell(s.reviewAverage, 2)])}
+            caption="Активних товарів за скануваннями"
+            head={['Сканування', 'Активних']}
+            rows={scanRows(data, [(s) => cell(s.listingActiveCount)])}
           />
         </Card>
-        <Card title="Перегляди і обране всіх товарів" sub="сума по активних товарах" testId="chart-listing-sums">
-          <ScanLine label="Перегляди всіх товарів" data={data} pick={(s) => s.listingViews} domain={domain} />
-          <h4 className="chart-subtitle">Обране всіх товарів</h4>
-          <ScanLine label="Обране всіх товарів" data={data} pick={(s) => s.listingFavorers} domain={domain} />
+        <Card
+          title="Відгуки магазину"
+          glossary="stats.reviewsOnEtsy"
+          desc="Усі відгуки й середня оцінка, як їх показує Etsy на сторінці магазину."
+          testId="chart-shop-reviews"
+        >
+          {noReviews ? (
+            <Empty title="У магазину ще немає відгуків" icon="review">
+              Графіки з’являться, коли покупці залишать перші відгуки.
+            </Empty>
+          ) : (
+            <>
+              <ScanLine label="Кількість відгуків" data={data} pick={(s) => s.reviewCount} domain={domain} />
+              <SubTitle glossary="stats.ratingOnEtsy">Рейтинг магазину</SubTitle>
+              {/* A shop without reviews reports an average of 0: no rating yet, not a 0-star one. */}
+              <ScanLine
+                label="Рейтинг магазину"
+                data={data}
+                pick={(s) => (s.reviewAverage === 0 ? null : s.reviewAverage)}
+                domain={domain}
+                digits={2}
+                minSpan={0.2}
+                ceil={5}
+              />
+            </>
+          )}
           <DataTable
+            caption="Відгуки магазину за скануваннями"
+            head={['Сканування', 'Відгуків', 'Оцінка']}
+            rows={scanRows(data, [(s) => cell(s.reviewCount), (s) => cell(s.reviewAverage || null, 2)])}
+          />
+        </Card>
+        <Card
+          title="Перегляди і обране всіх товарів"
+          glossary="stats.listingSums"
+          desc="Сума по всіх товарах, що зараз у продажу. Росте — інтерес до асортименту збільшується."
+          testId="chart-listing-sums"
+        >
+          {noListings ? (
+            noListingsEmpty('Нема що підсумовувати: суми з’являться, коли продавець виставить товари.')
+          ) : (
+            <>
+              <SubTitle glossary="views">Перегляди</SubTitle>
+              <ScanLine label="Перегляди всіх товарів" data={data} pick={(s) => s.listingViews} domain={domain} />
+              <SubTitle glossary="favorites">Обране всіх товарів</SubTitle>
+              <ScanLine label="Обране всіх товарів" data={data} pick={(s) => s.listingFavorers} domain={domain} />
+            </>
+          )}
+          <DataTable
+            caption="Перегляди і обране всіх товарів за скануваннями"
             head={['Сканування', 'Перегляди', 'Обране']}
             rows={scanRows(data, [(s) => cell(s.listingViews), (s) => cell(s.listingFavorers)])}
           />
         </Card>
+      </Group>
+      <Group title="Товари" desc="Як змінювався асортимент і які товари ростуть найшвидше.">
+        <ChangesCard data={data} domain={changesDomain} />
         <Card
           title="Товарів зі знижкою"
-          sub="за ціною для покупця (активні акції)"
+          glossary="stats.discounted"
+          desc="Скільки товарів продавались зі знижкою (акцією) під час кожного сканування — за цінами для покупця."
           testId="chart-discounted"
         >
-          <ScanLine
-            label="Товарів зі знижкою"
-            data={data}
-            pick={(s) => s.discounted ?? null}
-            domain={domain}
-            emptyHint={NO_BUYER_PRICES_HINT}
-          />
+          {noListings ? (
+            noListingsEmpty('Знижки з’являться тут, коли в магазині будуть товари.')
+          ) : (
+            <ScanLine
+              label="Товарів зі знижкою"
+              data={data}
+              pick={(s) => s.discounted ?? null}
+              domain={domain}
+              emptyHint={NO_BUYER_PRICES_HINT}
+            />
+          )}
           <DataTable
+            caption="Товарів зі знижкою за скануваннями"
             head={['Сканування', 'Зі знижкою', 'З ціною для покупця']}
             rows={scanRows(data, [(s) => cell(s.discounted ?? null), (s) => cell(s.buyerPriced ?? null)])}
           />
         </Card>
-        <ChangesCard data={data} domain={changesDomain} />
         <TopCard data={data} onOpen={onOpen} />
-      </div>
+      </Group>
     </>
   )
 }
 
-/** "📊 Статистика" of one shop: KPI row + charts over the chosen period. */
+/** "Статистика" of one shop: KPI row + charts over the chosen period. */
 export function StatsModal(): JSX.Element | null {
   const { statsShopId, shops } = useStore()
   const shop = shops.find((s) => s.id === statsShopId) ?? null
@@ -731,11 +1026,11 @@ export function StatsModal(): JSX.Element | null {
 function StatsDialog({ shop }: { shop: ShopSummary }): JSX.Element {
   const { openStats, openListing } = useStore()
   const close = (): void => openStats(null)
-  useEscape(close, true)
   const [range, setRange] = useState<StatsRange>('all')
   const [data, setData] = useState<ShopStatsPayload | null>(null)
   const [loading, setLoading] = useState(false)
   const [failed, setFailed] = useState(false)
+  const [attempt, setAttempt] = useState(0)
   // Refetch when a scan or a review sync of this shop finished.
   const version = `${shop.lastOkScan?.id}:${shop.reviews?.stored}:${shop.reviews?.lastSyncedAt}`
   const shopId = shop.id
@@ -759,7 +1054,7 @@ function StatsDialog({ shop }: { shop: ShopSummary }): JSX.Element {
     return () => {
       alive = false
     }
-  }, [shopId, range, version])
+  }, [shopId, range, version, attempt])
 
   const shown = data && data.shopId === shop.id ? data : null
   const onOpen = (listingId: number): void => {
@@ -768,53 +1063,57 @@ function StatsDialog({ shop }: { shop: ShopSummary }): JSX.Element {
     })
   }
   const scans = shown?.scans ?? []
+  const subtitle = shown
+    ? scans.length
+      ? `Сканувань у періоді: ${scans.length} · ${fullDate(scans[0].at)} – ${fullDate(scans[scans.length - 1].at)}`
+      : 'У цьому періоді немає успішних сканувань'
+    : 'Як змінювався магазин між скануваннями'
   return (
-    <div className="modal-backdrop" onClick={close}>
-      <div
-        className="modal stats-modal"
-        role="dialog"
-        aria-label={`Статистика ${shop.shopName}`}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="stats-head">
-          <div className="stats-head-text">
-            <h2>📊 Статистика · {shop.shopName}</h2>
-            <div className="stats-sub">
-              {shown
-                ? scans.length
-                  ? `Успішних сканувань у періоді: ${scans.length} · ${fullDate(scans[0].at)} – ${fullDate(scans[scans.length - 1].at)}` +
-                    (shown.anchor ? ` · зміни рахуються від сканування ${fullDateTime(shown.anchor.at)}` : '')
-                  : 'У цьому періоді немає успішних сканувань'
-                : ' '}
-            </div>
-          </div>
-          <div className="seg-control" role="radiogroup" aria-label="Період">
-            {RANGES.map((r) => (
-              <button
-                key={r}
-                role="radio"
-                aria-checked={r === range}
-                className={r === range ? 'active' : ''}
-                onClick={() => setRange(r)}
-              >
-                {RANGE_LABEL[r]}
-              </button>
-            ))}
-          </div>
-          <button className="icon-btn stats-close" aria-label="Закрити" onClick={close}>
-            ×
-          </button>
+    <Modal
+      size="xl"
+      className="stats-modal"
+      bodyClassName="stats-scroll"
+      onClose={close}
+      ariaLabel={`Статистика ${shop.shopName}`}
+      title={
+        <span className="stats-title">
+          <Icon name="stats" size={20} />
+          <span className="stats-title-text">
+            Статистика <span className="stats-title-sep">·</span>{' '}
+            <span className="stats-title-shop">{shop.shopName}</span>
+          </span>
+        </span>
+      }
+      subtitle={subtitle}
+      headerExtra={
+        <div className="stats-period">
+          {loading && shown && <Spinner size={14} label="Оновлення статистики…" />}
+          <Segmented label="Період" value={range} onChange={setRange} options={RANGE_OPTIONS} />
+          <InfoTip glossary="statsPeriod" />
         </div>
-        {failed && <div className="banner err">Не вдалося завантажити статистику.</div>}
-        {shown ? (
-          // Refetch keeps the frame: the previous render stays, dimmed.
-          <div className={`stats-body${loading ? ' loading' : ''}`} aria-busy={loading}>
-            <StatsView data={shown} onOpen={onOpen} />
-          </div>
-        ) : (
-          !failed && <div className="placeholder">Завантаження…</div>
-        )}
-      </div>
-    </div>
+      }
+    >
+      {failed && (
+        <Callout
+          tone="error"
+          className="stats-error"
+          action={
+            <Button size="sm" icon="refresh" onClick={() => setAttempt((a) => a + 1)}>
+              Спробувати ще
+            </Button>
+          }
+        >
+          Не вдалося завантажити статистику.
+        </Callout>
+      )}
+      {shown ? (
+        // Refetch keeps the frame: the previous render stays, dimmed.
+        <div className={`stats-body${loading ? ' loading' : ''}`} aria-busy={loading}>
+          <StatsView data={shown} onOpen={onOpen} />
+        </div>
+      ) : (
+        !failed && <Loading>Завантаження статистики…</Loading>
+      )}
+    </Modal>
   )
 }

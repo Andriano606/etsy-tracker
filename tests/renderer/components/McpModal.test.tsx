@@ -12,6 +12,7 @@ import {
   claudeDesktopConfig,
   mcpJsonConfig
 } from '../../../src/shared/mcpConfig'
+import { GLOSSARY } from '../../../src/shared/glossary'
 import { mcpOff, mcpOn, setupRenderer, withKey, type Api } from '../helpers'
 
 let api: Api
@@ -42,14 +43,19 @@ async function open(status = mcpOff) {
   return r
 }
 
+const serverSwitch = () => screen.getByRole('switch', { name: 'Увімкнути MCP-сервер' })
+const pickClient = (name: string) => fireEvent.click(screen.getByRole('radio', { name }))
+
 describe('MCP modal', () => {
   it('opens from the sidebar button and reads a fresh status', async () => {
     await open()
-    expect(screen.getByRole('dialog', { name: 'MCP — дані для Claude' })).toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: 'Підключити Claude (MCP)' })).toBeInTheDocument()
     expect(api.getMcpStatus).toHaveBeenCalled()
     expect(screen.getByText('Вимкнено.')).toBeInTheDocument()
     expect(screen.getByLabelText('Порт')).toHaveValue('9102')
-    expect(screen.getByLabelText('Увімкнути MCP-сервер')).not.toBeChecked()
+    expect(serverSwitch()).not.toBeChecked()
+    expect(serverSwitch()).toHaveAccessibleDescription('Claude зможе підключатися до програми, поки вона відкрита.')
+    expect(screen.getByRole('button', { name: 'Що таке «MCP-сервер»?' })).toHaveAccessibleDescription(GLOSSARY.mcp.short)
   })
 
   it('before the first enabling there are no commands, only a hint', async () => {
@@ -61,14 +67,50 @@ describe('MCP modal', () => {
   it('explains that the client sees neutral data and lists every tool', async () => {
     await open()
     expect(screen.getByText(/без назви майданчика/)).toBeInTheDocument()
+    // No "only reads" promise next to the write switch: reading is the default, changes need a permission,
+    // and the live tools spend the daily request limit (explained by the glossary).
+    expect(screen.getByText(/Без окремого дозволу Claude/)).toHaveTextContent(/свіжі дані з Etsy.*денний ліміт запитів/)
+    expect(screen.getByText(/лише якщо ви це дозволите нижче/)).toBeInTheDocument()
+    expect(screen.getByText('денний ліміт запитів')).toHaveAccessibleDescription(GLOSSARY.quota.short)
+    expect(screen.getByText(/витрачають денний ліміт запитів/, { selector: '.mcp-tools-note' })).toBeInTheDocument()
+    // The example questions are plain text, not buttons.
+    const examples = screen.getByRole('list', { name: 'Приклади запитань' })
+    expect(within(examples).getAllByRole('listitem')[0]).toHaveTextContent('«Які нові товари з’явилися в магазинах?»')
+    expect(within(examples).queryByRole('button')).toBeNull()
     for (const t of MCP_TOOL_SUMMARY) expect(screen.getByText(t.name)).toBeInTheDocument()
+    // Grouped and folded: the user opens a group when curious.
+    for (const d of document.querySelectorAll('.mcp-tools')) expect(d.closest('details')).not.toHaveAttribute('open')
   })
 
-  it('enabling: saves on + port, then shows the running server and the ready commands', async () => {
+  it('enabling: the switch applies at once, then shows the running server and the command for Claude Code', async () => {
     await open()
-    const save = screen.getByText('Зберегти')
+    api.getMcpStatus.mockResolvedValue(mcpOn())
+    await act(async () => {
+      fireEvent.click(serverSwitch())
+    })
+    expect(api.setMcp).toHaveBeenCalledWith({ enabled: true })
+    expect(serverSwitch()).toBeChecked()
+    expect(screen.getByTestId('mcp-running')).toHaveTextContent('Працює на http://127.0.0.1:9102/mcp')
+    expect(screen.getByTestId('mcp-running')).toHaveTextContent('ще жодного запиту')
+    expect(screen.getByRole('radio', { name: 'Claude Code' })).toBeChecked()
+    expect(within(screen.getByTestId('copy-claude-code')).getByText(claudeCodeCommand(9102, 'tok_abc-123'))).toBeInTheDocument()
+  })
+
+  it('switching off applies at once too', async () => {
+    await open(mcpOn())
+    api.getMcpStatus.mockResolvedValue(mcpOff)
+    await act(async () => {
+      fireEvent.click(serverSwitch())
+    })
+    expect(api.setMcp).toHaveBeenCalledWith({ enabled: false })
+    expect(serverSwitch()).not.toBeChecked()
+    expect(screen.getByText('Вимкнено.')).toBeInTheDocument()
+  })
+
+  it('a new port (under "Для досвідчених") is saved with its own button; every client gets its ready config', async () => {
+    await open(mcpOn())
+    const save = screen.getByRole('button', { name: 'Зберегти порт' })
     expect(save).toBeDisabled()
-    fireEvent.click(screen.getByLabelText('Увімкнути MCP-сервер'))
     fireEvent.change(screen.getByLabelText('Порт'), { target: { value: '9200' } })
     expect(save).toBeEnabled()
     const status = mcpOn({ port: 9200, url: 'http://127.0.0.1:9200/mcp' })
@@ -78,13 +120,17 @@ describe('MCP modal', () => {
     })
     expect(api.setMcp).toHaveBeenCalledWith({ enabled: true, port: '9200' })
     expect(screen.getByTestId('mcp-running')).toHaveTextContent('Працює на http://127.0.0.1:9200/mcp')
-    expect(screen.getByTestId('mcp-running')).toHaveTextContent('ще жодного запиту')
     expect(within(screen.getByTestId('copy-claude-code')).getByText(claudeCodeCommand(9200, 'tok_abc-123'))).toBeInTheDocument()
     expect(screen.getByTestId('copy-claude-code-replace')).toHaveTextContent(claudeCodeReplaceCommand(9200, 'tok_abc-123'))
+    expect(screen.queryByTestId('copy-mcp-json')).toBeNull()
+    pickClient('Інший клієнт')
     expect(screen.getByTestId('copy-mcp-json').querySelector('pre')!.textContent).toBe(mcpJsonConfig(9200, 'tok_abc-123'))
+    expect(screen.queryByTestId('copy-claude-code')).toBeNull()
+    pickClient('Claude Desktop')
     expect(screen.getByTestId('copy-claude-desktop').querySelector('pre')!.textContent).toBe(
       claudeDesktopConfig(9200, 'tok_abc-123')
     )
+    expect(screen.getByTestId('mcp-connect')).toHaveTextContent(/Node\.js/)
   })
 
   it('"Копіювати" copies exactly the shown command and confirms', async () => {
@@ -94,17 +140,18 @@ describe('MCP modal', () => {
       fireEvent.click(within(block).getByText('Копіювати'))
     })
     expect(api.copyText).toHaveBeenCalledWith(claudeCodeCommand(9102, 'tok_abc-123'))
-    expect(within(block).getByText('Скопійовано ✓')).toBeInTheDocument()
+    expect(within(block).getByText('Скопійовано')).toBeInTheDocument()
   })
 
   it('the confirmation goes back to "Копіювати" after a moment', async () => {
     await open(mcpOn())
     vi.useFakeTimers()
+    pickClient('Інший клієнт')
     const block = screen.getByTestId('copy-mcp-json')
     await act(async () => {
       fireEvent.click(within(block).getByText('Копіювати'))
     })
-    expect(within(block).getByText('Скопійовано ✓')).toBeInTheDocument()
+    expect(within(block).getByText('Скопійовано')).toBeInTheDocument()
     await act(async () => {
       vi.advanceTimersByTime(2100)
     })
@@ -114,6 +161,7 @@ describe('MCP modal', () => {
   it('a refused copy says so', async () => {
     await open(mcpOn())
     api.copyText.mockResolvedValue(false)
+    pickClient('Claude Desktop')
     const block = screen.getByTestId('copy-claude-desktop')
     await act(async () => {
       fireEvent.click(within(block).getByText('Копіювати'))
@@ -121,20 +169,56 @@ describe('MCP modal', () => {
     expect(within(block).getByText('Не вдалося')).toBeInTheDocument()
   })
 
-  it('a refused port is shown and nothing changes', async () => {
+  it('a port out of range is flagged while typing and cannot be saved', async () => {
     await open()
-    api.setMcp.mockResolvedValue({ ok: false, error: 'Порт — ціле число від 1024 до 65535.' })
     fireEvent.change(screen.getByLabelText('Порт'), { target: { value: '80' } })
-    await act(async () => {
-      fireEvent.click(screen.getByText('Зберегти'))
-    })
     expect(screen.getByRole('alert')).toHaveTextContent('Порт — ціле число від 1024 до 65535.')
+    expect(screen.getByLabelText('Порт')).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getByRole('button', { name: 'Зберегти порт' })).toBeDisabled()
+    await act(async () => {
+      fireEvent.submit(screen.getByLabelText('Порт').closest('form')!)
+    })
+    expect(api.setMcp).not.toHaveBeenCalled()
+    fireEvent.change(screen.getByLabelText('Порт'), { target: { value: '9200' } })
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByLabelText('Порт')).not.toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getByRole('button', { name: 'Зберегти порт' })).toBeEnabled()
+  })
+
+  it('a port main refuses is shown and nothing changes', async () => {
+    await open()
+    api.setMcp.mockResolvedValue({ ok: false, error: 'Порт 9200 уже зайнятий іншою програмою — виберіть інший.' })
+    fireEvent.change(screen.getByLabelText('Порт'), { target: { value: '9200' } })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Зберегти порт' }))
+    })
+    expect(api.setMcp).toHaveBeenCalledWith({ enabled: false, port: '9200' })
+    expect(screen.getByRole('alert')).toHaveTextContent('Порт 9200 уже зайнятий')
+    expect(screen.getByLabelText('Порт')).toHaveAttribute('aria-invalid', 'true')
     expect(useStore.getState().mcpStatus).toEqual(mcpOff)
+  })
+
+  it('switched off with a token: the commands stay, with a warning that Claude cannot connect', async () => {
+    await open(mcpOn({ enabled: false, running: false }))
+    expect(screen.getByTestId('copy-claude-code')).toBeInTheDocument()
+    expect(screen.getByTestId('mcp-connect')).toHaveTextContent(/Сервер вимкнено — Claude не зможе підключитися/)
+  })
+
+  it('enabled but failing: the commands warn that the server does not work', async () => {
+    await open(mcpOn({ running: false, error: 'Порт 9102 уже зайнятий іншою програмою — виберіть інший.' }))
+    expect(screen.getByTestId('mcp-connect')).toHaveTextContent(/Сервер зараз не працює/)
+  })
+
+  it('running: no such warning', async () => {
+    await open(mcpOn())
+    expect(screen.getByTestId('mcp-connect')).not.toHaveTextContent(/Сервер вимкнено|Сервер зараз не працює/)
   })
 
   it('a busy port: the server error is shown', async () => {
     await open(mcpOn({ running: false, error: 'Порт 9102 уже зайнятий іншою програмою — виберіть інший.' }))
     expect(screen.getByRole('alert')).toHaveTextContent('Не працює: Порт 9102 уже зайнятий')
+    // The port field (under "Для досвідчених") opens by itself.
+    expect(screen.getByLabelText('Порт').closest('details')).toHaveAttribute('open')
   })
 
   it('unsaved changes: warns that the commands are for the saved settings', async () => {
@@ -172,6 +256,7 @@ describe('MCP modal', () => {
       fireEvent.click(screen.getByText('Новий токен'))
     })
     expect(screen.getByText(/Усі вже підключені клієнти перестануть працювати/)).toBeInTheDocument()
+    expect(screen.getByRole('alertdialog', { name: 'Новий токен доступу' })).toBeInTheDocument()
     await act(async () => {
       fireEvent.click(screen.getByText('Скасувати'))
     })
@@ -181,7 +266,7 @@ describe('MCP modal', () => {
     })
     api.getMcpStatus.mockResolvedValue(mcpOn({ token: 'tok_new-456' }))
     await act(async () => {
-      fireEvent.click(screen.getByText('Підтвердити'))
+      fireEvent.click(screen.getByRole('button', { name: 'Створити новий токен' }))
     })
     expect(api.regenerateMcpToken).toHaveBeenCalled()
     expect(screen.getByTestId('copy-claude-code')).toHaveTextContent('tok_new-456')
@@ -190,6 +275,11 @@ describe('MCP modal', () => {
   it('warns when the token is stored without a keyring', async () => {
     await open(mcpOn({ tokenEncrypted: false }))
     expect(screen.getByText(/Токен збережено без шифрування/)).toBeInTheDocument()
+  })
+
+  it('"Для досвідчених" is folded while the server works', async () => {
+    await open(mcpOn())
+    expect(screen.getByLabelText('Порт').closest('details')).not.toHaveAttribute('open')
   })
 
   it('Escape and the backdrop close it', async () => {
@@ -212,6 +302,9 @@ describe('MCP modal: changes to the own store', () => {
       expect(within(writes).getByText(name)).toBeInTheDocument()
     }
     expect(within(writes).queryByText('list_my_products')).toBeNull()
+    expect(writes.closest('details')).toHaveTextContent(/Змінювати мій магазин — лише з дозволом/)
+    // Descriptions read as sentences.
+    expect(screen.getByText('Список магазинів з головними цифрами й останнім скануванням')).toBeInTheDocument()
   })
 
   it('turning "allow changes" on asks first and saves only that; off needs no confirm', async () => {
@@ -224,6 +317,10 @@ describe('MCP modal: changes to the own store', () => {
       fireEvent.click(box)
     })
     expect(screen.getByText(/Дозволити Claude змінювати ваш магазин на Etsy\?/)).toBeInTheDocument()
+    // A risky grant: its own heading, a verb on the red button, and the focus on "Скасувати".
+    const dialog = screen.getByRole('alertdialog', { name: 'Зміни у вашому магазині' })
+    expect(within(dialog).getByRole('button', { name: 'Дозволити зміни' })).toHaveClass('stop') // danger-solid
+    expect(within(dialog).getByRole('button', { name: 'Скасувати' })).toHaveFocus()
     await act(async () => {
       fireEvent.click(screen.getByText('Скасувати'))
     })
@@ -233,10 +330,11 @@ describe('MCP modal: changes to the own store', () => {
     })
     api.getMcpStatus.mockResolvedValue(mcpOn({ allowWrites: true }))
     await act(async () => {
-      fireEvent.click(screen.getByText('Підтвердити'))
+      fireEvent.click(screen.getByRole('button', { name: 'Дозволити зміни' }))
     })
     expect(api.setMcp).toHaveBeenCalledWith({ allowWrites: true })
     expect(screen.getByLabelText('Дозволити Claude змінювати мій магазин')).toBeChecked()
+    expect(screen.getByText('Claude може змінювати ваш магазин на Etsy')).toBeInTheDocument()
     api.setMcp.mockClear()
     api.getMcpStatus.mockResolvedValue(mcpOn({ allowWrites: false }))
     await act(async () => {
@@ -257,13 +355,16 @@ describe('Sidebar MCP button', () => {
     const { container, rerender } = render(<Sidebar />)
     const btn = () => screen.getByLabelText('MCP-сервер для Claude')
     expect(btn().querySelector('.dot-ok')).not.toBeNull()
-    expect(btn()).toHaveAttribute('title', 'MCP-сервер для Claude: працює')
+    // The state is in the button's tooltip (its accessible description).
+    expect(btn()).toHaveAccessibleDescription(/Зараз увімкнено і працює\./)
     act(() => useStore.setState({ mcpStatus: mcpOn({ running: false, error: 'busy' }) }))
     rerender(<Sidebar />)
     expect(btn().querySelector('.dot-ok')).toBeNull()
     expect(btn().querySelector('.dot-warn')).not.toBeNull()
+    expect(btn()).toHaveAccessibleDescription(/не вдалося запустити/)
     act(() => useStore.setState({ mcpStatus: mcpOff }))
     rerender(<Sidebar />)
     expect(container.querySelector('.mcp-btn .dot-ok, .mcp-btn .dot-warn')).toBeNull()
+    expect(btn()).toHaveAccessibleDescription(/Зараз вимкнено\./)
   })
 })

@@ -224,7 +224,7 @@ export async function loadAttributes(
       categoryPath: null,
       properties,
       definitions: null,
-      note: 'Etsy не показав категорію цього лістингу (можливо, це чернетка) — виберіть категорію вручну.'
+      note: 'Etsy не показав категорію цього товару (можливо, це чернетка) — виберіть категорію вручну.'
     }
   }
   const definitions = await categoryProperties(client, tax)

@@ -1,0 +1,628 @@
+/* Settings + MCP windows (SettingsModal, BuyerCountrySection, MinioSection, McpModal). */
+
+/* ---- Legacy shared classes (still used by other screens: My shop, features…) ---- */
+.settings-section {
+  margin-bottom: 18px;
+  min-width: 0;
+}
+.settings-section h3 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0 0 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.test-result {
+  margin-top: 10px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.test-result.ok {
+  color: var(--green);
+}
+.test-result.err {
+  color: var(--danger-text);
+}
+.legal {
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+/* ---- Settings window ---- */
+/* A stable height: the window doesn't resize and re-centre on every tab change,
+   so the vertical tab list stays under the pointer. Only the body scrolls. */
+.ui-modal.settings-modal {
+  height: min(760px, calc(100vh - 32px));
+}
+.settings-modal .ui-modal-body {
+  padding-top: var(--sp-4);
+}
+.settings-panel[hidden] {
+  display: none;
+}
+.settings-tabs .ui-tabpanel:focus-visible {
+  outline-offset: 4px;
+}
+
+.settings-foot-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.settings-foot-note .ui-icon {
+  flex: none;
+  color: var(--text-dim);
+}
+
+/* Key / status card. */
+.settings-status {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  margin: var(--sp-1) 0 var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  font-size: var(--fs-sm);
+  min-width: 0;
+}
+.settings-status:not(.is-ok):not(.is-empty) {
+  padding: 0;
+  background: none;
+  border: none;
+}
+.settings-status:not(.is-ok):not(.is-empty) > .ui-callout {
+  flex: 1 1 auto;
+}
+.settings-status-icon {
+  flex: none;
+  margin-top: 1px;
+  color: var(--text-dim);
+}
+.settings-status.is-ok .settings-status-icon {
+  color: var(--accent);
+}
+.settings-status-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.settings-status-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px var(--sp-2);
+  color: var(--text);
+  line-height: 1.5;
+}
+.settings-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+.settings-status-sub {
+  color: var(--text-dim);
+  line-height: var(--lh);
+}
+
+/* Collapsible blocks (<details>): "Як отримати ключ", "Для досвідчених", tool lists. */
+.settings-details {
+  margin-top: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-2);
+  min-width: 0;
+}
+.settings-details + .settings-details {
+  margin-top: var(--sp-2);
+}
+.settings-details > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 40px;
+  padding: 8px var(--sp-3);
+  border-radius: var(--r-md);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  line-height: 1.4;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.settings-details > summary::-webkit-details-marker {
+  display: none;
+}
+.settings-details > summary:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+.settings-details > summary:focus-visible {
+  outline-offset: -2px;
+}
+.settings-details > summary .ui-icon {
+  flex: none;
+  color: var(--text-dim);
+}
+.settings-details-chevron {
+  transition: transform var(--dur) var(--ease);
+}
+.settings-details[open] > summary .settings-details-chevron {
+  transform: rotate(90deg);
+}
+.settings-details[open] > summary {
+  border-bottom: 1px solid var(--hairline);
+  border-radius: var(--r-md) var(--r-md) 0 0;
+}
+.settings-details-body {
+  padding: var(--sp-3) var(--sp-4) var(--sp-4);
+  min-width: 0;
+}
+.settings-details-body > :first-child {
+  margin-top: 0;
+}
+.settings-details-body .key-help {
+  margin: 0 0 var(--sp-2);
+}
+.settings-details.is-inline {
+  margin-top: var(--sp-2);
+  background: transparent;
+}
+.settings-details.is-inline > summary {
+  min-height: 34px;
+  color: var(--text-body);
+  font-weight: 400;
+}
+
+.settings-note {
+  margin: var(--sp-2) 0 0;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  line-height: var(--lh);
+  overflow-wrap: anywhere;
+}
+.settings-msg {
+  margin-top: var(--sp-3);
+}
+.settings-buttons {
+  margin-top: var(--sp-4);
+}
+.settings-ok {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent);
+  font-size: var(--fs-xs);
+}
+.settings-secret-status {
+  margin-top: var(--sp-3);
+}
+.settings-secret-status:empty {
+  display: none;
+}
+.settings-code {
+  margin: var(--sp-2) 0;
+  padding: 8px 12px;
+  border-radius: var(--r-sm);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text-body);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.settings-code-input {
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+/* An on/off row in a card. */
+.settings-toggle-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  min-width: 0;
+}
+
+/* Buyer country: the worked example + the current country. */
+.settings-example {
+  margin: 0 0 var(--sp-4);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+}
+.settings-example figcaption {
+  margin-bottom: var(--sp-2);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+.settings-example-steps {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.settings-example-steps > li:not(.settings-example-arrow) {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.settings-example-arrow {
+  display: flex;
+  color: var(--text-faint);
+}
+.settings-example-price {
+  color: var(--text);
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.settings-example-price.is-final {
+  color: var(--accent);
+}
+.settings-example-what {
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+.settings-current {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
+  color: var(--text-body);
+  font-size: var(--fs-sm);
+}
+.settings-current .ui-icon {
+  color: var(--text-dim);
+  flex: none;
+}
+.settings-current b {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* About. */
+.settings-facts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: var(--sp-2) 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text-body);
+  font-size: var(--fs-sm);
+  line-height: var(--lh);
+}
+.settings-facts li {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+}
+.settings-facts .ui-icon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--accent);
+}
+.settings-legal {
+  margin: var(--sp-4) 0 0;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-style: italic;
+  line-height: var(--lh);
+}
+
+/* ---- MCP button in the sidebar ---- */
+.sidebar-header h1 {
+  flex: 1;
+}
+.icon-btn.mcp-btn {
+  width: auto;
+  padding: 0 7px;
+  margin-right: 2px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+.dot-ok {
+  position: absolute;
+  top: 3px;
+  right: 1px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* ---- MCP window ---- */
+/* What Claude may do (read / change only with permission). */
+.mcp-can {
+  margin: 0 0 var(--sp-3);
+}
+.mcp-can .ui-icon {
+  color: var(--text-dim);
+}
+/* Example questions: plain quoted text, not chips (they aren't clickable). */
+.mcp-examples {
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  line-height: var(--lh);
+}
+.mcp-examples-label {
+  display: block;
+  margin-bottom: 2px;
+}
+.mcp-examples ul {
+  margin: 0;
+  padding: 0 0 0 var(--sp-4);
+  list-style: none;
+}
+.mcp-examples li {
+  color: var(--text-body);
+  font-style: italic;
+  overflow-wrap: anywhere;
+}
+.mcp-tools-note {
+  margin: 0 0 var(--sp-2);
+}
+
+.mcp-status {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px var(--sp-2);
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--hairline);
+  color: var(--text-body);
+  font-size: var(--fs-sm);
+  line-height: var(--lh);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.mcp-status b {
+  color: var(--accent);
+  font-weight: 600;
+}
+.mcp-status.is-error {
+  color: var(--danger-text);
+}
+.mcp-status-meta {
+  color: var(--text-dim);
+}
+.mcp-dot {
+  flex: none;
+  align-self: center;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+.mcp-status.is-on .mcp-dot {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.mcp-status.is-error .mcp-dot {
+  background: var(--danger);
+}
+
+.mcp-client-pick {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+  margin: var(--sp-2) 0 var(--sp-4);
+}
+.mcp-client-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-body);
+  font-size: var(--fs-sm);
+}
+.mcp-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: step;
+}
+.mcp-steps > li {
+  position: relative;
+  min-width: 0;
+  padding-left: 34px;
+  counter-increment: step;
+}
+.mcp-steps > li::before {
+  content: counter(step);
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  color: var(--accent);
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+}
+.mcp-steps > li > p {
+  margin: 1px 0 var(--sp-2);
+  color: var(--text-body);
+  font-size: var(--fs-sm);
+  line-height: var(--lh);
+  overflow-wrap: anywhere;
+}
+
+.copy-block {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-input);
+  overflow: hidden;
+}
+.copy-block + .copy-block {
+  margin-top: var(--sp-3);
+}
+.copy-block-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  min-height: 38px;
+  padding: 4px 6px 4px var(--sp-3);
+  border-bottom: 1px solid var(--hairline);
+  background: var(--bg-3);
+}
+.copy-block-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+.copy-block-head .btn {
+  flex: none;
+}
+.btn.copied {
+  color: var(--accent);
+  border-color: var(--accent-line);
+}
+.btn.copy-failed {
+  color: var(--danger-text);
+  border-color: var(--danger-line);
+}
+.copy-block-text {
+  margin: 0;
+  padding: 10px var(--sp-3);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text-body);
+  white-space: pre-wrap;
+  /* Break at spaces; only a long token / URL that doesn't fit wraps mid-word. */
+  word-break: normal;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.mcp-tools {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.mcp-tools li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 2px var(--sp-3);
+  padding: 7px 0;
+  border-bottom: 1px solid var(--hairline);
+  min-width: 0;
+}
+.mcp-tools li:last-child {
+  border-bottom: none;
+}
+.mcp-tool-text {
+  flex: 1 1 260px;
+  min-width: 0;
+  color: var(--text-body);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+code.mcp-tool-name {
+  flex: none;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  background: none;
+  padding: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-2xs);
+}
+.settings-details > summary .ui-badge {
+  margin-left: auto;
+}
+
+.mcp-port-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--sp-3);
+}
+.mcp-port-row > .ui-field {
+  flex: 1 1 240px;
+  max-width: 360px;
+  margin-bottom: 0;
+}
+.mcp-port-row > .btn {
+  /* Lines up with the input, below the label row. */
+  margin-top: 26px;
+}
+.mcp-token {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin-top: var(--sp-4);
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--hairline);
+}
+.mcp-token-text {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+.mcp-token-text .settings-note {
+  margin-top: 2px;
+}
+.settings-details-body > .ui-form-grid {
+  margin-top: var(--sp-4);
+}
+
+/* Photo store: how to start it (installed app / source code). */
+.settings-install {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: var(--sp-3) 0;
+}
+.settings-install .settings-note {
+  margin: 0 0 var(--sp-2);
+}
+.settings-install .copy-block + .copy-block {
+  margin-top: 0;
+}

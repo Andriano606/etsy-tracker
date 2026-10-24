@@ -1,0 +1,809 @@
+/* App shell: the sidebar (brand, tools, shop list, scan-all, quota), the global
+   error, the trademark footer, the first-run screens (EmptyStates + KeyHelp),
+   the add-shop dialog and the confirmation dialog. Tokens: base.css. */
+
+/* =========================================================================
+   Sidebar
+   ========================================================================= */
+.sidebar {
+  /* 240 px at the 900 px minimum window (more room for the shop), up to 288. */
+  width: clamp(240px, 22vw, 288px);
+  flex: none;
+  min-height: 0;
+  background: var(--bg-2);
+  border-right: 1px solid var(--hairline);
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- Brand + header buttons ---- */
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-3) var(--sp-2) var(--sp-3) var(--sp-4);
+  min-width: 0;
+}
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.sidebar-logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--r-md);
+  background: var(--accent-soft);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+.sidebar-brand-text {
+  min-width: 0;
+  line-height: var(--lh-tight);
+}
+.sidebar-title {
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+}
+.sidebar-tagline {
+  color: var(--text-dim);
+  font-size: var(--fs-2xs);
+}
+.sidebar-icon-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: var(--r-sm);
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.sidebar-icon-btn:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--text);
+}
+.sidebar-icon-btn .dot-ok,
+.sidebar-icon-btn .dot-warn {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px var(--bg-2);
+}
+.sidebar-icon-btn .dot-ok {
+  background: var(--accent);
+}
+.sidebar-icon-btn .dot-warn {
+  background: var(--danger);
+}
+
+/* ---- Add shop + tools ---- */
+.sidebar-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: 0 var(--sp-3) var(--sp-2);
+}
+.add-shop {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--control-h);
+  padding: 0 var(--sp-3);
+  border-radius: var(--r-sm);
+  border: 1px dashed var(--border-hover);
+  background: transparent;
+  color: var(--text-body);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  text-align: left;
+  transition: border-color var(--dur) var(--ease), color var(--dur) var(--ease), background-color var(--dur) var(--ease);
+}
+.add-shop .ui-icon {
+  color: var(--accent);
+}
+.add-shop:hover {
+  color: var(--text);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.sidebar-nav > .ui-tooltip-anchor {
+  display: flex;
+}
+.sidebar-nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 var(--sp-3);
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-body);
+  font-size: var(--fs-sm);
+  text-align: left;
+  transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.sidebar-nav-item .ui-icon {
+  color: var(--text-dim);
+}
+.sidebar-nav-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+}
+.sidebar-nav-item:hover .ui-icon {
+  color: var(--text);
+}
+
+/* ---- Shop list ---- */
+.sidebar-section-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: var(--sp-2) var(--sp-4) var(--sp-1);
+  border-top: 1px solid var(--hairline);
+  color: var(--text-dim);
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+.sidebar-section-count {
+  padding: 0 6px;
+  border-radius: var(--r-pill);
+  background: var(--bg-4);
+  color: var(--text-body);
+  letter-spacing: 0;
+}
+.sidebar-section-head .ui-infotip {
+  margin-left: auto;
+}
+.shop-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0;
+  padding: 2px var(--sp-2) var(--sp-2);
+  list-style: none;
+}
+.shop-list > li {
+  margin: 0 0 2px;
+}
+.shop-list > li > .ui-tooltip-anchor {
+  display: flex;
+  min-width: 0;
+}
+/* The shop row's tooltip: full name, tagline, what the status / age / "+N" mean. */
+.shop-hint {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 300px;
+}
+.shop-hint-name {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.shop-hint-title {
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+.shop-hint-line {
+  margin-top: 2px;
+}
+.shop-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 7px var(--sp-2);
+  border: none;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-body);
+  text-align: left;
+  transition: background-color var(--dur) var(--ease);
+}
+.shop-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.shop-item.active {
+  background: var(--bg-3);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.shop-item.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 10px;
+  bottom: 10px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent);
+}
+.shop-item-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.shop-item-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+.shop-item-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.shop-item-mine {
+  flex: none;
+  padding: 0 6px;
+  border-radius: var(--r-pill);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 16px;
+}
+.shop-item .meta {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-dim);
+  font-size: var(--fs-2xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.shop-item-ago.is-stale {
+  color: var(--warn);
+}
+.shop-item-progress {
+  color: var(--accent);
+}
+.shop-item-error {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--danger-text);
+}
+.shop-item-spinner {
+  flex: none;
+  color: var(--accent);
+}
+.new-badge {
+  flex: none;
+  min-width: 24px;
+  padding: 1px 7px;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  color: var(--accent-on);
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+  text-align: center;
+}
+.shop-icon {
+  flex: none;
+  border-radius: var(--r-md);
+  object-fit: cover;
+  background: var(--bg-3);
+}
+.shop-icon.initial {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.sidebar-empty {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: var(--sp-3) var(--sp-4);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  line-height: var(--lh);
+}
+
+/* ---- Footer: scan all + quota ---- */
+.sidebar-footer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border-top: 1px solid var(--hairline);
+}
+.scan-all-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+.scan-all-row > .ui-btn,
+.scan-all-row > .ui-tooltip-anchor {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.sidebar-note {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-2xs);
+  line-height: 1.45;
+}
+.quota {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: var(--fs-2xs);
+  color: var(--text-dim);
+}
+.quota-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-1);
+}
+.quota-bar {
+  height: 4px;
+  border-radius: var(--r-pill);
+  background: var(--bg-4);
+  overflow: hidden;
+}
+.quota-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 300ms var(--ease);
+}
+.quota-bar.is-warn > span {
+  background: var(--warn);
+}
+.quota-bar.is-low > span {
+  background: var(--danger);
+}
+.quota-text {
+  color: var(--text-body);
+}
+
+/* Short windows: a tighter sidebar so the shop list keeps its room. */
+@media (max-height: 640px) {
+  .sidebar-header {
+    padding-top: var(--sp-2);
+    padding-bottom: var(--sp-2);
+  }
+  .sidebar-tagline {
+    display: none;
+  }
+  .sidebar-footer {
+    gap: 6px;
+    padding: var(--sp-2) var(--sp-3);
+  }
+  .shop-item {
+    padding-top: 5px;
+    padding-bottom: 5px;
+  }
+}
+
+/* =========================================================================
+   Main area: global error, placeholders, trademark footer
+   ========================================================================= */
+.app-error {
+  flex: none;
+  padding: var(--sp-3) var(--sp-5) 0;
+}
+.placeholder .ui-empty {
+  padding: var(--sp-6);
+}
+.legal-footer {
+  flex: none;
+  padding: 3px var(--sp-4);
+  border-top: 1px solid var(--hairline);
+  /* Required by the Etsy API terms: unobtrusive by size and place, but readable (--text-dim ≥ 4.5:1). */
+  color: var(--text-dim);
+  font-size: var(--fs-2xs);
+  line-height: 1.4;
+  text-align: center;
+}
+
+/* =========================================================================
+   First run (EmptyStates): welcome hero, steps, "what happens next"
+   ========================================================================= */
+.welcome {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: clamp(20px, 5vh, 56px) clamp(16px, 4vw, 40px) var(--sp-8);
+}
+.welcome-inner {
+  max-width: 680px;
+  margin: 0 auto;
+}
+.welcome-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-6);
+}
+.welcome-logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+.welcome-title {
+  margin: var(--sp-1) 0 0;
+  color: var(--text);
+  font-size: var(--fs-2xl);
+  font-weight: 600;
+  line-height: 1.25;
+  text-wrap: balance;
+}
+.welcome-lead {
+  max-width: 560px;
+  margin: 0;
+  color: var(--text-body);
+  font-size: var(--fs-md);
+  line-height: var(--lh);
+  text-wrap: pretty;
+}
+.welcome-code,
+.add-shop-help code {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.welcome-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.welcome-step {
+  display: flex;
+  gap: var(--sp-4);
+  min-width: 0;
+  padding: var(--sp-4) var(--sp-5);
+  border-radius: var(--r-md);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+}
+.welcome-step.is-current {
+  border-color: var(--accent-line);
+}
+.welcome-step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--bg-4);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.welcome-step.is-current .welcome-step-num {
+  background: var(--accent);
+  color: var(--accent-on);
+}
+.welcome-step.is-later {
+  background: transparent;
+}
+.welcome-step.is-later .welcome-step-num {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--border-hover);
+  color: var(--text-dim);
+}
+.welcome-step-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.welcome-step-title {
+  margin: 3px 0 var(--sp-1);
+  color: var(--text);
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  line-height: 1.35;
+}
+.welcome-text {
+  margin: 0;
+  color: var(--text-body);
+  font-size: var(--fs-sm);
+  line-height: var(--lh);
+}
+.welcome-action {
+  margin-top: var(--sp-3);
+}
+.welcome-cta {
+  display: flex;
+  justify-content: center;
+  margin-bottom: var(--sp-8);
+}
+.welcome-next-title {
+  margin: 0 0 var(--sp-3);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  text-align: center;
+}
+.welcome-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(170px, 100%), 1fr));
+  gap: var(--sp-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.welcome-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+}
+.welcome-card-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--r-md);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.welcome-card-title {
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.welcome-card-text {
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  line-height: var(--lh);
+}
+.welcome-tip {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  margin: var(--sp-4) 0 0;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  line-height: var(--lh);
+}
+.welcome-tip .ui-icon {
+  flex: none;
+  margin-top: 2px;
+}
+
+/* KeyHelp — numbered steps (first-run screen and Settings). */
+ol.key-help {
+  margin: var(--sp-3) 0 0;
+  padding-left: 22px;
+  color: var(--text-body);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+}
+ol.key-help > li {
+  padding-left: 2px;
+  margin-bottom: 6px;
+}
+ol.key-help > li::marker {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.ext-link-icon {
+  margin-left: 3px;
+  vertical-align: -1px;
+}
+
+/* =========================================================================
+   Add-shop dialog
+   ========================================================================= */
+.add-shop-modal .ui-field {
+  margin-bottom: var(--sp-4);
+}
+.add-shop-modal input {
+  width: 100%;
+}
+.add-shop-recognised {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 5px;
+  color: var(--text-body);
+}
+.add-shop-recognised .ui-icon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--accent);
+}
+.add-shop-recognised b {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.add-shop-help {
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--bg-3);
+  border: 1px solid var(--hairline);
+}
+.add-shop-help-title {
+  margin-bottom: 6px;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+.add-shop-help-note {
+  margin: 0 0 var(--sp-2);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  line-height: var(--lh);
+}
+.add-shop-examples {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-xs);
+  color: var(--text-body);
+  line-height: 1.5;
+}
+.add-shop-examples > li {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.add-shop-examples .ui-icon {
+  flex: none;
+  margin-top: 3px;
+}
+.add-shop-examples .is-ok {
+  color: var(--accent);
+}
+.add-shop-examples > li.is-bad {
+  margin-top: 4px;
+  color: var(--text-dim);
+}
+.add-shop-examples > li.is-bad .ui-icon {
+  color: var(--danger-text);
+}
+
+/* =========================================================================
+   Confirmation dialog (it also carries the legacy .modal class — reset that)
+   ========================================================================= */
+.ui-modal.confirm-modal {
+  width: 100%;
+  padding: 0;
+  overflow: hidden;
+}
+.confirm-modal .ui-modal-title {
+  margin: 0;
+  font-size: var(--fs-lg);
+}
+.confirm-body {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+}
+.confirm-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--info-soft);
+  color: var(--info);
+}
+.confirm-modal.is-danger .confirm-icon {
+  background: var(--danger-soft);
+  color: var(--danger-text);
+}
+/* Caution: it costs money, replaces data or gives access — amber, never the green "go". */
+.confirm-modal.is-caution .confirm-icon {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.btn.confirm-ok-caution {
+  background: var(--warn);
+  border-color: transparent;
+  color: #241a02;
+  font-weight: 600;
+}
+.btn.confirm-ok-caution:hover {
+  background: var(--warn);
+  filter: brightness(1.07);
+}
+.confirm-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.confirm-question {
+  margin: 6px 0 0;
+  color: var(--text);
+  font-size: var(--fs-md);
+  font-weight: 600;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.confirm-details {
+  margin: 6px 0 0;
+  color: var(--text-body);
+  font-size: var(--fs-sm);
+  line-height: var(--lh);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.add-shop-next {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  margin: var(--sp-3) 0 0;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  line-height: var(--lh);
+}
+.add-shop-next .ui-icon {
+  flex: none;
+  margin-top: 2px;
+}
+.add-shop-bad-help {
+  display: block;
+}
+/* The legacy .modal class (kept for older callers) sets a wider max-width later in base.css. */
+.ui-modal.confirm-modal {
+  max-width: min(460px, calc(100vw - 32px));
+}

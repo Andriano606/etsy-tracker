@@ -52,8 +52,14 @@ export function yScaleDomain(
     if (opts.zero && min === 0) max = Math.max(max, want)
     else {
       const mid = (min + max) / 2
-      min = mid - want / 2
-      max = mid + want / 2
+      // A flat non-negative line near 0 (e.g. all zeros) starts at 0, never below.
+      if (nonNegative && mid - want / 2 < 0) {
+        min = 0
+        max = Math.max(max, want)
+      } else {
+        min = mid - want / 2
+        max = mid + want / 2
+      }
     }
   } else if (!opts.zero) {
     const m = (max - min) * 0.1

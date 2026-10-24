@@ -230,7 +230,7 @@ export async function createMyListing(deps: CreateDeps, input: NewListingInput):
   try {
     listingId = (await deps.client.createDraftListing(shopId, newListingForm(input))).listing_id
   } catch (e) {
-    return { ok: false, error: `Не вдалося створити лістинг: ${describe(e)}` }
+    return { ok: false, error: `Не вдалося створити товар: ${describe(e)}` }
   }
   const failed = (what: string, e: unknown): CreateListingResult => ({
     ok: false,

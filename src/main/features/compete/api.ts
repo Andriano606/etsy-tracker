@@ -118,7 +118,7 @@ export async function listingProperties(client: EtsyClient, shopId: number, list
 
 /** What getListingProperty's 501 ("development in progress", OAS) is shown as. */
 export const PROPERTY_NOT_IMPLEMENTED =
-  'Etsy ще не підтримує читання окремого атрибута (HTTP 501). Усі атрибути лістингу — у розділі «Атрибути (властивості)».'
+  'Etsy ще не підтримує читання окремого атрибута (HTTP 501). Усі атрибути товару — у розділі «Атрибути (властивості)».'
 
 /** Clients that already got a 501 from getListingProperty: not asked again. */
 const propertyRefused = new WeakSet<EtsyClient>()

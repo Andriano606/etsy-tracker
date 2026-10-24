@@ -13,7 +13,9 @@
 // value is also in the card's "Дані" table.
 
 import { type ReactNode, type RefObject, useId, useLayoutEffect, useRef, useState } from 'react'
+import type { GlossaryKey } from '@shared/glossary'
 import { axisLabels, nearestIndex, timeTicks, yScaleDomain } from '../chartScale'
+import { InfoTip } from '../ui'
 
 export const M = { top: 12, right: 64, bottom: 26, left: 58 }
 
@@ -177,6 +179,19 @@ function useReadout(xs: number[], spans?: Array<[number, number]>): {
 
 // ---------------------------------------------------------------------- line
 
+/**
+ * The y scale of a line. A flat series is centred on its value, which for a
+ * flat 0 (no sales) would put a "−1" tick under it — a count can't be
+ * negative, so a non-negative series that would dip below 0 starts at 0.
+ */
+export function lineScale(
+  values: number[],
+  opts: { minSpan?: number; ceil?: number; integer?: boolean }
+): ReturnType<typeof yScaleDomain> {
+  const y = yScaleDomain(values, opts)
+  return y.min < 0 && values.every((v) => v >= 0) ? yScaleDomain(values, { ...opts, zero: true }) : y
+}
+
 export interface LineChartProps {
   /** Accessible name (the chart's title). */
   label: string
@@ -215,7 +230,7 @@ export function LineChart({
   const clip = `clip${useId().replace(/[^a-zA-Z0-9]/g, '')}`
   const known = points.filter((p): p is ChartPoint & { v: number } => p.v != null)
   // Every known value shapes the y axis (also a clipped anchor: its segment enters inside the plot).
-  const f = makeFrame(width, height, domain, yScaleDomain(known.map((p) => p.v), { minSpan, ceil, integer: digits === 0 }))
+  const f = makeFrame(width, height, domain, lineScale(known.map((p) => p.v), { minSpan, ceil, integer: digits === 0 }))
   const inside = known.filter((p) => p.t >= domain[0] && p.t <= domain[1])
   const xs = inside.map((p) => f.x(p.t))
   const { active, bind } = useReadout(xs)
@@ -424,17 +439,22 @@ export function StackedBarChart({
   series,
   stacks,
   domain,
-  height = 132
+  height = 132,
+  compact = false
 }: {
   label: string
   series: StackSeries[]
   stacks: Stack[]
   domain: [number, number]
   height?: number
+  /** Nothing to stack (no changes at all): a thin strip of scan marks on the time axis, no y axis. */
+  compact?: boolean
 }): JSX.Element {
   const [ref, width] = useWidth<HTMLDivElement>()
   const totals = stacks.map((s) => s.values.reduce((a, b) => a + b, 0))
-  const f = makeFrame(width, height, domain, yScaleDomain(totals, { zero: true, minSpan: 4, integer: true }))
+  if (compact) height = 12
+  const y = yScaleDomain(totals, { zero: true, minSpan: 4, integer: true })
+  const f = makeFrame(width, height, domain, compact ? { ...y, ticks: [] } : y)
   const xs = stacks.map((s) => f.x(s.t))
   // One width for every column (width encodes nothing here): the median gap
   // between scans, 4–12px — a pair of close scans can't shrink all of them
@@ -446,7 +466,7 @@ export function StackedBarChart({
   const base = f.y(0)
   const GAP = 2
   return (
-    <div className="chart" ref={ref} aria-label={label} role="group" {...bind}>
+    <div className={`chart${compact ? ' compact' : ''}`} ref={ref} aria-label={label} role="group" {...bind}>
       <svg width={width} height={height + M.top + M.bottom} aria-hidden="true">
         <Axes f={f} domain={domain} utc={false} />
         {stacks.map((s, i) => {
@@ -532,17 +552,22 @@ export function Sparkline({
 
 // ------------------------------------------------------------------- legend
 
-export function Legend({
-  items
-}: {
-  items: Array<{ label: string; className: string; kind?: 'rect' | 'ring' | 'dot' | 'outline' }>
-}): JSX.Element {
+export interface LegendItem {
+  label: string
+  className: string
+  kind?: 'rect' | 'ring' | 'dot' | 'outline'
+  /** An ⓘ after the label explaining what the series means. */
+  glossary?: GlossaryKey
+}
+
+export function Legend({ items }: { items: LegendItem[] }): JSX.Element {
   return (
     <ul className="chart-legend">
       {items.map((it) => (
         <li key={it.label}>
           <span className={`key ${it.kind ?? 'rect'} ${it.className}`} aria-hidden="true" />
           {it.label}
+          {it.glossary && <InfoTip glossary={it.glossary} size={13} />}
         </li>
       ))}
     </ul>

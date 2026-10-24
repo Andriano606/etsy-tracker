@@ -1,0 +1,794 @@
+/* Shared bits used by several screens (fact lists, card stats, deltas, reviews), then the
+   listing window itself (ListingModal), every rule of which is scoped to .listing-modal. */
+
+.listing-facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 14px;
+  font-size: 12.5px;
+  margin: 0 0 12px;
+}
+.listing-facts dt {
+  color: var(--text-dim);
+}
+.listing-facts dd {
+  margin: 0;
+  font-family: var(--mono);
+}
+
+/* ---- Popularity, image sync, listing details (schema v2) ---- */
+.card-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+}
+.card-stats .featured {
+  color: var(--accent);
+}
+.delta {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  color: var(--text-dim);
+}
+.delta.up {
+  color: var(--accent);
+}
+.delta.down {
+  color: var(--danger);
+}
+.shop-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-body);
+}
+.image-sync {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.image-sync .err {
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.btn.small {
+  padding: 2px 8px;
+  font-size: 11.5px;
+  margin-left: 8px;
+}
+.change-fields {
+  color: var(--text-dim);
+}
+label.check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.stats-history {
+  margin-top: 8px;
+  border-collapse: collapse;
+  width: 100%;
+  font-variant-numeric: tabular-nums;
+}
+.stats-history th,
+.stats-history td {
+  padding: 3px 8px;
+  text-align: right;
+  border-bottom: 1px solid var(--border);
+}
+.stats-history th:first-child,
+.stats-history td:first-child {
+  text-align: left;
+}
+.stats-history th {
+  color: var(--text-dim);
+  font-weight: 500;
+}
+
+/* ---- Reviews ---- */
+.review-sync {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.review-sync .err {
+  max-width: 480px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card-stats .reviews {
+  color: var(--text-body);
+}
+.review-list {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.review-item {
+  display: flex;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--bg-3);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+}
+.review-body {
+  min-width: 0;
+  flex: 1;
+}
+.review-head .stars {
+  color: var(--accent);
+  letter-spacing: 1px;
+  font-family: var(--mono);
+}
+.review-text {
+  margin-top: 4px;
+  color: var(--text-body);
+  white-space: pre-wrap; /* plain text with its line breaks — never HTML */
+  overflow-wrap: anywhere;
+}
+.review-photo {
+  display: block;
+  margin-top: 6px;
+  max-width: 120px;
+  max-height: 120px;
+  border-radius: 6px;
+  object-fit: cover;
+}
+.review-listing {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 84px;
+  flex-shrink: 0;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.review-listing img,
+.review-listing .no-img {
+  width: 64px;
+  height: 64px;
+  border-radius: 6px;
+  object-fit: cover;
+}
+.review-listing-title {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-align: center;
+}
+
+/* =========================================================================
+   Listing window (ListingModal) — the Modal shell (xl) with:
+   header (title, shop, state) · two columns (gallery | price, popularity, tags,
+   description, details, dates) → one column when narrow · collapsible sections ·
+   sticky footer. The body (.ui-modal-body) is the only scroller.
+   ========================================================================= */
+.listing-modal .lm-title {
+  font-size: var(--fs-lg);
+  line-height: 1.35;
+}
+.listing-modal .lm-subtitle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin-top: 2px;
+  min-width: 0;
+}
+.listing-modal .lm-shop {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 100%;
+  color: var(--text-body);
+}
+.listing-modal .lm-foot-note {
+  flex: 1 1 160px;
+}
+.listing-modal .lm-dim {
+  color: var(--text-dim);
+}
+
+.listing-modal .lm-layout {
+  container-type: inline-size;
+  min-width: 0;
+}
+.listing-modal .lm-grid {
+  display: grid;
+  grid-template-columns: clamp(240px, 40%, 460px) minmax(0, 1fr);
+  gap: var(--sp-6);
+  align-items: start;
+}
+.listing-modal .lm-media {
+  position: sticky;
+  top: 0;
+  min-width: 0;
+}
+.listing-modal .lm-info {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+  min-width: 0;
+}
+@container (max-width: 640px) {
+  .listing-modal .lm-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .listing-modal .lm-media {
+    position: static;
+    width: 100%;
+    max-width: 420px;
+    justify-self: center;
+  }
+}
+
+/* ---- Gallery ---- */
+.listing-modal .gallery-main {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 1;
+  max-height: max(220px, calc(100vh - 300px));
+  overflow: hidden;
+  border-radius: var(--r-md);
+  background: var(--bg-3);
+}
+.listing-modal .gallery-main > img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.listing-modal .lm-noimg {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+.listing-modal .lm-noimg .no-img {
+  width: auto;
+  height: auto;
+  background: none;
+}
+.listing-modal .lm-gallery-nav {
+  position: absolute;
+  top: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  margin-top: -17px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 50%;
+  background: rgba(10, 11, 13, 0.62);
+  color: #fff;
+  opacity: 0.75;
+  transition: opacity var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+.listing-modal .lm-gallery-nav.is-prev {
+  left: 8px;
+}
+.listing-modal .lm-gallery-nav.is-next {
+  right: 8px;
+}
+.listing-modal .gallery-main:hover .lm-gallery-nav,
+.listing-modal .lm-gallery-nav:focus-visible {
+  opacity: 1;
+}
+.listing-modal .lm-gallery-nav:hover {
+  background: rgba(10, 11, 13, 0.85);
+}
+.listing-modal .lm-gallery-count {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  padding: 1px 8px;
+  border-radius: var(--r-pill);
+  background: rgba(10, 11, 13, 0.62);
+  color: #fff;
+  font-size: var(--fs-2xs);
+  line-height: 1.6;
+}
+.listing-modal .gallery-thumbs {
+  position: relative;
+  display: flex;
+  gap: 6px;
+  margin-top: var(--sp-2);
+  padding: 2px;
+  overflow-x: auto;
+  /* No scrollbar (‹ › and the thumbnails already move through the photos); soft edges hint at more. */
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 12px, #000 calc(100% - 20px), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 12px, #000 calc(100% - 20px), transparent);
+}
+.listing-modal .gallery-thumbs::-webkit-scrollbar {
+  display: none;
+}
+.listing-modal .gallery-thumb:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.listing-modal .gallery-thumb {
+  flex: none;
+  width: 52px;
+  height: 52px;
+  padding: 0;
+  overflow: hidden;
+  border: 2px solid transparent;
+  border-radius: var(--r-sm);
+  background: var(--bg-3);
+  opacity: 0.7;
+  transition: opacity var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.listing-modal .gallery-thumb:hover {
+  opacity: 1;
+}
+.listing-modal .gallery-thumb.active {
+  border-color: var(--accent);
+  opacity: 1;
+}
+.listing-modal .gallery-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* ---- Blocks of the info column ---- */
+.listing-modal .lm-block {
+  min-width: 0;
+}
+.listing-modal .lm-block-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 var(--sp-2);
+  color: var(--text);
+  font-size: var(--fs-md);
+  font-weight: 600;
+  line-height: 1.35;
+}
+.listing-modal .lm-count {
+  padding: 0 7px;
+  border-radius: var(--r-pill);
+  background: var(--bg-4);
+  color: var(--text-dim);
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  line-height: 1.6;
+}
+.listing-modal .lm-subhead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: var(--sp-4) 0 var(--sp-2);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.listing-modal .lm-empty {
+  margin: var(--sp-1) 0;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+
+/* ---- Price ---- */
+.listing-modal .lm-price {
+  margin: 0;
+  padding: var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-3);
+}
+.listing-modal .lm-price-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+.listing-modal .lm-price .listing-price {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+  margin: 2px 0 0;
+  color: var(--text);
+  font-size: var(--fs-3xl);
+  font-weight: 600;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+.listing-modal .lm-price .price-now {
+  color: var(--danger-text);
+  font-weight: 650;
+}
+.listing-modal .lm-price .price-was {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-lg);
+  font-weight: 400;
+}
+.listing-modal .lm-price .badge-discount {
+  align-self: center;
+  padding: 2px 8px;
+  border-radius: var(--r-pill);
+  background: var(--danger-soft);
+  color: var(--danger-text);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  line-height: 1.4;
+}
+.listing-modal .lm-price .promo-line {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  max-width: 100%;
+  margin: var(--sp-2) 0 0;
+  padding: 3px 4px 3px 10px;
+  border-radius: var(--r-pill);
+  background: var(--danger-soft);
+  color: var(--danger-text);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+.listing-modal .lm-price-note {
+  margin: var(--sp-2) 0 0;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+.listing-modal .lm-price-rows {
+  margin-top: var(--sp-3);
+  padding-top: var(--sp-1);
+  border-top: 1px solid var(--hairline);
+}
+
+/* ---- Label → value rows (price breakdown, details, dates, technical data) ---- */
+.listing-modal .lm-rows {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  margin: 0;
+}
+.listing-modal .lm-rows--ids {
+  max-width: 560px;
+}
+.listing-modal .lm-row {
+  display: grid;
+  grid-template-columns: minmax(110px, 46%) minmax(0, 1fr);
+  gap: var(--sp-3);
+  align-items: baseline;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--hairline);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+.listing-modal .lm-rows > .lm-row:last-child {
+  border-bottom: none;
+}
+.listing-modal .lm-row dt {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  color: var(--text-dim);
+}
+.listing-modal .lm-row dt > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.listing-modal .lm-row dt .ui-infotip {
+  flex: none;
+}
+.listing-modal .lm-row dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- Popularity tiles ---- */
+.listing-modal .lm-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(136px, 100%), 1fr));
+  gap: var(--sp-2);
+}
+.listing-modal .lm-stats > div {
+  display: flex;
+  min-width: 0;
+}
+.listing-modal .lm-stats .ui-stat {
+  flex: 1 1 auto;
+  padding: 10px 12px;
+}
+/* Narrow tiles: a long label ("Вибране продавцем") wraps instead of being cut off. */
+.listing-modal .lm-stats .ui-stat-label {
+  align-items: flex-start;
+}
+.listing-modal .lm-stats .ui-stat-label > svg,
+.listing-modal .lm-stats .ui-stat-label > .ui-infotip {
+  flex: none;
+  margin-top: 1px;
+}
+.listing-modal .lm-stats .ui-stat-label-text {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
+/* ---- Tags ---- */
+.listing-modal .lm-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.listing-modal .lm-tag {
+  max-width: 100%;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--bg-3);
+  color: var(--text-body);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+/* ---- Description ---- */
+.listing-modal .description {
+  max-width: 75ch;
+  color: var(--text-body);
+  font-size: var(--fs-sm);
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.listing-modal .description.is-folded {
+  max-height: calc(1.65em * 9);
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 65%, transparent);
+  mask-image: linear-gradient(to bottom, #000 65%, transparent);
+}
+.listing-modal .description + .btn {
+  margin-top: var(--sp-1);
+  margin-left: -8px;
+}
+
+/* ---- Details: personalization questions ---- */
+.listing-modal .lm-personalization ul {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-sm);
+}
+.listing-modal .lm-personalization li {
+  padding: 8px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+  background: var(--bg-3);
+}
+.listing-modal .lm-personalization .lm-q {
+  margin-right: 8px;
+  color: var(--text);
+}
+.listing-modal .lm-personalization .lm-dim {
+  margin-top: 2px;
+  font-size: var(--fs-xs);
+}
+
+/* ---- Collapsible sections (own + the features' live panels look the same) ---- */
+.listing-modal .lm-more {
+  margin-top: var(--sp-8);
+  padding-top: var(--sp-6);
+  border-top: 1px solid var(--hairline);
+}
+.listing-modal .lm-group-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: var(--sp-6) 0 var(--sp-2);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.listing-modal .lm-group-title:first-child {
+  margin-top: 0;
+}
+.listing-modal .lm-sections {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.listing-modal .lm-sections--advanced {
+  margin-top: var(--sp-6);
+}
+.listing-modal .lm-sections > .feature-details {
+  margin-top: 0;
+}
+.listing-modal .lm-section-meta {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.listing-modal .lm-star {
+  color: var(--warn);
+}
+/* "lm-collapse", not "lm-section": the listingMeta feature styles .lm-section as a flex column with a gap. */
+.listing-modal .lm-collapse:not([open]) > .feature-body {
+  display: none; /* closed: exactly as tall as a closed live panel */
+}
+.listing-modal .lm-collapse > .feature-body > :first-child {
+  margin-top: 0;
+}
+.listing-modal .lm-collapse > .feature-body > .ui-callout {
+  margin-bottom: var(--sp-3);
+}
+.listing-modal .lm-collapse > .feature-body > .ui-loading {
+  justify-content: flex-start;
+}
+
+/* Tables scroll sideways in their own wrapper, never the dialog. */
+.listing-modal .lm-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+}
+.listing-modal .lm-table {
+  width: 100%;
+  margin: 0;
+  border-collapse: collapse;
+  font-size: var(--fs-xs);
+}
+.listing-modal .lm-table th,
+.listing-modal .lm-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--hairline);
+  white-space: nowrap;
+}
+.listing-modal .lm-table th {
+  background: var(--bg-3);
+  color: var(--text-dim);
+  font-weight: 500;
+}
+.listing-modal .lm-table tbody tr:last-child td {
+  border-bottom: none;
+}
+.listing-modal .lm-table tbody tr:hover td {
+  background: rgba(255, 255, 255, 0.025);
+}
+.listing-modal .lm-table .price-was {
+  margin-left: 6px;
+}
+.listing-modal .lm-th {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.listing-modal .lm-table .lm-star {
+  vertical-align: -1px;
+}
+
+/* Reviews */
+.listing-modal .lm-reviews {
+  margin: 0 0 var(--sp-3);
+}
+.listing-modal .lm-review {
+  background: var(--bg-2);
+}
+.listing-modal .lm-review .review-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+  font-size: var(--fs-xs);
+}
+.listing-modal .lm-stars {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+}
+.listing-modal .lm-stars .is-on {
+  color: var(--warn);
+}
+.listing-modal .lm-stars .is-off {
+  color: var(--text-faint);
+}
+.listing-modal .lm-review .review-text {
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+.listing-modal .lm-review-empty {
+  margin-top: 4px;
+  font-size: var(--fs-xs);
+  font-style: italic;
+}
+.listing-modal .lm-review .review-photo {
+  max-width: 140px;
+  max-height: 140px;
+}
+
+/* Technical data */
+.listing-modal .lm-raw {
+  max-height: 360px;
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-input);
+  color: var(--text-body);
+  font-family: var(--mono);
+  font-size: var(--fs-2xs);
+  line-height: 1.5;
+  white-space: pre;
+}
+
+@media (max-height: 640px) {
+  /* Short windows: a one-line title (full title in its tooltip) leaves room for the content. */
+  .listing-modal .lm-title {
+    -webkit-line-clamp: 1;
+  }
+  .listing-modal .lm-info {
+    gap: var(--sp-4);
+  }
+  .listing-modal .lm-price {
+    padding: var(--sp-3);
+  }
+  .listing-modal .lm-price .listing-price {
+    font-size: var(--fs-2xl);
+  }
+}

@@ -7,58 +7,53 @@
 import type { ListingSales } from '@shared/features/orders'
 import { formatEtsyDate } from '@shared/format'
 import type { MyListing } from '@shared/types'
+import { EmptyState, Stat } from '../../ui'
+import { Note } from '../shopConfig/kit'
 import { Alert, Loading, fmtMoney, fmtMoneys, useOrders } from './common'
 
 export function ListingSalesSection({ listing }: { listing: MyListing; onChanged: (l?: MyListing) => void }): JSX.Element {
   const s = useOrders<ListingSales>('listingSales', { listingId: listing.listingId })
-  if (s.error) return <Alert text={s.error} />
-  if (!s.value) return <Loading />
+  if (s.error) return <Alert text={s.error} title="Не вдалося завантажити продажі" />
+  if (!s.value) return <Loading>Завантаження продажів…</Loading>
   const v = s.value
-  if (v.total === 0) return <div className="hint">Продажів цього лістингу ще не було.</div>
+  if (v.total === 0)
+    return (
+      <EmptyState compact icon="receipt" title="Продажів цього товару ще не було.">
+        Коли товар куплять, тут з’являться кількість, виручка і останні продажі.
+      </EmptyState>
+    )
   return (
-    <div data-testid="listing-sales">
-      <dl className="listing-facts">
-        <dt>Продажів</dt>
-        <dd>{v.total}</dd>
-        <dt>Продано шт.</dt>
-        <dd>{v.quantity}</dd>
-        <dt>Виручка</dt>
-        <dd>{fmtMoneys(v.revenue)}</dd>
-        <dt>Останній продаж</dt>
-        <dd>{formatEtsyDate(v.lastSaleAt)}</dd>
-      </dl>
-      <div className="hint">
-        Виручка = ціна × кількість, без доставки, податків і знижок. Враховано всі продажі, зокрема зі скасованих і повернутих замовлень (Etsy
-        не повідомляє стан замовлення для окремого продажу).
+    <div className="fx-page fx-page--compact" data-testid="listing-sales">
+      <div className="ui-stat-grid">
+        <Stat compact label="Продажів" glossary="transaction" value={v.total} caption={v.truncated ? `прочитано ${v.scanned}` : 'за весь час'} />
+        <Stat compact label="Продано шт." glossary="features.orders.unitsSold" value={v.quantity} />
+        <Stat compact label="Виручка" glossary="features.orders.revenue" value={fmtMoneys(v.revenue)} />
+        <Stat compact label="Останній продаж" value={formatEtsyDate(v.lastSaleAt)} />
       </div>
+      <p className="fx-muted">
+        Виручка = ціна × кількість, без доставки, податків і знижок. Враховано всі продажі, зокрема зі скасованих і повернутих замовлень (Etsy не
+        повідомляє стан замовлення для окремого продажу).
+      </p>
       {v.truncated && (
-        <div className="hint warn">
+        <Note tone="warn">
           Прочитано лише {v.scanned} продажів із {v.total} (у порядку, який обирає Etsy) — підсумки неповні, найновіші продажі можуть бути відсутні.
-        </div>
+        </Note>
       )}
-      <h4>{v.truncated ? 'Найновіші з прочитаних продажів' : 'Останні продажі'}</h4>
-      <table className="data-table">
-        <thead>
-          <tr>
-            <th>Дата</th>
-            <th>Шт.</th>
-            <th>Ціна за од.</th>
-            <th>Варіанти</th>
-            <th>Замовлення</th>
-          </tr>
-        </thead>
-        <tbody>
-          {v.recent.map((t) => (
-            <tr key={t.transactionId}>
-              <td>{formatEtsyDate(t.createdAt)}</td>
-              <td>{t.quantity}</td>
-              <td>{fmtMoney(t.price)}</td>
-              <td>{t.variations.map((x) => `${x.name}: ${x.value}`).join('; ') || '—'}</td>
-              <td>{t.receiptId != null ? `#${t.receiptId}` : '—'}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <h4 className="fx-subhead">{v.truncated ? 'Найновіші з прочитаних продажів' : 'Останні продажі'}</h4>
+      <ul className="fx-list ord-sales" aria-label="Останні продажі">
+        {v.recent.map((t) => (
+          <li key={t.transactionId} className="fx-list-row">
+            <span>
+              <span className="num">{formatEtsyDate(t.createdAt)}</span>
+              {t.receiptId != null && <span className="fx-meta"> · замовлення #{t.receiptId}</span>}
+            </span>
+            <span className="num fx-title">
+              {t.quantity} шт. × {fmtMoney(t.price)}
+            </span>
+            {t.variations.length > 0 && <span className="ord-sales-vars fx-meta">{t.variations.map((x) => `${x.name}: ${x.value}`).join('; ')}</span>}
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }

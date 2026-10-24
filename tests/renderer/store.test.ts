@@ -129,12 +129,6 @@ describe('store: images and MinIO', () => {
     await waitFor(() => expect(useStore.getState().imageCounts?.stored).toBe(4))
   })
 
-  it('syncImages asks main for the open shop', async () => {
-    useStore.setState({ activeShopId: 7 })
-    await useStore.getState().syncImages()
-    expect(api.syncImages).toHaveBeenCalledWith(7)
-    expect(useStore.getState().imageSync?.running).toBe(true)
-  })
 
   it('saveMinio keeps the returned status; errors are passed back', async () => {
     expect(await useStore.getState().saveMinio({ bucket: 'b-1' })).toEqual({ ok: true })
@@ -165,17 +159,6 @@ describe('store: reviews', () => {
     expect(api.listShops).toHaveBeenCalled()
   })
 
-  it('syncReviews asks main for the open shop; the live state comes only from reviews:progress', async () => {
-    useStore.setState({ activeShopId: 4 })
-    // Main's first progress event of the new run arrives before the invoke resolves.
-    api.syncReviews.mockImplementation(async (shopId: number) => {
-      useStore.getState().setReviewSync(idleReviews(shopId, { running: true, phase: 'backfill' }))
-    })
-    await useStore.getState().syncReviews()
-    expect(api.syncReviews).toHaveBeenCalledWith(4)
-    // Nothing returned by the invoke may overwrite it.
-    expect(useStore.getState().reviewSync[4]).toMatchObject({ running: true, phase: 'backfill' })
-  })
 })
 
 describe('store: buyer prices and promotions', () => {

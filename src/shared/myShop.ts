@@ -222,7 +222,7 @@ export function parsePrice(raw: string): number | null {
 export function newListingProblems(i: NewListingInput): string[] {
   const out = [...titleProblems(i.title), ...tagProblems(i.tags), ...materialProblems(i.materials)]
   if (!i.description.trim()) out.push('Опис не може бути порожнім.')
-  if (parsePrice(i.price) == null) out.push('Ціна — додатне число, напр. 5.99.')
+  if (parsePrice(i.price) == null) out.push('Ціна — додатне число, напр. 5,99 (можна з комою або крапкою).')
   if (!Number.isSafeInteger(i.quantity) || i.quantity < 1 || i.quantity > 999) out.push('Кількість — ціле число від 1 до 999.')
   if (i.taxonomyId == null) out.push('Виберіть категорію.')
   if (!WHO_MADE.some((w) => w.value === i.whoMade)) out.push('Виберіть, хто виготовив товар.')
@@ -332,9 +332,9 @@ export function normalizeDraftFields(raw: unknown): DraftFields {
 
 /** Ukrainian names of the OAuth scopes, for "sign in again to allow: …". */
 export const SCOPE_LABEL: Record<string, string> = {
-  listings_r: 'читання лістингів',
-  listings_w: 'редагування лістингів',
-  listings_d: 'видалення лістингів',
+  listings_r: 'читання товарів',
+  listings_w: 'редагування товарів',
+  listings_d: 'видалення товарів',
   shops_r: 'читання налаштувань магазину',
   shops_w: 'зміну налаштувань магазину',
   transactions_r: 'замовлення й фінанси',

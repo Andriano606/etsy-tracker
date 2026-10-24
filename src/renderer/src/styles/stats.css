@@ -1,0 +1,720 @@
+/* Statistics window ("Статистика"): the Modal shell (size xl, widened), a KPI
+   row, two groups of chart cards ("Магазин", "Товари"). Everything inside
+   .stats-body sizes by container queries, so the layout follows the dialog's
+   width, not the window's.
+   Chart colours follow the dataviz method, adapted to this dark-only theme:
+   chart surface = --bg-2; single-series marks wear the app's one accent; the
+   4-series "Зміни" stack uses a categorical set validated
+   (validate_palette.js --mode dark --surface #111315: lightness band, chroma,
+   adjacent CVD ΔE ≥ 22, normal-vision ΔE ≥ 23, contrast ≥ 3:1) in this fixed
+   order — added, removed, changed, returned — so only validated pairs touch.
+   Text never wears a series colour; axes/grid are recessive hairlines. */
+:root {
+  --viz-surface: var(--bg-2);
+  --viz-1: var(--accent);
+  --viz-added: #4aa969; /* = --accent-2, the band-safe step of the accent */
+  --viz-removed: #3987e5;
+  --viz-changed: #d95926;
+  --viz-returned: #9085e9;
+  --viz-grid: rgba(255, 255, 255, 0.06);
+  --viz-axis: rgba(255, 255, 255, 0.16);
+  --viz-muted: var(--text-faint);
+}
+
+/* ---- The dialog ---- */
+.ui-modal.stats-modal {
+  color-scheme: dark;
+  max-width: min(1320px, calc(100vw - 32px));
+  /* A fixed height: switching the period never makes the dialog jump. */
+  height: calc(100vh - 32px);
+  background: var(--bg);
+}
+.stats-modal .ui-modal-head {
+  background: var(--bg-2);
+  align-items: center;
+}
+.stats-title {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.stats-title > svg {
+  flex: none;
+  color: var(--accent);
+}
+.stats-title-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.stats-title-sep {
+  color: var(--text-faint);
+}
+.stats-period {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.stats-scroll {
+  padding: var(--sp-4) var(--sp-6) var(--sp-8);
+}
+.stats-error {
+  margin-bottom: var(--sp-4);
+}
+
+.stats-body {
+  container-type: inline-size;
+  transition: opacity var(--dur) var(--ease);
+}
+.stats-body.loading {
+  opacity: 0.55;
+}
+
+.stats-intro {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-4);
+  max-width: 110ch;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  line-height: var(--lh);
+}
+.stats-intro > svg {
+  flex: none;
+  margin-top: 3px;
+}
+.stats-anchor {
+  color: var(--text-body);
+}
+.stats-anchor .ui-infotip {
+  vertical-align: -2px;
+}
+
+/* ---- KPI row: 6 tiles in one row, else even rows of 3, else of 2 (never 5 + 1). ---- */
+.stats-kpis {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-3);
+}
+@container (min-width: 540px) {
+  .stats-kpis {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@container (min-width: 1080px) {
+  .stats-kpis {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+}
+.stats-kpis .ui-stat {
+  background: var(--viz-surface);
+  border-color: var(--border);
+}
+
+/* ---- Groups of cards ---- */
+.stats-group {
+  margin-top: var(--sp-8);
+}
+.stats-group-head {
+  margin-bottom: var(--sp-3);
+}
+.stats-group-head h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  line-height: var(--lh-tight);
+}
+.stats-group-head p {
+  margin: var(--sp-1) 0 0;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  line-height: var(--lh);
+}
+.stats-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--sp-4);
+}
+@container (min-width: 960px) {
+  .stats-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .stats-card.wide {
+    grid-column: 1 / -1;
+  }
+  /* Paired cards stretch to one height: reserve two lines of description so
+     both plots start at the same height, whichever text wraps. */
+  .stats-card:not(.wide) .stats-card-desc {
+    min-height: calc(2em * var(--lh));
+  }
+}
+
+/* ---- A card ---- */
+.stats-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: var(--sp-4) var(--sp-4) var(--sp-3);
+  background: var(--viz-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+}
+.stats-card-head {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-3);
+  margin-bottom: var(--sp-3);
+}
+.stats-card-titles {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+.stats-card-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.stats-card-title-row h4 {
+  margin: 0;
+  min-width: 0;
+  color: var(--text);
+  font-size: var(--fs-md);
+  font-weight: 600;
+  line-height: var(--lh-tight);
+}
+.stats-card-desc {
+  margin: var(--sp-1) 0 0;
+  max-width: 90ch;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  line-height: var(--lh);
+}
+.stats-card-note {
+  color: var(--warn);
+}
+.stats-card-actions {
+  flex: none;
+  max-width: 100%;
+}
+
+.chart-subhead {
+  margin: var(--sp-4) 0 var(--sp-1);
+}
+.chart-subhead-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chart-subtitle {
+  margin: 0;
+  color: var(--text-body);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.chart-caption {
+  margin: 2px 0 0;
+  max-width: 90ch;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  line-height: var(--lh);
+}
+/* The first sub-heading right under the card header needs no top gap. */
+.stats-card-head + .chart-subhead {
+  margin-top: 0;
+}
+
+/* ---- Empty chart ---- */
+.chart-empty {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: 80px;
+  margin: var(--sp-1) 0;
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--bg-3) 35%, transparent);
+}
+.chart-empty-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--bg-3);
+  color: var(--text-dim);
+}
+.chart-empty-main {
+  min-width: 0;
+}
+.chart-empty-title {
+  color: var(--text-body);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  line-height: var(--lh-tight);
+}
+.chart-empty-text {
+  margin-top: 3px;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  line-height: var(--lh);
+}
+.chart-empty-now {
+  white-space: nowrap;
+}
+.chart-empty .empty-value {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The SVG chart. */
+.chart {
+  position: relative;
+  width: 100%;
+  outline: none;
+  user-select: none;
+}
+.chart:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 6px;
+}
+.chart svg {
+  display: block;
+  overflow: visible;
+  font-family: var(--sans);
+}
+.chart .grid {
+  stroke: var(--viz-grid);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+.chart .baseline {
+  stroke: var(--viz-axis);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+.chart .tick {
+  fill: var(--text-dim);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+.chart .line {
+  fill: none;
+  stroke: var(--viz-1);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.chart .dot {
+  fill: var(--viz-1);
+  stroke: var(--viz-surface);
+  stroke-width: 2;
+}
+.chart .dot.active {
+  stroke-width: 2.5;
+}
+.chart .end-label {
+  fill: var(--text-body);
+  font-size: 11px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.chart .crosshair {
+  stroke: var(--viz-axis);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+  pointer-events: none;
+}
+.chart .bar {
+  fill: var(--viz-1);
+}
+/* An incomplete week/month: a dashed outline in the series colour (8.5:1 on the surface; the old 45 % fill was 2.65:1). */
+.chart .bar.partial {
+  fill: color-mix(in srgb, var(--viz-1) 18%, transparent);
+  stroke: var(--viz-1);
+  stroke-width: 1.5;
+  stroke-dasharray: 3 2;
+}
+.chart .line.dashed {
+  stroke-dasharray: 4 4;
+}
+.chart .dot.partial {
+  fill: var(--viz-surface);
+  stroke: var(--viz-1);
+}
+/* Every scan on the changes axis; one without changes is just this tick. */
+.chart .scan-tick,
+.key.c-scan {
+  fill: var(--text-dim);
+  background: var(--text-dim);
+}
+.chart .bar.active,
+.chart .stack.active .seg {
+  filter: brightness(1.18);
+}
+.chart .seg.c-added,
+.key.c-added,
+.tip-key.c-added {
+  fill: var(--viz-added);
+  background: var(--viz-added);
+}
+.chart .seg.c-removed,
+.key.c-removed,
+.tip-key.c-removed {
+  fill: var(--viz-removed);
+  background: var(--viz-removed);
+}
+.chart .seg.c-changed,
+.key.c-changed,
+.tip-key.c-changed {
+  fill: var(--viz-changed);
+  background: var(--viz-changed);
+}
+.chart .seg.c-returned,
+.key.c-returned,
+.tip-key.c-returned {
+  fill: var(--viz-returned);
+  background: var(--viz-returned);
+}
+.chart .marker {
+  fill: var(--viz-surface);
+  stroke: var(--text-dim);
+  stroke-width: 2;
+}
+
+.chart-tip {
+  position: absolute;
+  top: 2px;
+  z-index: 2;
+  pointer-events: none;
+  min-width: 120px;
+  max-width: min(320px, 100%);
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: var(--bg-4);
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-body);
+  white-space: nowrap;
+}
+.tip-value {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: normal;
+}
+.tip-label {
+  color: var(--text-dim);
+}
+.tip-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.tip-row b {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+/* Tooltip rows key their series with a short stroke, not a box. */
+.tip-key {
+  display: inline-block;
+  width: 10px;
+  height: 3px;
+  border-radius: 2px;
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  list-style: none;
+  margin: 0 0 var(--sp-2);
+  padding: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-body);
+}
+.chart-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.chart-legend .ui-infotip {
+  margin-left: -2px;
+}
+.chart-legend .key.rect {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+.chart-legend .key.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.chart-legend .key.outline {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  border: 1.5px dashed var(--viz-1);
+  background: color-mix(in srgb, var(--viz-1) 18%, transparent);
+}
+.chart-legend .key.ring {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 2px solid var(--text-dim);
+  background: transparent;
+}
+
+/* ---- "Дані (N)": the chart's numbers as a table ---- */
+/* At the card's bottom: next to a taller neighbour the "Дані" rows line up. */
+.chart-table-wrap {
+  position: relative;
+  margin-top: auto;
+  padding-top: var(--sp-2);
+}
+.chart-table {
+  font-size: var(--fs-xs);
+}
+/* The ⓘ right after the summary (outside it; `left` = the summary's width). */
+.chart-table-tip {
+  position: absolute;
+  top: calc(var(--sp-2) + 14px);
+  display: inline-flex;
+  margin-left: 2px;
+  transform: translateY(-50%);
+}
+/* An empty state takes the room a taller neighbour leaves, instead of a gap. */
+.stats-card > .chart-empty {
+  flex: 1 0 auto;
+}
+/* --text-dim (≥ 4.5:1 on the card), not --text-faint: this is the accessible way into the data. */
+.chart-table summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 2px 10px 2px 6px;
+  border-radius: var(--r-sm);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.chart-table summary::-webkit-details-marker {
+  display: none;
+}
+.chart-table summary:hover,
+.chart-table summary:focus-visible {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
+}
+.chart-table-chevron {
+  transition: transform var(--dur) var(--ease);
+}
+.chart-table[open] .chart-table-chevron {
+  transform: rotate(90deg);
+}
+.chart-table-scroll {
+  max-height: 240px;
+  overflow: auto;
+  margin-top: var(--sp-1);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+}
+.stats-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+.stats-table th,
+.stats-table td {
+  padding: 5px 10px;
+  text-align: right;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--hairline);
+}
+.stats-table th:first-child,
+.stats-table td:first-child {
+  text-align: left;
+}
+.stats-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-3);
+  color: var(--text-dim);
+  font-weight: 500;
+}
+.stats-table td {
+  color: var(--text-body);
+}
+.stats-table tbody tr:nth-child(even) td {
+  background: rgba(255, 255, 255, 0.02);
+}
+.stats-table tbody tr:hover td {
+  background: rgba(255, 255, 255, 0.045);
+}
+.stats-table tbody tr:last-child td {
+  border-bottom: none;
+}
+.chart-table-note {
+  margin-top: var(--sp-1);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+
+/* ---- Top growth ---- */
+.top-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--sp-5);
+}
+@container (min-width: 1000px) {
+  .top-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+.top-table {
+  min-width: 0;
+}
+.top-table-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.top-table-title svg {
+  color: var(--text-dim);
+}
+.top-table-sub {
+  margin-top: 2px;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+.top-table ol {
+  list-style: none;
+  margin: var(--sp-2) 0 0;
+  padding: 0;
+}
+.top-empty {
+  margin-top: var(--sp-2);
+  padding: var(--sp-4) var(--sp-3);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-md);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  text-align: center;
+}
+.top-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  min-height: 44px;
+  padding: var(--sp-1) 6px;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-body);
+  text-align: left;
+  font: inherit;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+.top-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+.top-row:focus-visible {
+  outline: 2px solid var(--focus-color, var(--accent));
+  outline-offset: -2px;
+}
+.top-row.static,
+.top-row.static:hover {
+  background: transparent;
+  cursor: default;
+}
+.top-rank {
+  flex: none;
+  width: 14px;
+  color: var(--text-dim);
+  font-size: var(--fs-2xs);
+  text-align: right;
+}
+.top-row img,
+.top-row .thumb-ph {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--r-sm);
+  object-fit: cover;
+  flex-shrink: 0;
+  background: var(--bg-3);
+}
+.top-title {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.top-nums {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.top-delta {
+  color: var(--accent);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.top-total {
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.top-end {
+  color: var(--text-dim);
+  font-size: var(--fs-2xs);
+}
+.sparkline {
+  flex-shrink: 0;
+}
+.sparkline polyline {
+  fill: none;
+  stroke: var(--text-faint);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.sparkline circle {
+  fill: var(--accent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .stats-body,
+  .chart-table-chevron {
+    transition: none;
+  }
+}

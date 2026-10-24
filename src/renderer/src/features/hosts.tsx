@@ -3,35 +3,41 @@
 // panels render inside MyShopModal / ListingModal.
 
 import { ownShopId, useStore } from '../store'
-import { useEscape } from '../components/useEscape'
-import { LazyDetails } from './LazyDetails'
+import { Button, Modal, Term } from '../ui'
+import { LazyDetails, panelMeta } from './LazyDetails'
 import { SHOP_PANELS, TOP_MODALS } from './registry'
 
 /** "ℹ️ Більше" for a tracked shop: every feature's shop panel, each loaded when opened. */
 export function ShopPanelsModal(): JSX.Element | null {
   const { shopPanelsFor, openShopPanels, shops, etsyAuth } = useStore()
   const close = (): void => openShopPanels(null)
-  useEscape(close, shopPanelsFor != null)
   const shop = shops.find((s) => s.id === shopPanelsFor)
   if (shopPanelsFor == null || !shop) return null
   const mine = shop.id === ownShopId({ etsyAuth })
   return (
-    <div className="modal-backdrop" onClick={close}>
-      <div className="modal my-shop-modal" role="dialog" aria-labelledby="panels-title" onClick={(e) => e.stopPropagation()}>
-        <h2 id="panels-title">{shop.shopName}: більше даних з Etsy</h2>
-        <p className="hint">Живі дані з Etsy API — кожен розділ завантажується, коли ви його відкриваєте.</p>
-        {SHOP_PANELS.map((p) => (
-          <LazyDetails key={p.id} label={p.label} testId={`shop-panel-${p.id}`}>
-            {() => <p.Component shop={shop} mine={mine} />}
-          </LazyDetails>
-        ))}
-        <div className="modal-actions">
-          <button className="btn" onClick={close}>
-            Закрити
-          </button>
-        </div>
+    <Modal
+      size="lg"
+      className="shop-panels-modal"
+      onClose={close}
+      title={`${shop.shopName}: більше даних з Etsy`}
+      subtitle={
+        <>
+          <Term glossary="features.compete.liveData">Живі дані</Term> прямо з Etsy. Кожен розділ завантажується, лише коли ви його відкриваєте.
+        </>
+      }
+      footer={<Button onClick={close}>Закрити</Button>}
+    >
+      <div className="feature-panels">
+        {SHOP_PANELS.map((p) => {
+          const meta = panelMeta(p)
+          return (
+            <LazyDetails key={p.id} label={p.label} description={meta.description} icon={meta.icon} testId={`shop-panel-${p.id}`}>
+              {() => <p.Component shop={shop} mine={mine} />}
+            </LazyDetails>
+          )
+        })}
       </div>
-    </div>
+    </Modal>
   )
 }
 
@@ -39,20 +45,12 @@ export function ShopPanelsModal(): JSX.Element | null {
 export function FeatureModalHost(): JSX.Element | null {
   const { featureModal, openFeatureModal } = useStore()
   const close = (): void => openFeatureModal(null)
-  useEscape(close, featureModal != null)
   const m = TOP_MODALS.find((x) => x.id === featureModal)
   if (!m) return null
+  const subtitle = panelMeta(m).description
   return (
-    <div className="modal-backdrop" onClick={close}>
-      <div className="modal feature-modal" role="dialog" aria-labelledby="feature-modal-title" onClick={(e) => e.stopPropagation()}>
-        <h2 id="feature-modal-title">{m.title}</h2>
-        <m.Component />
-        <div className="modal-actions">
-          <button className="btn" onClick={close}>
-            Закрити
-          </button>
-        </div>
-      </div>
-    </div>
+    <Modal size="xl" className="feature-modal" onClose={close} title={m.title} subtitle={subtitle} footer={<Button onClick={close}>Закрити</Button>}>
+      <m.Component />
+    </Modal>
   )
 }

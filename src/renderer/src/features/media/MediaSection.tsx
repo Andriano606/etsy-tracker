@@ -7,10 +7,18 @@ import type { ListingMedia, MediaKind, MediaProgress, MediaVideo } from '@shared
 import { mediaProblemText } from '@shared/features/media'
 import type { MyListing, PickedFile } from '@shared/types'
 import { useStore } from '../../store'
+import { Button, Callout, Loading, type IconName } from '../../ui'
 import { featureCall } from '../call'
 import { FileList } from './FileList'
 import { PhotoList } from './PhotoList'
 import { VideoBlock } from './VideoBlock'
+
+/** A button in the result note (e.g. "Повернути" after a photo was deleted). */
+export interface NoteAction {
+  label: string
+  icon?: IconName
+  onClick: () => void
+}
 
 export interface MediaOps {
   listing: MyListing
@@ -25,6 +33,8 @@ export interface MediaOps {
   patchVideo: (v: MediaVideo) => void
   /** Show an error note. */
   fail: (text: string) => void
+  /** Add a button to the note shown now (it goes away with the note). */
+  offer: (action: NoteAction) => void
 }
 
 const PICKER: Record<MediaKind, 'images' | 'videos' | 'files'> = { photo: 'images', video: 'videos', file: 'files' }
@@ -42,7 +52,7 @@ export function MediaSection({ listing, onChanged }: { listing: MyListing; onCha
   const [loadError, setLoadError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState<MediaProgress | null>(null)
-  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null)
+  const [note, setNote] = useState<{ ok: boolean; text: string; action?: NoteAction } | null>(null)
 
   const load = useCallback(async (): Promise<void> => {
     const r = await featureCall<ListingMedia>('media', 'load', { listingId: id })
@@ -103,40 +113,60 @@ export function MediaSection({ listing, onChanged }: { listing: MyListing; onCha
       }
       return files
     },
-    liveConfirm: (text) => (listing.state === 'active' ? `${text}\nЛістинг активний — покупці побачать зміну одразу.` : null),
+    liveConfirm: (text) => (listing.state === 'active' ? `${text}\nТовар активний — покупці побачать зміну одразу.` : null),
     patchVideo: (v) => setMedia((m) => m && { ...m, videos: m.videos?.map((x) => (x.id === v.id ? v : x)) ?? null }),
-    fail: (text) => setNote({ ok: false, text })
+    fail: (text) => setNote({ ok: false, text }),
+    offer: (action) => setNote((n) => n && { ...n, action })
   }
 
   if (!media) {
-    if (!loadError) return <div className="hint">Завантаження…</div>
+    if (!loadError) return <Loading>Завантаження фото, відео й файлів…</Loading>
     return (
-      <div>
-        <div className="test-result err" role="alert">
-          {loadError}
-        </div>
-        <button className="btn small" onClick={() => void load()}>
-          Спробувати ще
-        </button>
-      </div>
+      <Callout
+        tone="error"
+        action={
+          <Button size="sm" icon="refresh" onClick={() => void load()}>
+            Спробувати ще
+          </Button>
+        }
+      >
+        {loadError}
+      </Callout>
     )
   }
   return (
     <div className="media-section" data-testid="media-section">
+      <p className="media-intro">
+        Тут — те, що покупець бачить і отримує: фото й відео в галереї товару, а для цифрового товару — файли, які він завантажує після оплати.
+        Кожна зміна одразу зберігається на Etsy.
+      </p>
+      <div className="media-status" aria-live="polite">
+        {busy && <Loading inline>{progress ? progressText(progress) : 'Зачекайте…'}</Loading>}
+        {note && (
+          <Callout
+            tone={note.ok ? 'success' : 'error'}
+            compact
+            onClose={() => setNote(null)}
+            action={
+              note.action && (
+                <Button size="sm" icon={note.action.icon} disabled={busy} onClick={note.action.onClick}>
+                  {note.action.label}
+                </Button>
+              )
+            }
+          >
+            {note.text}
+          </Callout>
+        )}
+      </div>
       {media.notes.map((n) => (
-        <div key={n} className="hint warn">
+        <Callout key={n} tone="warn" role="note" compact>
           {n}
-        </div>
+        </Callout>
       ))}
       {media.photos && <PhotoList photos={media.photos} ops={ops} />}
       {media.videos && <VideoBlock videos={media.videos} ops={ops} />}
       {media.files && <FileList files={media.files} ops={ops} />}
-      {busy && <div className="hint">{progress ? progressText(progress) : 'Зачекайте…'}</div>}
-      {note && (
-        <div className={`test-result ${note.ok ? 'ok' : 'err'}`} role={note.ok ? 'status' : 'alert'}>
-          {note.text}
-        </div>
-      )}
     </div>
   )
 }

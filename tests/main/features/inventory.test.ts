@@ -186,7 +186,7 @@ describe('inventory actions', () => {
     const out = featureCtx(routes, { status: signedOut })
     await expect(runAction(inventoryFeature, 'get', { listingId: 1001 }, out.ctx)).rejects.toThrow('Увійдіть в Etsy')
     const noScope = featureCtx(routes, { status: signedIn({ scopes: ['shops_r'] }) })
-    await expect(runAction(inventoryFeature, 'get', { listingId: 1001 }, noScope.ctx)).rejects.toThrow('читання лістингів')
+    await expect(runAction(inventoryFeature, 'get', { listingId: 1001 }, noScope.ctx)).rejects.toThrow('читання товарів')
     const { ctx, fetch } = featureCtx(routes)
     await expect(runAction(inventoryFeature, 'get', { listingId: 'x' }, ctx)).rejects.toThrow('Некоректний listingId.')
     expect([...out.fetch.calls, ...noScope.fetch.calls, ...fetch.calls]).toHaveLength(0)
@@ -253,7 +253,7 @@ describe('inventory actions', () => {
     )
     expect(fetch.calls).toHaveLength(0)
     const ro = featureCtx(routes, { status: signedIn({ scopes: ['listings_r'] }) })
-    await expect(runAction(inventoryFeature, 'update', { listingId: 1001, inventory: bad }, ro.ctx)).rejects.toThrow('редагування лістингів')
+    await expect(runAction(inventoryFeature, 'update', { listingId: 1001, inventory: bad }, ro.ctx)).rejects.toThrow('редагування товарів')
   })
 
   it('update: Etsy 400 (incompatible *_on_property) shows Etsy’s reason; 403; a 5xx PUT is retried once', async () => {
@@ -287,10 +287,10 @@ describe('inventory actions', () => {
 
   it('product, quickUpdate, variationImages: signed out or a missing scope → no request', async () => {
     const cases: Array<[string, Record<string, unknown>, string[], string]> = [
-      ['product', { listingId: 1001, productId: 2 }, ['shops_r'], 'читання лістингів'],
-      ['quickUpdate', { listingId: 1002, price: 5 }, ['listings_r'], 'редагування лістингів'],
-      ['quickUpdate', { listingId: 1002, price: 5 }, ['listings_w'], 'читання лістингів'],
-      ['variationImages', { listingId: 1001 }, ['listings_w'], 'читання лістингів']
+      ['product', { listingId: 1001, productId: 2 }, ['shops_r'], 'читання товарів'],
+      ['quickUpdate', { listingId: 1002, price: 5 }, ['listings_r'], 'редагування товарів'],
+      ['quickUpdate', { listingId: 1002, price: 5 }, ['listings_w'], 'читання товарів'],
+      ['variationImages', { listingId: 1001 }, ['listings_w'], 'читання товарів']
     ]
     for (const [action, args, scopes, scopeText] of cases) {
       const out = featureCtx(routes, { status: signedOut })
@@ -437,7 +437,7 @@ describe('inventory actions', () => {
     )
     expect(fetch.calls).toHaveLength(2)
     const ro = featureCtx(routes, { status: signedIn({ scopes: ['listings_r'] }) })
-    await expect(runAction(inventoryFeature, 'saveVariationImages', { listingId: 1001, items }, ro.ctx)).rejects.toThrow('редагування лістингів')
+    await expect(runAction(inventoryFeature, 'saveVariationImages', { listingId: 1001, items }, ro.ctx)).rejects.toThrow('редагування товарів')
     const r409 = featureCtx({ ...routes, [`POST /v3/application/shops/${OWN_SHOP}/listings/{id}/variation-images`]: { status: 400, body: { error: 'image not on listing' } } })
     await expect(runAction(inventoryFeature, 'saveVariationImages', { listingId: 1001, items }, r409.ctx)).rejects.toThrow('image not on listing')
     expect(r409.fetch.calls).toHaveLength(1)

@@ -1,11 +1,13 @@
 // The "compete" sections of a tracked shop's "ℹ️ Більше" window: shop
 // sections (open one → its listings), featured listings, return policies.
 
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import type { CompeteListingRow, CompeteListingsPage, ReturnPolicyInfo, ShopSectionInfo } from '@shared/features/compete'
+import { formatCount } from '@shared/format'
 import type { ShopSummary } from '@shared/types'
+import { Badge, Button, Icon, InfoTip, Loading } from '../../ui'
 import { featureCall } from '../call'
-import { ErrorNote, ListingRows, LoadedView, useCompete, yesNo } from './common'
+import { EmptyNote, ErrorNote, ListingRows, LoadedView, MoreBar, useCompete, useReveal, YesNo } from './common'
 
 /** Listing pages of compete.`action` (offset paging, "Показати ще"). */
 function PagedListings({ action, args, empty }: { action: string; args: Record<string, unknown>; empty: string }): JSX.Element {
@@ -26,34 +28,40 @@ function PagedListings({ action, args, empty }: { action: string; args: Record<s
   useEffect(() => {
     void load(0)
   }, [])
-  if (rows == null) return error ? <ErrorNote error={error} /> : <div className="hint">Завантаження…</div>
+  if (rows == null) return error ? <ErrorNote error={error} onRetry={() => void load(0)} /> : <Loading inline>Завантаження товарів…</Loading>
   return (
-    <div>
-      {rows.length === 0 ? <div className="hint">{empty}</div> : <ListingRows listings={rows} />}
-      {error && <ErrorNote error={error} />}
-      {rows.length > 0 && <div className="hint">Показано {rows.length} з {count}</div>}
-      {rows.length < count && (
-        <button className="btn small" disabled={busy} onClick={() => void load(rows.length)}>
-          {busy ? 'Завантаження…' : 'Показати ще'}
-        </button>
-      )}
+    <div className="ui-stack">
+      {rows.length === 0 ? <EmptyNote icon="box">{empty}</EmptyNote> : <ListingRows listings={rows} />}
+      {error && <ErrorNote error={error} onRetry={() => void load(rows.length)} />}
+      <MoreBar shown={rows.length} total={count} busy={busy} onMore={() => void load(rows.length)} />
     </div>
   )
 }
 
+const sectionTitle = (s: { id: number; title: string } | null, id: number): string => s?.title || `Розділ #${id}`
+
 /** One opened section: fresh details (getShopSection) + its listings. */
 function SectionView({ shopId, sectionId, onClose }: { shopId: number; sectionId: number; onClose: () => void }): JSX.Element {
   const section = useCompete<ShopSectionInfo>('section', { shopId, sectionId })
+  const title = sectionTitle(section.data, sectionId)
+  const { box, heading } = useReveal<HTMLDivElement, HTMLHeadingElement>()
   return (
-    <div className="compete-section" data-testid="compete-section-view">
+    <div ref={box} className="compete-section ui-card" data-testid="compete-section-view">
       <div className="compete-head">
-        <h4>{section.data ? section.data.title || `Розділ #${sectionId}` : `Розділ #${sectionId}`}</h4>
-        {section.data?.activeListingCount != null && <span className="dim">активних товарів: {section.data.activeListingCount}</span>}
-        <button className="btn small" onClick={onClose}>
+        <h4 ref={heading} tabIndex={-1} className="truncate" title={title}>
+          {title}
+        </h4>
+        {section.data?.activeListingCount != null && (
+          <Badge tone="info" icon="box">
+            активних товарів: {formatCount(section.data.activeListingCount)}
+          </Badge>
+        )}
+        <span className="ui-spacer" />
+        <Button size="sm" variant="ghost" icon="close" onClick={onClose}>
           Закрити розділ
-        </button>
+        </Button>
       </div>
-      {section.error && <ErrorNote error={section.error} />}
+      {section.error && <ErrorNote error={section.error} onRetry={section.reload} />}
       <PagedListings key={sectionId} action="sectionListings" args={{ shopId, sectionId }} empty="У цьому розділі немає активних товарів." />
     </div>
   )
@@ -62,41 +70,81 @@ function SectionView({ shopId, sectionId, onClose }: { shopId: number; sectionId
 function SectionsPanel({ shop }: { shop: ShopSummary }): JSX.Element {
   const state = useCompete<ShopSectionInfo[]>('sections', { shopId: shop.id })
   const [open, setOpen] = useState<number | null>(null)
+  // "Закрити розділ" gives the focus back to that section's "Відкрити".
+  const openers = useRef(new Map<number, HTMLButtonElement>())
+  const returnTo = useRef<number | null>(null)
+  useEffect(() => {
+    if (open != null || returnTo.current == null) return
+    openers.current.get(returnTo.current)?.focus()
+    returnTo.current = null
+  }, [open])
+  const close = (id: number): void => {
+    returnTo.current = id
+    setOpen(null)
+  }
   return (
     <LoadedView state={state}>
       {(sections) =>
         sections.length === 0 ? (
-          <div className="hint">У магазині немає розділів.</div>
+          <EmptyNote icon="folder" hint="Продавець не ділив товари на групи — усі вони на головній сторінці магазину.">
+            У магазині немає розділів.
+          </EmptyNote>
         ) : (
-          <div data-testid="compete-sections">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Розділ</th>
-                  <th>Активних товарів</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {sections.map((s) => (
-                  <tr key={s.id}>
-                    <td>{s.title || `Розділ #${s.id}`}</td>
-                    <td>{s.activeListingCount ?? '—'}</td>
-                    <td>
-                      <button className="btn small" disabled={open === s.id} onClick={() => setOpen(s.id)}>
-                        Відкрити
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {open != null && <SectionView key={open} shopId={shop.id} sectionId={open} onClose={() => setOpen(null)} />}
+          <div className="ui-stack" data-testid="compete-sections">
+            <ul className="feat-rows">
+              {sections.map((s) => (
+                <Fragment key={s.id}>
+                <li className={'feat-row' + (open === s.id ? ' is-open' : '')}>
+                  <span className="feat-row-thumb compete-section-icon" aria-hidden="true">
+                    <Icon name="folder" size={18} />
+                  </span>
+                  <div className="feat-row-text">
+                    <div className="feat-row-title truncate" title={sectionTitle(s, s.id)}>
+                      {sectionTitle(s, s.id)}
+                    </div>
+                    <div className="feat-row-meta">
+                      {s.activeListingCount == null ? 'кількість товарів невідома' : `${formatCount(s.activeListingCount)} ${plural(s.activeListingCount)}`}
+                    </div>
+                  </div>
+                  <div className="feat-row-actions">
+                    <Button
+                      ref={(b) => {
+                        if (b) openers.current.set(s.id, b)
+                        else openers.current.delete(s.id)
+                      }}
+                      size="sm"
+                      icon="list"
+                      disabled={open === s.id}
+                      aria-expanded={open === s.id}
+                      onClick={() => setOpen(s.id)}
+                    >
+                      Відкрити
+                    </Button>
+                  </div>
+                </li>
+                {/* The opened section right under its row, not after the whole list. */}
+                {open === s.id && (
+                  <li className="feat-row-expanded">
+                    <SectionView shopId={shop.id} sectionId={s.id} onClose={() => close(s.id)} />
+                  </li>
+                )}
+                </Fragment>
+              ))}
+            </ul>
           </div>
         )
       }
     </LoadedView>
   )
+}
+
+/** "1 товар", "3 товари", "5 товарів". */
+function plural(n: number): string {
+  const d = n % 10
+  const h = n % 100
+  if (d === 1 && h !== 11) return 'товар'
+  if (d >= 2 && d <= 4 && (h < 12 || h > 14)) return 'товари'
+  return 'товарів'
 }
 
 function FeaturedPanel({ shop }: { shop: ShopSummary }): JSX.Element {
@@ -115,26 +163,45 @@ function ReturnPoliciesPanel({ shop }: { shop: ShopSummary }): JSX.Element {
     <LoadedView state={state}>
       {(policies) =>
         policies.length === 0 ? (
-          <div className="hint">Магазин не має політик повернення.</div>
+          <EmptyNote icon="box" hint="Тоді діють загальні правила Etsy для покупців.">
+            Магазин не має правил повернення.
+          </EmptyNote>
         ) : (
-          <table className="data-table" data-testid="compete-policies">
-            <thead>
-              <tr>
-                <th>Повернення</th>
-                <th>Обмін</th>
-                <th>Строк повернення</th>
-              </tr>
-            </thead>
-            <tbody>
-              {policies.map((p) => (
-                <tr key={p.id}>
-                  <td>{yesNo(p.acceptsReturns)}</td>
-                  <td>{yesNo(p.acceptsExchanges)}</td>
-                  <td>{deadlineText(p.returnDeadline)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="ui-stack">
+            {policies.length > 1 && (
+              <p className="ui-section-desc">Різні товари магазину можуть мати різні правила — тут усі, що є в магазині.</p>
+            )}
+            <div className="table-wrap">
+              <table className="data-table" data-testid="compete-policies">
+                <thead>
+                  <tr>
+                    <th>
+                      Повернення <InfoTip glossary="features.compete.returns" />
+                    </th>
+                    <th>
+                      Обмін <InfoTip glossary="features.compete.exchanges" />
+                    </th>
+                    <th>
+                      Строк повернення <InfoTip glossary="features.compete.returnDeadline" />
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {policies.map((p) => (
+                    <tr key={p.id}>
+                      <td>
+                        <YesNo value={p.acceptsReturns} />
+                      </td>
+                      <td>
+                        <YesNo value={p.acceptsExchanges} />
+                      </td>
+                      <td>{deadlineText(p.returnDeadline)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
         )
       }
     </LoadedView>
@@ -142,7 +209,25 @@ function ReturnPoliciesPanel({ shop }: { shop: ShopSummary }): JSX.Element {
 }
 
 export const SHOP_PANELS = [
-  { id: 'compete-sections', label: 'Розділи магазину', Component: SectionsPanel },
-  { id: 'compete-featured', label: 'Рекомендовані товари', Component: FeaturedPanel },
-  { id: 'compete-return-policies', label: 'Політики повернення', Component: ReturnPoliciesPanel }
+  {
+    id: 'compete-sections',
+    label: 'Розділи магазину',
+    icon: 'folder' as const,
+    description: 'Групи, на які продавець поділив свої товари, і що в кожній. Показує, як магазин організовує асортимент.',
+    Component: SectionsPanel
+  },
+  {
+    id: 'compete-featured',
+    label: 'Рекомендовані товари',
+    icon: 'star' as const,
+    description: 'Товари, які продавець сам виніс нагору магазину, — зазвичай його найкращі продажі або новинки.',
+    Component: FeaturedPanel
+  },
+  {
+    id: 'compete-return-policies',
+    label: 'Правила повернення',
+    icon: 'refresh' as const,
+    description: 'Чи можна повернути або обміняти товар цього магазину і за скільки днів.',
+    Component: ReturnPoliciesPanel
+  }
 ]

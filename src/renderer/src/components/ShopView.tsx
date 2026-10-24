@@ -1,9 +1,12 @@
 import { useMemo } from 'react'
-import type { ImageCounts, ImageSyncState, ReviewSyncState, ShopSummary } from '@shared/types'
-import { formatAgo, formatCount, formatDateTime, formatDelta, formatRating, isStale } from '@shared/format'
+import type { ImageCounts, ImageSyncState, ReviewSyncState, ScanProgress, ShopSummary } from '@shared/types'
+import { formatAgo, formatCount, formatDateTime, formatRating, isStale } from '@shared/format'
+import { GLOSSARY } from '@shared/glossary'
 import { ownShopId, useStore, type SortMode } from '../store'
 import { SHOP_PANELS } from '../features/registry'
 import { filterListings } from '@shared/listingFilter'
+import { ActionBar, Badge, Button, Callout, EmptyState, Icon, InfoTip, Select, Spinner, Stat, Term, Toggle, type Action } from '../ui'
+import { countOf } from './ChangeList'
 import { ExternalLink } from './ExternalLink'
 import { ListingCard } from './ListingCard'
 import { ScanHistory } from './ScanHistory'
@@ -11,106 +14,212 @@ import { ScanResults } from './ScanResults'
 import { UNREADABLE_KEY_MESSAGE } from './SettingsModal'
 import { ShopIcon } from './ShopIcon'
 
-/** Sold / rating / favorers of the shop with growth since the previous scan. */
+const DELTA_HINT = 'Зміна з попереднього сканування'
+
+/** A change worth showing: null for unknown / 0 (a calm tile without "0"). */
+const changeOf = (v: number | null | undefined): number | null =>
+  v == null || v === 0 || !Number.isFinite(v) ? null : v
+
+/** The grid's sort options, in plain words. */
+export const SORT_OPTIONS: ReadonlyArray<{ value: SortMode; label: string }> = [
+  { value: 'newest', label: 'Спершу новіші' },
+  { value: 'price-asc', label: 'Спершу дешевші' },
+  { value: 'price-desc', label: 'Спершу дорожчі' },
+  { value: 'favorites', label: 'Найбільше в обраному' },
+  { value: 'views', label: 'Найбільше переглядів' },
+  { value: 'favorites-growth', label: 'Найшвидше ростуть в обраному' },
+  { value: 'reviews', label: 'Найбільше відгуків' },
+  { value: 'reviews-growth', label: 'Найбільше нових відгуків' },
+  { value: 'discount', label: 'Найбільша знижка' }
+]
+
+/**
+ * What a running scan is doing, in plain words — main's labels ("Деталі 100/430")
+ * are internal. The scan button keeps a stable "Сканування…"; this goes beside it.
+ */
+export function scanProgressText(p: ScanProgress | null | undefined): string {
+  if (!p) return 'Сканування…'
+  const of = p.total > 0 && p.done > 0 ? `: ${formatCount(p.done)} з ${formatCount(p.total)}` : '…'
+  switch (p.phase) {
+    case 'pages':
+      return p.total > 1 && p.done > 0 ? `Читаю список товарів: сторінка ${formatCount(p.done)} з ${formatCount(p.total)}` : 'Читаю список товарів…'
+    case 'details':
+      return `Читаю фото й деталі товарів${of}`
+    case 'verify':
+      return 'Перевіряю товари, яких не стало в списку…'
+    case 'saving':
+      return 'Зберігаю результати…'
+    default:
+      return 'Сканування…'
+  }
+}
+
+/** The photo store's error (MinIO's technical text) as plain words; the raw text stays in the details tip. */
+export function imageErrorText(raw: string): { lead: string; rest: string } {
+  if (/місце/i.test(raw)) return { lead: 'У сховищі фото', rest: ' закінчилось місце на диску — звільніть місце, і фото докопіюються пізніше.' }
+  if (/облікові дані|access key|secret key/i.test(raw))
+    return { lead: 'Сховище фото', rest: ' не прийняло логін і пароль — перевірте їх у Налаштуваннях. Поки що фото показуються прямо з Etsy.' }
+  if (/недоступн|ECONN|ENOTFOUND|EHOST|тайм-аут|timeout/i.test(raw))
+    return { lead: 'Сховище фото', rest: ' на цьому комп’ютері не відповідає — поки що фото показуються прямо з Etsy.' }
+  return { lead: 'Не вдалося скопіювати фото у сховище', rest: ' на цьому комп’ютері — поки що фото показуються прямо з Etsy.' }
+}
+
+/** A review-sync error in plain words (no HTTP codes); the raw text stays in the details tip. */
+export function reviewErrorText(raw: string): string {
+  if (/HTTP 40[13]/.test(raw)) return 'Etsy не дає читати відгуки цього магазину з вашим ключем. Товари скануються як і раніше.'
+  if (/HTTP 404/.test(raw)) return 'Etsy зараз не показує відгуки цього магазину. Товари скануються як і раніше.'
+  return raw
+    .replace(/^Відгуки: /, 'Не вдалося завантажити відгуки: ')
+    .replace(/\s*\(HTTP \d+\)/g, '')
+}
+
+/** "ⓘ" with the raw error text, for whoever needs the details (support, a technical friend). */
+function ErrorDetails({ raw }: { raw: string }): JSX.Element {
+  return <InfoTip term="Технічні деталі" text={raw} label="Технічні деталі помилки" size={13} />
+}
+
+/** Sales / rating / reviews / shop favourites as compact tiles, each explained, with growth since the previous scan. */
 export function ShopStatsLine({ shop }: { shop: ShopSummary }): JSX.Element | null {
   const s = shop.stats
   if (!s) return null
   const d = shop.statsDelta
-  const delta = (v: number | null | undefined, digits = 0): JSX.Element | null => {
-    const t = formatDelta(v, digits)
-    return t ? <span className={`delta ${v! > 0 ? 'up' : 'down'}`}> {t}</span> : null
-  }
-  const parts: JSX.Element[] = []
+  const tiles: JSX.Element[] = []
   if (s.transactionSoldCount != null) {
-    parts.push(
-      <span key="sold" title="Продано (transaction_sold_count)">
-        Продано: {formatCount(s.transactionSoldCount)}
-        {delta(d?.transactionSoldCount)}
-      </span>
+    tiles.push(
+      <Stat
+        key="sold"
+        compact
+        icon="receipt"
+        label="Продажі"
+        glossary="salesCount"
+        value={formatCount(s.transactionSoldCount)}
+        delta={changeOf(d?.transactionSoldCount)}
+        deltaHint={DELTA_HINT}
+        caption="за весь час"
+      />
     )
   }
-  if (s.reviewAverage != null || s.reviewCount != null) {
-    parts.push(
-      <span key="reviews" title="Середня оцінка та кількість відгуків">
-        ★ {s.reviewAverage != null ? s.reviewAverage.toLocaleString('uk-UA', { maximumFractionDigits: 2 }) : '—'}
-        {delta(d?.reviewAverage, 2)} ({formatCount(s.reviewCount)} відгуків{delta(d?.reviewCount)})
-      </span>
+  if (s.reviewAverage != null) {
+    tiles.push(
+      <Stat
+        key="rating"
+        compact
+        icon="star"
+        label="Рейтинг"
+        glossary="rating"
+        value={s.reviewCount === 0 ? '—' : formatRating(s.reviewAverage)}
+        delta={changeOf(d?.reviewAverage)}
+        deltaHint={DELTA_HINT}
+        caption={s.reviewCount === 0 ? 'ще немає оцінок' : 'середня оцінка з 5'}
+      />
+    )
+  }
+  if (s.reviewCount != null) {
+    tiles.push(
+      <Stat
+        key="reviews"
+        compact
+        icon="review"
+        label="Відгуки"
+        glossary="reviews"
+        value={formatCount(s.reviewCount)}
+        delta={changeOf(d?.reviewCount)}
+        deltaHint={DELTA_HINT}
+        caption="за весь час"
+      />
     )
   }
   if (s.numFavorers != null) {
-    parts.push(
-      <span key="fav" title="Додали магазин в обране">
-        ❤ {formatCount(s.numFavorers)}
-        {delta(d?.numFavorers)}
-      </span>
+    tiles.push(
+      <Stat
+        key="fav"
+        compact
+        icon="heart"
+        label="Обране"
+        glossary="shopFavorers"
+        value={formatCount(s.numFavorers)}
+        delta={changeOf(d?.numFavorers)}
+        deltaHint={DELTA_HINT}
+        caption="додали магазин в обране"
+      />
     )
   }
-  if (!parts.length) return null
+  if (!tiles.length) return null
   return (
-    <div className="shop-stats" data-testid="shop-stats">
-      {parts}
+    <div className="shop-kpis" data-testid="shop-stats">
+      {tiles}
     </div>
   )
 }
 
-/** "Фото: 120/430 · помилок: 2" + the MinIO sync state and a manual retry. */
+/**
+ * "Фото товарів: збережено 120 з 430 · не вдалося: 2" + the copy state. No
+ * button of its own: "Сканувати повторно" refreshes photos too (failed ones retried).
+ */
 export function ImageSyncLine({
   counts,
   sync,
-  onSync
+  onOpenSettings
 }: {
   counts: ImageCounts | null
   sync: ImageSyncState | null
-  onSync: () => void
+  /** Shown as "Відкрити Налаштування" next to a store error. */
+  onOpenSettings?: () => void
 }): JSX.Element | null {
   if (!counts || counts.total === 0) return null
   const running = !!sync?.running
+  const done = counts.stored >= counts.total
+  const storeError = !running && sync?.lastError ? sync.lastError : null
+  const plain = storeError ? imageErrorText(storeError) : null
   return (
-    <div className="image-sync" data-testid="image-sync">
-      <span title="Скільки фото активних товарів скопійовано в MinIO">
-        Фото: {formatCount(counts.stored)}/{formatCount(counts.total)}
+    <div className="sync-line" data-testid="image-sync">
+      <span className="sync-label">
+        <Icon name="photo" size={15} />
+        Фото товарів
+        <InfoTip glossary="photoSync" />
       </span>
-      {counts.error > 0 && <span className="err"> · помилок: {formatCount(counts.error)}</span>}
-      {running && (
-        <span className="scan-progress">
-          {' '}
-          · синхронізація {sync!.done}/{sync!.total}
+      <span className="sync-parts">
+        <span className={done ? 'ok' : undefined}>
+          {done && <Icon name="check" size={13} />} збережено {formatCount(counts.stored)} з {formatCount(counts.total)}
         </span>
-      )}
-      {!running && sync?.disabled && <span className="dim"> · MinIO вимкнено в Налаштуваннях</span>}
-      {!running && sync?.lastError && (
-        <span className="err" title={sync.lastError}>
-          {' '}
-          · {sync.lastError}
-        </span>
-      )}
-      {!running && !sync?.disabled && counts.stored < counts.total && (
-        <button className="btn subtle small" onClick={onSync}>
-          Синхронізувати фото
-        </button>
+        {counts.error > 0 && <span className="err">не вдалося: {formatCount(counts.error)}</span>}
+        {running && (
+          <span className="sync-progress">
+            <Spinner decorative size={12} /> копіюються {sync!.done} з {sync!.total}
+          </span>
+        )}
+        {!running && sync?.disabled && <span className="dim">копіювання вимкнено в Налаштуваннях</span>}
+        {storeError && plain && (
+          <span className="err sync-error" data-testid="image-sync-error" title={storeError}>
+            <Term glossary="minio">{plain.lead}</Term>
+            {plain.rest} <ErrorDetails raw={storeError} />
+          </span>
+        )}
+      </span>
+      {storeError && onOpenSettings && (
+        <Button size="sm" variant="ghost" icon="settings" onClick={onOpenSettings} tooltip="Перевірити налаштування сховища фото">
+          Відкрити Налаштування
+        </Button>
       )}
     </div>
   )
 }
 
 /**
- * "Відгуки: 3 200 / ~9 300 · ⭐ 4,87 · фото відгуків: 12/40" + the running sync,
- * its error and "Синхронізувати відгуки".
+ * "Відгуки покупців: завантажено 3 200 з ~9 300 · середня оцінка 4,87 · фото
+ * відгуків: 12 з 40" + the running sync and its error. No button of its own:
+ * every successful scan loads new reviews and continues the history.
  */
 export function ReviewSyncLine({
   shop,
-  live,
-  canSync,
-  onSync
+  live
 }: {
   shop: ShopSummary
   live: ReviewSyncState | undefined
-  canSync: boolean
-  onSync: () => void
 }): JSX.Element | null {
   const all = shop.reviews ?? null
   const running = !!live?.running
-  // Only failed runs so far (e.g. 403): show "not synced" + the error, no counts.
+  // Only failed runs so far (e.g. 403): show "not loaded" + the error, no counts.
   const info = all?.synced ? all : null
   const lastError = all?.lastError ?? null
   if (!all && !running && !shop.lastOkScan) return null
@@ -119,45 +228,49 @@ export function ReviewSyncLine({
   const complete = running ? live!.backfillComplete : !!info?.backfillComplete
   const error = running ? null : lastError
   return (
-    <div className="review-sync" data-testid="review-sync">
-      {info || running ? (
-        <span title="Відгуки магазину, збережені в базі (з GET /shops/{id}/reviews)">
-          Відгуки: {formatCount(stored)}
-          {!complete && estimate != null && estimate > stored && ` / ~${formatCount(estimate)}`}
-          {info?.average != null && ` · ⭐ ${formatRating(info.average)}`}
-        </span>
-      ) : (
-        <span className="dim">Відгуки ще не синхронізовано</span>
-      )}
-      {!running && info && !complete && (
-        <span className="dim" title="Історію відгуків завантажено не повністю — продовжиться з наступним скануванням">
-          {' '}
-          · історія завантажується
-        </span>
-      )}
-      {info && info.photos.total > 0 && (
-        <span className="dim">
-          {' '}
-          · фото відгуків: {formatCount(info.photos.stored)}/{formatCount(info.photos.total)}
-        </span>
-      )}
-      {running && (
-        <span className="scan-progress">
-          {' '}
-          · синхронізація ({live!.phase === 'incremental' ? 'нові' : 'історія'}, запитів: {live!.requests})
-        </span>
-      )}
-      {error && (
-        <span className="err" title={error}>
-          {' '}
-          · {error}
-        </span>
-      )}
-      {!running && (
-        <button className="btn subtle small" disabled={!canSync} onClick={onSync}>
-          Синхронізувати відгуки
-        </button>
-      )}
+    <div className="sync-line" data-testid="review-sync">
+      <span className="sync-label">
+        <Icon name="review" size={15} />
+        Відгуки покупців
+        <InfoTip glossary="shop.reviewSync" />
+      </span>
+      <span className="sync-parts">
+        {info || running ? (
+          <span>
+            завантажено {formatCount(stored)}
+            {!complete && estimate != null && estimate > stored && ` з ~${formatCount(estimate)}`}
+          </span>
+        ) : (
+          <span className="dim">ще не завантажено</span>
+        )}
+        {info?.average != null && <span>середня оцінка {formatRating(info.average)}</span>}
+        {!running && info && !complete && (
+          <span className="dim">
+            <Term glossary="reviewsPartial">історія ще завантажується</Term>
+          </span>
+        )}
+        {info && info.photos.total > 0 && (
+          <span className="dim">
+            фото відгуків: {formatCount(info.photos.stored)} з {formatCount(info.photos.total)}
+          </span>
+        )}
+        {running && (
+          <span className="sync-progress">
+            <Spinner decorative size={12} /> завантажуються ({live!.phase === 'incremental' ? 'нові' : 'історія'}, запитів: {live!.requests})
+          </span>
+        )}
+        {error && (
+          <span className="err sync-error" data-testid="review-sync-error" title={error}>
+            {reviewErrorText(error)}
+            {reviewErrorText(error) !== error && (
+              <>
+                {' '}
+                <ErrorDetails raw={error} />
+              </>
+            )}
+          </span>
+        )}
+      </span>
     </div>
   )
 }
@@ -181,10 +294,8 @@ export function ShopView(): JSX.Element | null {
     scanShop,
     removeShop,
     openListing,
-    syncImages,
     newReviews,
     reviewSync,
-    syncReviews,
     openStats,
     scanPromotions,
     discountOnly,
@@ -192,6 +303,7 @@ export function ShopView(): JSX.Element | null {
     buyerCountry,
     etsyAuth,
     setShowMyShop,
+    setShowSettings,
     openDrafts,
     drafts,
     openShopPanels
@@ -214,179 +326,306 @@ export function ShopView(): JSX.Element | null {
   const failed = shop.lastScan?.status === 'error' ? shop.lastScan : null
   const mine = shop.id === ownShopId({ etsyAuth })
   const pendingDrafts = drafts.filter((d) => d.status !== 'sent').length
+  const hasKey = !!keyStatus?.hasKey
+  const searching = !!search.trim()
+  const filtered = searching || discountOnly
+  // "Nothing found": name only the filters that are really on.
+  const emptyHint =
+    searching && discountOnly
+      ? { text: 'Зараз жоден такий товар не має знижки. Спробуйте інше слово або вимкніть «Зі знижкою».', reset: 'Скинути пошук і фільтр' }
+      : discountOnly
+        ? { text: 'Зараз жоден товар магазину не має знижки — вимкніть «Зі знижкою», щоб побачити всі.', reset: 'Вимкнути «Зі знижкою»' }
+        : { text: 'Жоден товар не має такого слова в назві чи тегах. Спробуйте інше слово.', reset: 'Скинути пошук' }
+
+  const actions: Array<Action | false> = [
+    {
+      id: 'scan',
+      // A stable label while running (the progress is in the status line), so the bar doesn't reflow.
+      label: busy ? 'Сканування…' : lastOk ? 'Сканувати повторно' : 'Сканувати',
+      icon: 'refresh',
+      variant: 'primary',
+      busy,
+      disabled: !hasKey,
+      hint: busy
+        ? scanProgressText(p)
+        : hasKey
+          ? 'Оновити все з Etsy: товари, ціни, популярність, відгуки й фото — і показати, що змінилось з минулого разу'
+          : 'Спершу додайте ключ доступу до Etsy в Налаштуваннях',
+      onClick: () => void scanShop(shop.id)
+    },
+    // Your own shop: managing it is the main thing besides scanning.
+    mine && {
+      id: 'manage',
+      label: 'Керувати',
+      icon: 'edit',
+      pinned: true,
+      hint: 'Редагувати товари й тексти свого магазину на Etsy',
+      onClick: () => setShowMyShop(true)
+    },
+    {
+      id: 'stats',
+      label: 'Статистика',
+      icon: 'stats',
+      hint: 'Графіки продажів, відгуків і обраного між скануваннями',
+      onClick: () => openStats(shop.id)
+    },
+    mine && {
+      id: 'drafts',
+      label: pendingDrafts > 0 ? `Чернетки (${pendingDrafts})` : 'Чернетки',
+      icon: 'draft',
+      hint: 'Товари, підготовлені в програмі (вами чи Claude): перевірте й надішліть на Etsy',
+      onClick: () => openDrafts('list')
+    },
+    mine && {
+      id: 'new-listing',
+      label: 'Новий товар',
+      icon: 'plus',
+      hint: 'Підготувати новий товар (спершу — чернетка в програмі)',
+      onClick: () => openDrafts({ draftId: null })
+    },
+    SHOP_PANELS.length > 0 && {
+      id: 'more',
+      label: 'Більше',
+      icon: 'info',
+      hint: 'Живі дані з Etsy: розділи магазину, рекомендовані товари, правила…',
+      onClick: () => openShopPanels(shop.id)
+    },
+    {
+      id: 'delete',
+      label: 'Видалити',
+      icon: 'trash',
+      variant: 'danger',
+      disabled: busy,
+      hint: 'Прибрати магазин з програми разом зі збереженою історією. На Etsy нічого не зміниться.',
+      onClick: () => void removeShop(shop.id)
+    }
+  ]
 
   return (
     <div className="shop-view">
       <header className="shop-header">
-        <ShopIcon url={shop.iconUrl} name={shop.shopName} size={44} />
-        <div className="shop-header-text">
-          <h1>
-            {shop.shopName}{' '}
+        <div className="shop-head-row">
+          <ShopIcon url={shop.iconUrl} name={shop.shopName} size={40} />
+          <h1 className="shop-name">
+            <span className="truncate" title={shop.shopName}>
+              {shop.shopName}
+            </span>
             {mine && (
-              <span className="mine-badge" title="Ваш магазин (ви увійшли в Etsy)">
+              <Badge tone="accent" hint={GLOSSARY['shop.mine'].short}>
                 мій
-              </span>
-            )}{' '}
-            <ExternalLink href={shop.url} className="ext-link small">
-              на Etsy ↗
-            </ExternalLink>
+              </Badge>
+            )}
           </h1>
-          {shop.title && <div className="shop-title">{shop.title}</div>}
-          <div className="meta">
-            {lastOk
-              ? `Скановано ${formatDateTime(lastOk.finishedAt)} (${formatAgo(lastOk.finishedAt)}) · активних товарів: ${shop.activeCount}`
-              : 'Ще не скановано'}
-          </div>
-          <ShopStatsLine shop={shop} />
-          <ImageSyncLine counts={imageCounts} sync={imageSync} onSync={() => void syncImages()} />
-          <ReviewSyncLine
-            shop={shop}
-            live={reviewSync[shop.id]}
-            canSync={!!keyStatus?.hasKey && !busy}
-            onSync={() => void syncReviews()}
-          />
+          <ActionBar label="Дії з магазином" align="end" actions={actions} />
         </div>
-        <div className="shop-actions">
-          {mine && (
-            <>
-              <button className="btn" onClick={() => openDrafts({ draftId: null })} title="Підготувати новий лістинг (чернетка в програмі)">
-                ＋ Новий лістинг
-              </button>
-              <button
-                className="btn"
-                onClick={() => openDrafts('list')}
-                title="Лістинги, підготовлені в програмі (вами чи Claude) — перевірте й надішліть на Etsy"
-              >
-                📝 Чернетки
-                {pendingDrafts > 0 && <span className="count-badge">{pendingDrafts}</span>}
-              </button>
-              <button className="btn" onClick={() => setShowMyShop(true)} title="Редагувати лістинги й тексти магазину на Etsy">
-                ✏️ Керувати
-              </button>
-            </>
+        <div className="shop-head-meta">
+          {shop.title && (
+            <span className="shop-subtitle truncate" title={shop.title}>
+              {shop.title}
+            </span>
           )}
-          {SHOP_PANELS.length > 0 && (
-            <button className="btn" onClick={() => openShopPanels(shop.id)} title="Живі дані з Etsy: розділи, рекомендовані, політики…">
-              ℹ️ Більше
-            </button>
-          )}
-          <button className="btn" onClick={() => openStats(shop.id)} title="Графіки між скануваннями">
-            📊 Статистика
-          </button>
-          <button
-            className="btn primary"
-            disabled={busy || !keyStatus?.hasKey}
-            onClick={() => void scanShop(shop.id)}
-          >
-            {busy ? (p?.label ?? 'Сканування…') : lastOk ? 'Сканувати повторно' : 'Сканувати'}
-          </button>
-          <button className="btn danger" disabled={busy} onClick={() => void removeShop(shop.id)}>
-            Видалити
-          </button>
+          <span className="shop-status">
+            {busy && (
+              <span className="shop-status-item scan-progress" role="status" data-testid="scan-progress">
+                <Spinner decorative size={12} />
+                {scanProgressText(p)}
+              </span>
+            )}
+            <span className="shop-status-item" title={lastOk ? `Останнє сканування: ${formatDateTime(lastOk.finishedAt)}` : undefined}>
+              <Icon name="clock" size={13} />
+              {lastOk ? (
+                <>
+                  <Term glossary="shop.lastUpdate">Оновлено</Term> {formatAgo(lastOk.finishedAt)}
+                </>
+              ) : (
+                'Ще не скановано'
+              )}
+            </span>
+            {lastOk && (
+              <span className="shop-status-item">
+                <Icon name="box" size={13} />
+                <Term glossary="shop.activeCount">{countOf(shop.activeCount, 'товар', 'товари', 'товарів')} у продажу</Term>
+              </span>
+            )}
+            <ExternalLink href={shop.url} className="ext-link shop-status-item">
+              Відкрити на Etsy
+              <Icon name="external" size={13} />
+            </ExternalLink>
+          </span>
         </div>
       </header>
 
       <div className="shop-scroll">
-        {!keyStatus?.hasKey && (
-          <div className="banner warn">
-            {keyStatus?.unreadable
-              ? `${UNREADABLE_KEY_MESSAGE} Відкрийте Налаштування.`
-              : 'API-ключ Etsy не задано — сканування недоступне. Відкрийте Налаштування.'}
+        <div className="shop-content">
+          {/* Hidden by CSS while empty. */}
+          <div className="shop-callouts">
+              {!hasKey && (
+                <Callout
+                  tone="warn"
+                  title={keyStatus?.unreadable ? 'Ключ доступу не вдалося прочитати' : 'Немає ключа доступу до Etsy'}
+                  action={
+                    <Button size="sm" icon="settings" onClick={() => setShowSettings(true)}>
+                      Відкрити Налаштування
+                    </Button>
+                  }
+                >
+                  {keyStatus?.unreadable
+                    ? UNREADABLE_KEY_MESSAGE
+                    : 'Ключ доступу до Etsy не задано — без нього програма не може сканувати магазини. Його можна безкоштовно отримати на сайті Etsy; як саме — написано в Налаштуваннях.'}
+                </Callout>
+              )}
+              {failed && !busy && (
+                <Callout tone="error" title="Останнє сканування не вдалося">
+                  {formatDateTime(failed.startedAt)}: {failed.error}
+                  {lastOk && ' Нижче — результати попереднього успішного сканування.'}
+                </Callout>
+              )}
+              {lastOk && !busy && isStale(lastOk.finishedAt) && (
+                <Callout tone="warn" title="Дані застаріли">
+                  Дані старші за 6 годин — проскануйте магазин повторно, щоб побачити актуальні товари й ціни.
+                </Callout>
+              )}
+              {!lastOk && !busy && (
+                <Callout tone="info" title="Магазин ще не скановано">
+                  Натисніть «Сканувати» — програма запам’ятає всі товари магазину (на Etsy їх зараз{' '}
+                  {formatCount(shop.etsyActiveCount)}). Наступні сканування покажуть, що змінилось.
+                </Callout>
+              )}
+              {lastOk?.buyerPrices === 'unavailable' && !busy && (
+                <div data-testid="buyer-prices-unavailable">
+                  <Callout tone="info" compact>
+                    Etsy не віддав ціни для покупця (з ПДВ і знижками) під час останнього сканування — де ціна для
+                    покупця невідома, показано базові ціни продавця.
+                  </Callout>
+                </div>
+              )}
+              {lastOk &&
+                buyerCountry &&
+                lastOk.buyerPrices === 'ok' &&
+                lastOk.buyerCountry &&
+                lastOk.buyerCountry !== buyerCountry &&
+                !busy && (
+                  <div data-testid="buyer-country-pending">
+                    <Callout tone="info" compact>
+                      Ціни показано для покупця з {lastOk.buyerCountry}; нова країна ({buyerCountry}) застосується з
+                      наступного сканування.
+                    </Callout>
+                  </div>
+                )}
           </div>
-        )}
-        {failed && !busy && (
-          <div className="banner err" role="alert">
-            Останнє сканування ({formatDateTime(failed.startedAt)}) не вдалося: {failed.error}
-            {lastOk && ' Показано результати попереднього успішного сканування.'}
-          </div>
-        )}
-        {lastOk && !busy && isStale(lastOk.finishedAt) && (
-          <div className="banner">
-            Дані старші за 6 годин — проскануйте повторно, щоб побачити актуальні товари й ціни.
-          </div>
-        )}
-        {!lastOk && !busy && (
-          <div className="banner">
-            Натисніть «Сканувати», щоб зберегти всі поточні товари магазину (на Etsy їх{' '}
-            {shop.etsyActiveCount}).
-          </div>
-        )}
 
-        {lastOk?.buyerPrices === 'unavailable' && !busy && (
-          <div className="banner" data-testid="buyer-prices-unavailable">
-            Etsy не віддав ціни для покупця (з ПДВ і знижками) під час останнього сканування — де
-            ціна для покупця невідома, показано базові ціни продавця.
-          </div>
-        )}
-        {lastOk && buyerCountry && lastOk.buyerPrices === 'ok' && lastOk.buyerCountry && lastOk.buyerCountry !== buyerCountry && !busy && (
-          <div className="banner" data-testid="buyer-country-pending">
-            Ціни показано для покупця з {lastOk.buyerCountry}; нова країна ({buyerCountry}) застосується
-            з наступного сканування.
-          </div>
-        )}
-
-        <ScanResults
-          shop={shop}
-          changes={lastChanges}
-          newReviews={newReviews}
-          promotions={scanPromotions}
-          onOpen={openListing}
-        />
-
-        {listings.length > 0 && (
-          <section className="all-listings">
-            <div className="toolbar">
-              <h2>Усі активні товари ({listings.length})</h2>
-              <input
-                className="search"
-                type="search"
-                placeholder="Пошук за назвою або тегом"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
-              <select
-                className="sort"
-                value={sort}
-                onChange={(e) => setSort(e.target.value as SortMode)}
-                aria-label="Сортування"
-              >
-                <option value="newest">Новіші</option>
-                <option value="price-asc">Ціна ↑</option>
-                <option value="price-desc">Ціна ↓</option>
-                <option value="favorites">Найпопулярніші (обране)</option>
-                <option value="views">Перегляди</option>
-                <option value="favorites-growth">Ріст обраного</option>
-                <option value="reviews">Найбільше відгуків</option>
-                <option value="reviews-growth">Ріст відгуків</option>
-                <option value="discount">Найбільша знижка</option>
-              </select>
-              <label className="check discount-toggle" title="Лише товари з активною знижкою (за ціною для покупця)">
-                <input
-                  type="checkbox"
-                  checked={discountOnly}
-                  onChange={(e) => setDiscountOnly(e.target.checked)}
-                />{' '}
-                Зі знижкою
-              </label>
-            </div>
-            {visible.length === 0 ? (
-              <div className="hint">Нічого не знайдено.</div>
-            ) : (
-              <div className="grid">
-                {visible.map((l) => (
-                  <ListingCard
-                    key={l.listingId}
-                    listing={l}
-                    isNew={newIds.has(l.listingId)}
-                    onOpen={openListing}
-                  />
-                ))}
+          {(shop.stats || (imageCounts && imageCounts.total > 0) || shop.reviews || lastOk) && (
+            <section className="shop-overview" aria-labelledby="shop-overview-title">
+              <div className="head-row">
+                <h2 className="overview-title" id="shop-overview-title">
+                  Магазин зараз
+                </h2>
+                <InfoTip glossary="shop.overview" />
               </div>
-            )}
-          </section>
-        )}
+              <ShopStatsLine shop={shop} />
+              <div className="shop-sync">
+                <ImageSyncLine counts={imageCounts} sync={imageSync} onOpenSettings={() => setShowSettings(true)} />
+                <ReviewSyncLine shop={shop} live={reviewSync[shop.id]} />
+                <p className="sync-note">
+                  <Icon name="refresh" size={13} /> Фото й відгуки оновлюються самі після кожного сканування — окремо нічого
+                  натискати не треба.
+                </p>
+              </div>
+            </section>
+          )}
 
-        <ScanHistory scans={scans} />
+          <ScanResults
+            shop={shop}
+            changes={lastChanges}
+            newReviews={newReviews}
+            promotions={scanPromotions}
+            onOpen={openListing}
+          />
+
+          {listings.length > 0 ? (
+            <section className="all-listings" aria-labelledby="all-listings-title">
+              <div className="grid-head">
+                <div className="head-row">
+                  <h2 className="grid-title" id="all-listings-title">
+                    Усі товари магазину
+                    <span className="grid-count num">{formatCount(listings.length)}</span>
+                  </h2>
+                  <InfoTip glossary="shop.allListings" />
+                </div>
+                {filtered && visible.length > 0 && visible.length < listings.length && (
+                  <span className="grid-shown">
+                    показано {formatCount(visible.length)} з {formatCount(listings.length)}
+                  </span>
+                )}
+              </div>
+              <div className="grid-toolbar" role="search">
+                <label className="grid-search">
+                  <Icon name="search" size={15} />
+                  <input
+                    type="search"
+                    placeholder="Пошук за назвою або тегом"
+                    aria-label="Пошук товарів за назвою або тегом"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                  />
+                </label>
+                <span className="grid-sort">
+                  <Icon name="sort" size={15} />
+                  <Select
+                    value={sort}
+                    onChange={(v) => setSort(v as SortMode)}
+                    aria-label="Сортування"
+                    title="Порядок товарів"
+                    options={SORT_OPTIONS}
+                  />
+                </span>
+                <Toggle
+                  className="grid-discount"
+                  size="sm"
+                  switchFirst
+                  label="Зі знижкою"
+                  glossary="shop.discountOnly"
+                  checked={discountOnly}
+                  onChange={setDiscountOnly}
+                />
+              </div>
+              {visible.length === 0 ? (
+                <EmptyState
+                  compact
+                  icon="search"
+                  title="Нічого не знайдено."
+                  action={
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        setSearch('')
+                        setDiscountOnly(false)
+                      }}
+                    >
+                      {emptyHint.reset}
+                    </Button>
+                  }
+                >
+                  {emptyHint.text}
+                </EmptyState>
+              ) : (
+                <div className="grid">
+                  {visible.map((l) => (
+                    <ListingCard key={l.listingId} listing={l} isNew={newIds.has(l.listingId)} onOpen={openListing} />
+                  ))}
+                </div>
+              )}
+            </section>
+          ) : (
+            lastOk && (
+              <EmptyState compact icon="box" title="Товарів у продажу немає" className="grid-empty">
+                Під час останнього сканування магазин не продавав жодного товару.
+              </EmptyState>
+            )
+          )}
+
+          <ScanHistory scans={scans} />
+        </div>
       </div>
     </div>
   )

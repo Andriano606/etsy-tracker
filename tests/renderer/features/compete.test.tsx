@@ -1,7 +1,10 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { ui } from '../../../src/renderer/src/features/compete'
+import { languageName, mailClassLabel } from '../../../src/renderer/src/features/compete/listingPanels'
+import { panelMeta } from '../../../src/renderer/src/features/LazyDetails'
+import { GLOSSARY } from '../../../src/shared/glossary'
 import { useStore } from '../../../src/renderer/src/store'
 import type { CompeteListingRow, LiveImage, LiveReview, ShippingProfileInfo } from '../../../src/shared/features/compete'
 import type { Listing } from '../../../src/shared/types'
@@ -121,16 +124,24 @@ const profile: ShippingProfileInfo = {
 
 describe('compete UI registry', () => {
   it('exposes the shop panels and the listing panels', () => {
-    expect(ui.shopPanels!.map((p) => p.label)).toEqual(['Розділи магазину', 'Рекомендовані товари', 'Політики повернення'])
+    expect(ui.shopPanels!.map((p) => p.label)).toEqual(['Розділи магазину', 'Рекомендовані товари', 'Правила повернення'])
     expect(ui.listingPanels!.map((p) => p.label)).toEqual([
-      'Атрибути (властивості)',
-      'Фото й відео (живі дані)',
-      'Персоналізація (жива)',
-      'Переклад',
-      'Фото варіацій',
-      'Доставка (вартість)',
-      'Відгуки (живі)'
+      'Характеристики',
+      'Усі фото й відео',
+      'Персоналізація',
+      'Переклади',
+      'Фото варіантів',
+      'Доставка і повернення',
+      'Відгуки зараз на Etsy (з фото)'
     ])
+  })
+
+  it('every panel says in one line what it shows, and has an icon (read by the hosts through panelMeta)', () => {
+    for (const p of [...ui.shopPanels!, ...ui.listingPanels!]) {
+      const meta = panelMeta(p)
+      expect(meta.description, p.id).toMatch(/^[А-ЯІЇЄҐ].{20,140}\.$/)
+      expect(meta.icon, p.id).toBeTruthy()
+    }
   })
 })
 
@@ -157,14 +168,17 @@ describe('Розділи магазину', () => {
     expect(view).toHaveTextContent('Budget (fresh)')
     expect(view).toHaveTextContent('активних товарів: 3')
     expect(view).toHaveTextContent('Planner 1')
-    expect(view).toHaveTextContent('12,50 USD · ★ 2 · ❤ 7')
+    const first = within(view).getAllByTestId('compete-listing-row')[0]
+    expect(first).toHaveTextContent('12,50 USD')
+    expect(first).toHaveTextContent('Місце серед рекомендованих: 2')
+    expect(first).toHaveTextContent('В обраному: 7')
     expect(view).toHaveTextContent('Показано 2 з 3')
     await click(within(view).getByRole('button', { name: 'Показати ще' }))
     expect(api.featureCall).toHaveBeenCalledWith('compete', 'sectionListings', { shopId: 1001, sectionId: 10, offset: 2 })
     expect(view).toHaveTextContent('Planner 3')
     expect(within(view).queryByRole('button', { name: 'Показати ще' })).toBeNull()
-    expect(within(view).getAllByRole('button', { name: 'На Etsy ↗' })).toHaveLength(2)
-    await click(within(view).getAllByRole('button', { name: 'На Etsy ↗' })[0])
+    expect(within(view).getAllByRole('button', { name: 'Відкрити на Etsy' })).toHaveLength(2)
+    await click(within(view).getAllByRole('button', { name: 'Відкрити на Etsy' })[0])
     expect(api.openExternal).toHaveBeenCalledWith('https://www.etsy.com/listing/1/x')
     await click(screen.getByRole('button', { name: 'Закрити розділ' }))
     expect(screen.queryByTestId('compete-section-view')).toBeNull()
@@ -187,12 +201,63 @@ describe('Розділи магазину', () => {
     mockFeature({ 'compete.sections': [] })
     await renderShop('compete-sections')
     expect(screen.getByText('У магазині немає розділів.')).toBeInTheDocument()
+    expect(screen.getByText(/усі вони на головній сторінці магазину/)).toBeInTheDocument()
   })
 
-  it('shows the error', async () => {
+  it('shows the error; "Спробувати ще" asks Etsy again', async () => {
     mockFeature({ 'compete.sections': { ok: false, error: 'Немає з’єднання з Etsy.' } })
     await renderShop('compete-sections')
     expect(screen.getByRole('alert')).toHaveTextContent('Немає з’єднання з Etsy.')
+    mockFeature({ 'compete.sections': [{ id: 10, title: 'Budget', rank: 1, activeListingCount: 3 }] })
+    await click(within(screen.getByRole('alert')).getByRole('button', { name: 'Спробувати ще' }))
+    expect(api.featureCall).toHaveBeenCalledTimes(2)
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByTestId('compete-sections')).toHaveTextContent('Budget')
+  })
+
+  it('an opened section appears right under its row, takes the focus and gives it back when closed', async () => {
+    const scroll = vi.fn()
+    Element.prototype.scrollIntoView = scroll
+    mockFeature({
+      'compete.sections': [
+        { id: 10, title: 'Budget', rank: 1, activeListingCount: 3 },
+        { id: 11, title: 'Calendars', rank: 2, activeListingCount: 1 },
+        { id: 12, title: 'Bundles', rank: 3, activeListingCount: 1 }
+      ],
+      'compete.section': (a: Record<string, unknown>) => ({ id: a.sectionId, title: a.sectionId === 11 ? 'Calendars' : 'X', rank: 2, activeListingCount: 1 }),
+      'compete.sectionListings': { count: 1, offset: 0, listings: [row(1)] }
+    })
+    await renderShop('compete-sections')
+    const open = screen.getAllByRole('button', { name: 'Відкрити' })
+    await click(open[1])
+    const view = screen.getByTestId('compete-section-view')
+    // The row of "Calendars", then the opened section, then the next section's row.
+    const item = view.closest('li')!
+    expect(item.previousElementSibling).toHaveTextContent('Calendars')
+    expect(item.nextElementSibling).toHaveTextContent('Bundles')
+    expect(open[1]).toHaveAttribute('aria-expanded', 'true')
+    expect(within(view).getByRole('heading', { name: 'Calendars' })).toHaveFocus()
+    expect(scroll.mock.instances[0]).toBe(view)
+    await click(within(view).getByRole('button', { name: 'Закрити розділ' }))
+    expect(screen.queryByTestId('compete-section-view')).toBeNull()
+    expect(open[1]).toHaveFocus()
+    delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView
+  })
+
+  it('a failing section page offers "Спробувати ще"', async () => {
+    let fail = true
+    mockFeature({
+      'compete.sections': [{ id: 10, title: 'Budget', rank: 1, activeListingCount: 3 }],
+      'compete.section': { id: 10, title: 'Budget', rank: 1, activeListingCount: 3 },
+      'compete.sectionListings': () => (fail ? { ok: false, error: 'HTTP 503' } : { count: 1, offset: 0, listings: [row(1)] })
+    })
+    await renderShop('compete-sections')
+    await click(screen.getByRole('button', { name: 'Відкрити' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('HTTP 503')
+    fail = false
+    await click(screen.getByRole('button', { name: 'Спробувати ще' }))
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByTestId('compete-section-view')).toHaveTextContent('Planner 1')
   })
 })
 
@@ -206,11 +271,22 @@ describe('Рекомендовані товари', () => {
     expect(api.featureCall).toHaveBeenCalledWith('compete', 'featured', { shopId: 1001, offset: 0 })
     const box = screen.getByTestId('compete-featured')
     expect(box).toHaveTextContent('Planner 1')
-    expect(box).toHaveTextContent('★ 1')
+    expect(box).toHaveTextContent('Місце серед рекомендованих: 1')
+    // The ★ and ♡ explain themselves in a tooltip (focusable, so the keyboard gets it too).
+    const star = within(box).getByText(/^Місце серед рекомендованих/).parentElement!
+    expect(star).toHaveAttribute('tabindex', '0')
+    expect(star).toHaveAccessibleDescription(`Місце №1 серед рекомендованих. ${GLOSSARY['features.compete.featured'].short}`)
+    expect(within(box).getByText(/^В обраному/).parentElement).toHaveAccessibleDescription(GLOSSARY.favorites.short)
     await click(screen.getByRole('button', { name: 'Показати ще' }))
     expect(api.featureCall).toHaveBeenCalledWith('compete', 'featured', { shopId: 1001, offset: 1 })
     expect(screen.getByRole('alert')).toHaveTextContent('Перевищено ліміт')
     expect(box).toHaveTextContent('Planner 1')
+    // "Спробувати ще" asks for the same next page.
+    mockFeature({ 'compete.featured': { count: 2, offset: 1, listings: [row(2)] } })
+    await click(within(screen.getByRole('alert')).getByRole('button', { name: 'Спробувати ще' }))
+    expect(api.featureCall).toHaveBeenLastCalledWith('compete', 'featured', { shopId: 1001, offset: 1 })
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(box).toHaveTextContent('Planner 2')
   })
 
   it('empty / error', async () => {
@@ -236,15 +312,19 @@ describe('Політики повернення', () => {
     })
     await renderShop('compete-return-policies')
     expect(api.featureCall).toHaveBeenCalledWith('compete', 'returnPolicies', { shopId: 1001 })
-    const rows = within(screen.getByTestId('compete-policies')).getAllByRole('row')
+    const table = screen.getByTestId('compete-policies')
+    const rows = within(table).getAllByRole('row')
     expect(rows[1]).toHaveTextContent('такні30 дн.')
     expect(rows[2]).toHaveTextContent('ніні—')
+    expect(within(table).getByRole('button', { name: 'Що таке «Повернення товару»?' })).toHaveAccessibleDescription(GLOSSARY['features.compete.returns'].short)
+    expect(within(table).getByRole('button', { name: 'Що таке «Строк повернення»?' })).toBeInTheDocument()
+    expect(screen.getByText(/можуть мати різні правила/)).toBeInTheDocument()
   })
 
   it('none / error', async () => {
     mockFeature({ 'compete.returnPolicies': [] })
     await renderShop('compete-return-policies')
-    expect(screen.getByText('Магазин не має політик повернення.')).toBeInTheDocument()
+    expect(screen.getByText('Магазин не має правил повернення.')).toBeInTheDocument()
   })
 
   it('error', async () => {
@@ -266,10 +346,12 @@ describe('Атрибути (властивості)', () => {
     await renderListing('compete-properties')
     expect(api.featureCall).toHaveBeenCalledWith('compete', 'properties', { shopId: 1001, listingId: 5 })
     const table = screen.getByTestId('compete-properties')
-    expect(table).toHaveTextContent('Primary colorBlack')
-    expect(table).toHaveTextContent('Width8.5Inches')
-    expect(table).toHaveTextContent('#400—')
-    expect(within(table).queryAllByRole('button')).toHaveLength(0)
+    const rows = within(table).getAllByRole('row')
+    expect(rows[1]).toHaveTextContent('Primary colorBlack')
+    expect(rows[2]).toHaveTextContent('Width8.5Inches')
+    expect(rows[3]).toHaveTextContent('Характеристика #400—')
+    // Only the ⓘ of the "Шкала" column header — no per-property buttons.
+    expect(within(table).getAllByRole('button').map((b) => b.getAttribute('aria-label'))).toEqual(['Що таке «Шкала»?'])
     expect(api.featureCall).toHaveBeenCalledTimes(1)
   })
 
@@ -282,7 +364,7 @@ describe('Атрибути (властивості)', () => {
   it('none', async () => {
     mockFeature({ 'compete.properties': [] })
     await renderListing('compete-properties')
-    expect(screen.getByText('Атрибутів немає.')).toBeInTheDocument()
+    expect(screen.getByText('Характеристик немає.')).toBeInTheDocument()
   })
 })
 
@@ -298,28 +380,46 @@ describe('Фото й відео (живі дані)', () => {
     expect(api.featureCall).toHaveBeenCalledWith('compete', 'images', { listingId: 5 })
     expect(api.featureCall).toHaveBeenCalledWith('compete', 'videos', { listingId: 5 })
     const box = screen.getByTestId('compete-media')
-    expect(box).toHaveTextContent('#1 · 3000×2000')
-    expect(box).toHaveTextContent('Alt: Planner on a desk')
-    expect(box).toHaveTextContent('Без alt-тексту')
-    expect(box).toHaveTextContent('Відео #601 · 1920×1080')
+    const photos = within(box).getAllByTestId('compete-photo')
+    expect(photos[0]).toHaveTextContent('Фото 1головне3000×2000 пікс.')
+    expect(photos[0]).toHaveTextContent('Опис: Planner on a desk')
+    expect(photos[1]).toHaveTextContent('Фото 2')
+    expect(photos[1]).not.toHaveTextContent('головне')
+    expect(photos[1]).toHaveTextContent('Без опису фото')
+    expect(box).toHaveTextContent('Відео1920×1080 пікс.показується покупцям')
     expect(screen.getByAltText('Planner on a desk')).toHaveAttribute('src', 'https://i.etsystatic.com/1/501/570.jpg')
     const buttons = screen.getAllByRole('button', { name: 'Деталі' })
     await click(buttons[0])
     expect(api.featureCall).toHaveBeenCalledWith('compete', 'image', { listingId: 5, imageId: 501 })
     const details = screen.getByTestId('compete-image-details')
+    // Right after the clicked photo (not after the whole grid), with the focus on its heading.
+    expect(details.closest('li')!.previousElementSibling).toBe(photos[0])
+    expect(screen.getByRole('heading', { name: 'Деталі фото 1' })).toHaveFocus()
+    expect(buttons[0]).toHaveAttribute('aria-expanded', 'true')
     expect(details).toHaveTextContent('#E1D5C9 · RGB 225, 213, 201 · HSV 30°, 10%, 88%')
     expect(details).toHaveTextContent('Чорно-білетак')
+    expect(details).toHaveTextContent('1 (головне фото)')
+    expect(buttons[0]).toBeDisabled()
     await click(buttons[2])
     expect(api.featureCall).toHaveBeenCalledWith('compete', 'video', { listingId: 5, videoId: 601 })
     expect(screen.queryByTestId('compete-image-details')).toBeNull()
-    expect(screen.getByTestId('compete-video-details')).toHaveTextContent('Станinactive')
+    expect(screen.getByTestId('compete-video-details')).toHaveTextContent('вимкнене продавцем')
+    expect(screen.getByRole('heading', { name: 'Деталі відео' })).toHaveFocus()
+    await click(screen.getByRole('button', { name: 'Сховати' }))
+    expect(screen.queryByTestId('compete-video-details')).toBeNull()
+    expect(buttons[2]).toBeEnabled()
   })
 
-  it('no photos, a videos error', async () => {
+  it('no photos, a videos error; "Спробувати ще" reloads only the videos', async () => {
     mockFeature({ 'compete.images': [], 'compete.videos': { ok: false, error: 'Etsy відхилив API-ключ (HTTP 403).' } })
     await renderListing('compete-media')
     expect(screen.getByText('Фото немає.')).toBeInTheDocument()
     expect(screen.getByRole('alert')).toHaveTextContent('HTTP 403')
+    mockFeature({ 'compete.videos': [] })
+    await click(screen.getByRole('button', { name: 'Спробувати ще' }))
+    expect(api.featureCall).toHaveBeenCalledTimes(3)
+    expect(api.featureCall).toHaveBeenLastCalledWith('compete', 'videos', { listingId: 5 })
+    expect(screen.getByText('Відео немає.')).toBeInTheDocument()
   })
 
   it('no videos', async () => {
@@ -349,11 +449,13 @@ describe('Персоналізація (жива)', () => {
     })
     await renderListing('compete-personalization')
     expect(api.featureCall).toHaveBeenCalledWith('compete', 'personalization', { listingId: 5 })
-    const list = screen.getByTestId('compete-personalization')
-    expect(list).toHaveTextContent('Your name (text_input · обов’язкове · до 20 символів · доплата 2,00 USD)')
-    expect(list).toHaveTextContent('Max 20 Latin only')
-    expect(list).toHaveTextContent('Color (dropdown · необов’язкове · до 2 файлів)')
-    expect(list).toHaveTextContent('Варіанти: Red, Blue')
+    const [name, color] = screen.getAllByTestId('compete-question')
+    expect(name).toHaveTextContent('Your name')
+    expect(name).toHaveTextContent('текстобов’язковедо 20 символівдоплата 2,00 USD')
+    expect(name).toHaveTextContent('Max 20 Latin only')
+    expect(color).toHaveTextContent('Colorвибір зі спискунеобов’язковедо 2 файлів')
+    expect(color).toHaveTextContent('Варіанти:RedBlue')
+    expect(within(color).getAllByRole('listitem').map((li) => li.textContent)).toEqual(['Red', 'Blue'])
   })
 
   it('none / error', async () => {
@@ -382,12 +484,12 @@ describe('Переклад', () => {
     expect(api.featureCall).toHaveBeenCalledWith('compete', 'translation', { shopId: 1001, listingId: 5, language: 'fr' })
     const t = screen.getByTestId('compete-translation')
     expect(t).toHaveTextContent('НазваAgenda')
-    expect(t).toHaveTextContent('Тегиagenda, budget')
+    expect(within(t).getByRole('list', { name: 'Теги' })).toHaveTextContent('agendabudget')
     expect(t).toHaveTextContent('ОписUn agenda')
     expect(screen.getByRole('button', { name: 'Показати переклад' })).toBeDisabled()
     fireEvent.change(screen.getByLabelText('Мова перекладу'), { target: { value: 'ja' } })
     await click(screen.getByRole('button', { name: 'Показати переклад' }))
-    expect(screen.getByText('Перекладу цією мовою немає (або Etsy не знайшов цей лістинг у магазині).')).toBeInTheDocument()
+    expect(screen.getByText('Перекладу цією мовою немає (або Etsy не знайшов цей товар у магазині).')).toBeInTheDocument()
   })
 
   it('offers exactly the documented languages; an error', async () => {
@@ -415,11 +517,12 @@ describe('Фото варіацій', () => {
     expect(api.featureCall).toHaveBeenCalledWith('compete', 'images', { listingId: 5 })
     expect(screen.getByAltText('Black')).toHaveAttribute('src', 'etsyimg://img/50/170x135')
     expect(screen.getByAltText('White')).toHaveAttribute('src', 'https://i.etsystatic.com/1/777/570.jpg')
-    const list = screen.getByTestId('compete-variation-images')
-    expect(list).toHaveTextContent('White')
-    expect(list).not.toHaveTextContent('фото #777 (')
-    expect(list).toHaveTextContent('Значення #3')
-    expect(list).toHaveTextContent('фото #999 (фото не знайдено серед фото лістингу)')
+    const [black, white, third] = screen.getAllByTestId('compete-variation')
+    expect(black).toHaveTextContent('Black')
+    expect(white).toHaveTextContent('White')
+    expect(white).not.toHaveTextContent('не знайдено')
+    expect(third).toHaveTextContent('Значення #3')
+    expect(third).toHaveTextContent('Фото не знайдено серед фото товару')
   })
 
   it('live photos failing: stored photos still show, the rest says not found', async () => {
@@ -433,13 +536,15 @@ describe('Фото варіацій', () => {
     await renderListing('compete-variation-images')
     expect(screen.getByAltText('Black')).toHaveAttribute('src', 'etsyimg://img/50/170x135')
     expect(screen.queryByAltText('White')).toBeNull()
-    expect(screen.getByTestId('compete-variation-images')).toHaveTextContent('фото #777 (фото не знайдено серед фото лістингу)')
+    const [black, white] = screen.getAllByTestId('compete-variation')
+    expect(black).not.toHaveTextContent('не знайдено')
+    expect(white).toHaveTextContent('Фото не знайдено серед фото товару')
   })
 
   it('none / error', async () => {
     mockFeature({ 'compete.variationImages': [] })
     await renderListing('compete-variation-images')
-    expect(screen.getByText('Фото для варіацій не задано.')).toBeInTheDocument()
+    expect(screen.getByText('Фото для варіантів не задано.')).toBeInTheDocument()
   })
 
   it('error', async () => {
@@ -460,13 +565,20 @@ describe('Доставка (вартість)', () => {
     expect(api.featureCall).toHaveBeenCalledWith('compete', 'shipping', { listingId: 5 })
     expect(api.featureCall).toHaveBeenCalledWith('compete', 'returnPolicy', { shopId: 1001, policyId: 77 })
     const p = screen.getByTestId('compete-shipping-profile')
-    expect(p).toHaveTextContent('Профіль доставкиStandard')
-    expect(p).toHaveTextContent('ЗвідкиUS, 10001')
-    expect(p).toHaveTextContent('Типфіксовані ціни')
+    const facts = within(p).getAllByRole('definition').map((d) => d.textContent)
+    expect(facts).toEqual(['Standard', 'США (US), 10001', 'фіксовані ціни'])
+    expect(within(p).getByRole('button', { name: 'Що таке «Профіль доставки»?' })).toHaveAccessibleDescription(GLOSSARY.shippingProfile.short)
     const rows = within(p).getAllByRole('row')
-    expect(rows[1]).toHaveTextContent('ЄС15,00 USD5,00 USD5–10 дн.usps_first_class')
+    expect(rows[1]).toHaveTextContent('Країни ЄС15,00 USD5,00 USD5–10 дн.USPS First Class')
     expect(rows[3]).toHaveTextContent('Expressміжнародна10,00 USD—2–4 дн.')
     expect(screen.getByTestId('compete-listing-policy')).toHaveTextContent('повернення — так, обмін — так, строк — 14 дн.')
+  })
+
+  it('a calculated profile: the handling fee in the currency of the profile’s prices', async () => {
+    mockFeature({ 'compete.shipping': [{ listingId: 5, profile: { ...profile, profileType: 'calculated', domesticHandlingFee: 2, internationalHandlingFee: 5.5 } }] })
+    await renderListing('compete-shipping', LISTING, true)
+    const facts = within(screen.getByTestId('compete-shipping-profile')).getAllByRole('definition').map((d) => d.textContent!.replace(/\s/g, ' '))
+    expect(facts[3]).toBe('по країні 2,00 USD, міжнародна 5,50 USD')
   })
 
   it('another seller’s listing: Etsy gives no profile — explained', async () => {
@@ -487,7 +599,11 @@ describe('Доставка (вартість)', () => {
     await renderListing('compete-shipping')
     expect(screen.getByTestId('compete-shipping')).toHaveTextContent('лише після входу')
     expect(api.featureCall).not.toHaveBeenCalled()
-    fireEvent.change(screen.getByLabelText('Країна відправлення'), { target: { value: 'gb' } })
+    const country = screen.getByLabelText('Країна відправлення')
+    expect(country).toHaveValue('US')
+    expect(within(country).getByRole('option', { name: 'Велика Британія (GB)' })).toBeInTheDocument()
+    expect(within(country).getAllByRole('option')).toHaveLength(249)
+    fireEvent.change(country, { target: { value: 'GB' } })
     await click(screen.getByRole('button', { name: 'Показати служби' }))
     expect(api.featureCall).toHaveBeenCalledWith('compete', 'carriers', { country: 'GB' })
     const list = screen.getByTestId('compete-carriers')
@@ -509,11 +625,29 @@ describe('Доставка (вартість)', () => {
     })
     await renderListing('compete-shipping')
     expect(screen.getByRole('alert')).toHaveTextContent('HTTP 404')
-    fireEvent.change(screen.getByLabelText('Країна відправлення'), { target: { value: 'x' } })
-    expect(screen.getByRole('button', { name: 'Показати служби' })).toBeDisabled()
-    fireEvent.change(screen.getByLabelText('Країна відправлення'), { target: { value: 'zz' } })
+    fireEvent.change(screen.getByLabelText('Країна відправлення'), { target: { value: 'ZW' } })
     await click(screen.getByRole('button', { name: 'Показати служби' }))
+    expect(api.featureCall).toHaveBeenCalledWith('compete', 'carriers', { country: 'ZW' })
     expect(screen.getAllByRole('alert')[1]).toHaveTextContent('двома латинськими літерами')
+    // "Спробувати ще" under the carriers asks again for the same country.
+    mockFeature({ 'compete.carriers': [] })
+    await click(within(screen.getAllByRole('alert')[1]).getByRole('button', { name: 'Спробувати ще' }))
+    expect(api.featureCall).toHaveBeenLastCalledWith('compete', 'carriers', { country: 'ZW' })
+    expect(screen.getByText('Для цієї країни служб доставки немає.')).toBeInTheDocument()
+  })
+
+  it('mail classes are shown readable; unknown shapes as is', () => {
+    expect(mailClassLabel('usps_first_class')).toBe('USPS First Class')
+    expect(mailClassLabel('royal_mail_tracked_48')).toBe('Royal Mail Tracked 48')
+    expect(mailClassLabel('Ukrposhta Express')).toBe('Ukrposhta Express')
+    expect(mailClassLabel(null)).toBe('—')
+  })
+
+  it('a destination country is shown by its name', async () => {
+    const d = { ...profile.destinations[0], destinationCountry: 'DE', destinationRegion: 'none' }
+    mockFeature({ 'compete.shipping': [{ listingId: 5, profile: { ...profile, destinations: [d], upgrades: [] } }] })
+    await renderListing('compete-shipping', LISTING, true)
+    expect(within(screen.getByTestId('compete-shipping-profile')).getAllByRole('row')[1]).toHaveTextContent('Німеччина (DE)')
   })
 
   it('no carriers for a country', async () => {
@@ -540,6 +674,8 @@ describe('Відгуки (живі)', () => {
     expect(box).toHaveTextContent('Відгуків: 21, показано 20')
     expect(box).toHaveTextContent('★★★★★')
     expect(box).toHaveTextContent('Love it')
+    expect(box).toHaveTextContent('мова: англійська')
+    expect(box).not.toHaveTextContent('мова: en')
     expect(screen.getByAltText('Фото покупця')).toHaveAttribute('src', 'https://i.etsystatic.com/r.jpg')
     await click(screen.getByRole('button', { name: 'Показати ще' }))
     expect(api.featureCall).toHaveBeenCalledWith('compete', 'reviews', { listingId: 5, offset: 20, limit: 20 })
@@ -568,5 +704,12 @@ describe('Відгуки (живі)', () => {
     mockFeature({ 'compete.reviews': { ok: false, error: 'HTTP 500' } })
     await renderListing('compete-reviews')
     expect(screen.getByRole('alert')).toHaveTextContent('HTTP 500')
+  })
+
+  it('review languages are named in Ukrainian; an unknown code stays as is', () => {
+    expect(languageName('en')).toBe('англійська')
+    expect(languageName('de')).toBe('німецька')
+    expect(languageName('zz')).toBe('zz')
+    expect(languageName('not a code!')).toBe('not a code!')
   })
 })

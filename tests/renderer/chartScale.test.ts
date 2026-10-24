@@ -109,3 +109,14 @@ describe('chartScale', () => {
     expect(nearestIndex([0, 10, 20], 99)).toBe(2)
   })
 })
+
+describe('yScaleDomain: a flat non-negative series near zero', () => {
+  it('never goes below 0 (all zeros → 0…1)', () => {
+    const d = yScaleDomain([0, 0, 0], { integer: true })
+    expect(d.min).toBe(0)
+    expect(d.ticks[0]).toBe(0)
+    expect(d.ticks).not.toContain(-1)
+    const small = yScaleDomain([0.2, 0.2])
+    expect(small.min).toBeGreaterThanOrEqual(0)
+  })
+})

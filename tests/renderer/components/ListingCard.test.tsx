@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { ListingCard, PriceTag } from '../../../src/renderer/src/components/ListingCard'
+import { GLOSSARY } from '../../../src/shared/glossary'
 import { mkBuyerPrice, mkListing, setupRenderer } from '../helpers'
 
 beforeEach(() => {
@@ -9,6 +10,14 @@ beforeEach(() => {
 })
 
 const usd = { priceAmount: 250, priceDivisor: 100, currency: 'USD' }
+
+/** Hover the price row and read its tooltip (a design-system bubble, not a native title). */
+function priceTip(n = 0): string {
+  const price = screen.getAllByTestId('card-price')[n]
+  expect(price).not.toHaveAttribute('title')
+  act(() => void fireEvent.mouseEnter(price.closest('.ui-tooltip-anchor')!))
+  return screen.getAllByRole('tooltip').at(-1)!.textContent!.replace(/\s+/g, ' ')
+}
 
 describe('ListingCard price (like the shop page)', () => {
   it('an active promotion: sale price bold, original struck through, "−60%", the country', () => {
@@ -20,7 +29,7 @@ describe('ListingCard price (like the shop page)', () => {
     expect(within(price).getByTestId('price-was')).toHaveTextContent('3,00')
     expect(within(price).getByTestId('discount-badge')).toHaveTextContent('−60%')
     expect(within(price).getByText('UA')).toBeInTheDocument()
-    expect(price.title).toMatch(/^Ціна для покупця з UA: з ПДВ \(якщо він є в цій країні\) і знижкою\. Базова ціна продавця: .*2,50/)
+    expect(priceTip()).toMatch(/Ціна для покупця з UA: з ПДВ \(якщо він є в цій країні\) і знижкою\. Базова ціна продавця: .*2,50/)
   })
 
   it('no promotion: the VAT-inclusive price, base price in the tooltip, no badge', () => {
@@ -31,7 +40,7 @@ describe('ListingCard price (like the shop page)', () => {
     expect(price).not.toHaveTextContent('2,50')
     expect(screen.queryByTestId('discount-badge')).toBeNull()
     expect(screen.queryByTestId('price-was')).toBeNull()
-    expect(price.title).toMatch(/^Ціна для покупця з UA: з ПДВ \(якщо він є в цій країні\)\. Базова ціна продавця: .*2,50/)
+    expect(priceTip()).toMatch(/Ціна для покупця з UA: з ПДВ \(якщо він є в цій країні\)\. Базова ціна продавця: .*2,50/)
   })
 
   it('buyer price unavailable: the seller base price, no country hint', () => {
@@ -40,7 +49,9 @@ describe('ListingCard price (like the shop page)', () => {
     expect(price).toHaveAttribute('data-kind', 'base')
     expect(price).toHaveTextContent('2,50')
     expect(price.querySelector('.price-country')).toBeNull()
-    expect(price.title).toMatch(/Базова ціна продавця \(без ПДВ і без знижок\)/)
+    expect(priceTip()).toMatch(/Базова ціна продавця \(без ПДВ і без знижок\)/)
+    // Visibly marked, so it isn't mistaken for what a buyer pays.
+    expect(price.querySelector('.price-basis')).toHaveTextContent('без ПДВ')
   })
 
   it('the "−60%" badge and the country code wrap as one unit (a narrow card never orphans either)', () => {
@@ -94,8 +105,62 @@ describe('ListingCard price (like the shop page)', () => {
 
   it('UK buyer prices say shipping is included in the tooltip too', () => {
     render(<PriceTag listing={mkListing(1, { ...usd, buyerPrice: mkBuyerPrice({ country: 'GB' }) })} />)
-    expect(screen.getByTestId('card-price').title).toMatch(
-      /^Ціна для покупця з GB: з ПДВ \(якщо він є в цій країні\), доставкою і знижкою\. /
+    expect(priceTip()).toMatch(/Ціна для покупця з GB: з ПДВ \(якщо він є в цій країні\), доставкою і знижкою\. /)
+  })
+})
+
+describe('ListingCard badges explain themselves (hover tooltips)', () => {
+  const hover = (el: Element) => act(() => void fireEvent.mouseEnter(el.closest('.ui-tooltip-anchor')!))
+
+  it('favourites (+ growth), views, featured position and reviews each say what they mean', () => {
+    render(
+      <ListingCard
+        listing={mkListing(1, { numFavorers: 87, favorersDelta: 5, views: 1342, featuredRank: 2, reviewCount: 12, reviewAvg: 4.5, reviewsNew: 1 })}
+        onOpen={vi.fn()}
+      />
     )
+    hover(screen.getByTestId('card-favorites'))
+    expect(screen.getByRole('tooltip')).toHaveTextContent(GLOSSARY.favorites.short)
+    expect(screen.getByRole('tooltip')).toHaveTextContent('+5 з минулого сканування.')
+    act(() => void fireEvent.mouseLeave(screen.getByTestId('card-favorites').closest('.ui-tooltip-anchor')!))
+    hover(screen.getByTestId('card-views'))
+    expect(screen.getAllByRole('tooltip').at(-1)).toHaveTextContent(GLOSSARY.views.short)
+    hover(screen.getByTestId('card-featured'))
+    expect(screen.getAllByRole('tooltip').at(-1)).toHaveTextContent(GLOSSARY.featuredRank.short)
+    hover(screen.getByTestId('card-reviews'))
+    expect(screen.getAllByRole('tooltip').at(-1)).toHaveTextContent('Середня оцінка 4,5 з 5, відгуків: 12. Нових з минулого сканування: +1.')
+  })
+
+  it('the "Новий" badge explains what new means; nothing focusable is nested in the card button', () => {
+    render(<ListingCard listing={mkListing(1, { numFavorers: 3, buyerPrice: mkBuyerPrice() })} isNew onOpen={vi.fn()} />)
+    expect(screen.queryByText('NEW')).toBeNull()
+    hover(screen.getByText('Новий'))
+    expect(screen.getByRole('tooltip')).toHaveTextContent(GLOSSARY.listingNew.short)
+    const card = screen.getByTestId('listing-card')
+    expect(card.querySelectorAll('button, a, [tabindex]')).toHaveLength(0)
+  })
+
+  it('the "−60%" badge and the country code explain themselves (glossary), in one tooltip for the price row', () => {
+    render(<ListingCard listing={mkListing(1, { ...usd, buyerPrice: mkBuyerPrice() })} onOpen={vi.fn()} />)
+    hover(screen.getByText('UA'))
+    const tip = screen.getByRole('tooltip')
+    expect(tip).toHaveTextContent('Ціна для покупця з UA')
+    expect(tip).toHaveTextContent(`−60% — ${GLOSSARY['shop.discountBadge'].short}`)
+    expect(tip).toHaveTextContent(`UA — ${GLOSSARY['shop.priceCountry'].short}`)
+  })
+
+  it('the seller base price explains itself, with no country or badge lines', () => {
+    render(<ListingCard listing={mkListing(1, { ...usd, buyerPrice: null })} onOpen={vi.fn()} />)
+    hover(screen.getByText('без ПДВ'))
+    const tip = screen.getByRole('tooltip')
+    expect(tip).toHaveTextContent(GLOSSARY.basePrice.short)
+    expect(tip).not.toHaveTextContent(GLOSSARY['shop.priceCountry'].short)
+    expect(tip).not.toHaveTextContent(GLOSSARY['shop.discountBadge'].short)
+  })
+
+  it('the full title is in a tooltip (the card shows two lines)', () => {
+    const title = 'A very long listing title that will be cut after two lines on a narrow card in the grid'
+    render(<ListingCard listing={mkListing(1, { title })} onOpen={vi.fn()} />)
+    expect(screen.getByText(title)).toHaveAttribute('title', title)
   })
 })

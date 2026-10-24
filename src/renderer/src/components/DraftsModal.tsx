@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type {
   CreateListingProgress,
   DraftFields,
@@ -11,6 +11,7 @@ import {
   EMPTY_DRAFT_FIELDS,
   MAX_DIGITAL_FILES,
   MAX_IMAGES,
+  MAX_MATERIALS,
   MAX_TAGS,
   TITLE_MAX,
   WHEN_MADE,
@@ -20,8 +21,10 @@ import {
   splitList
 } from '@shared/myShop'
 import { formatDateTime } from '@shared/format'
+import { GLOSSARY, type GlossaryKey } from '@shared/glossary'
 import { ownShopId, useStore } from '../store'
-import { useEscape } from './useEscape'
+import { Badge, Button, Callout, EmptyState, Field, Icon, InfoTip, Modal, Segmented, Term, Toggle, Tooltip, type BadgeTone } from '../ui'
+import { LISTING_FEE, SaveBar, UnsavedContext, confirmDiscard, leaveThen, useUnsaved } from './MyShopModal'
 
 /** How many category matches the search shows. */
 export const TAXONOMY_RESULTS = 30
@@ -52,18 +55,37 @@ export const DRAFT_STATUS: Record<ListingDraft['status'], string> = {
   error: 'не вдалося надіслати'
 }
 
-/** Picked/stored files with reorder (the first photo is the main one) and remove. */
-function SlotList({
-  items,
-  onChange,
-  ordered,
-  readOnly
-}: {
-  items: Slot[]
-  onChange: (v: Slot[]) => void
-  ordered: boolean
-  readOnly: boolean
-}): JSX.Element | null {
+const STATUS_TONE: Record<ListingDraft['status'], BadgeTone> = { draft: 'info', sent: 'accent', error: 'danger' }
+const STATUS_HINT: Record<ListingDraft['status'], string> = {
+  draft: 'Збережено лише в програмі. На Etsy ще нічого не надіслано — відкрийте, перевірте й надішліть.',
+  sent: 'Товар уже створено на Etsy. Тут лишилась копія для довідки.',
+  error: 'Остання спроба надіслати не вдалася. Відкрийте чернетку, щоб побачити причину й спробувати ще раз.'
+}
+
+function ClaudeBadge(): JSX.Element {
+  return (
+    <Badge tone="info" icon="sparkle" hint={GLOSSARY['myshop.fromClaude'].short}>
+      від Claude
+    </Badge>
+  )
+}
+
+/**
+ * A label row like Field's, for a block that is not a single control (photos, files, a switch group).
+ * `heading`: the label is the card's title (a card holding just this block — no second "Фото" above it).
+ */
+function BlockHead({ label, glossary, aside, heading }: { label: string; glossary?: GlossaryKey; aside?: ReactNode; heading?: boolean }): JSX.Element {
+  return (
+    <div className={'ui-field-head' + (heading ? ' my-card-head' : '')}>
+      {heading ? <h3 className="my-card-title">{label}</h3> : <span className="ui-field-label">{label}</span>}
+      {glossary && <InfoTip glossary={glossary} />}
+      {aside && <span className="ui-field-aside">{aside}</span>}
+    </div>
+  )
+}
+
+/** Picked/stored photos as cards (the first is the main one; ↑ moves one up) with remove. */
+function PhotoList({ items, onChange, readOnly }: { items: Slot[]; onChange: (v: Slot[]) => void; readOnly: boolean }): JSX.Element | null {
   if (!items.length) return null
   const move = (i: number): void => {
     const v = [...items]
@@ -71,29 +93,65 @@ function SlotList({
     onChange(v)
   }
   return (
-    <ol className="picked-files">
+    <ol className="my-photos picked-files">
       {items.map((f, i) => (
-        <li key={f.key}>
-          {f.preview && <img className="draft-thumb" src={f.preview} alt="" />}
-          <span className="picked-name">
-            {f.name}
-            {ordered && i === 0 && <span className="dim"> — головне фото</span>}
-          </span>
-          <span className="dim">{kb(f.size)}</span>
-          {!readOnly && ordered && i > 0 && (
-            <button className="btn small" aria-label={`Вище: ${f.name}`} onClick={() => move(i)}>
-              ↑
-            </button>
+        <li key={f.key} className="my-photo">
+          {f.preview ? (
+            <img className="my-photo-img draft-thumb" src={f.preview} alt="" />
+          ) : (
+            <span className="my-photo-img my-photo-img--empty" aria-hidden="true">
+              <Icon name="image" size={22} />
+            </span>
           )}
-          {!readOnly && (
-            <button className="btn small" aria-label={`Прибрати: ${f.name}`} onClick={() => onChange(items.filter((x) => x !== f))}>
-              ✕
-            </button>
+          {i === 0 && (
+            <span className="my-photo-main">
+              <Badge tone="accent" solid hint={GLOSSARY['myshop.mainPhoto'].short}>
+                головне
+              </Badge>
+            </span>
           )}
+          <div className="my-photo-foot">
+            <div className="my-photo-text">
+              <span className="picked-name truncate" title={f.name}>
+                {f.name}
+              </span>
+              <span className="dim num">{kb(f.size)}</span>
+            </div>
+            {!readOnly && (
+              <div className="my-photo-actions">
+                {i > 0 && <Button size="sm" variant="ghost" icon="arrow-up" iconOnly label={`Вище: ${f.name}`} onClick={() => move(i)} />}
+                <Button size="sm" variant="ghost" icon="close" iconOnly label={`Прибрати: ${f.name}`} onClick={() => onChange(items.filter((x) => x !== f))} />
+              </div>
+            )}
+          </div>
         </li>
       ))}
     </ol>
   )
+}
+
+/** The buyer's files (digital listings) as rows with remove. */
+function FileList({ items, onChange }: { items: Slot[]; onChange: (v: Slot[]) => void }): JSX.Element | null {
+  if (!items.length) return null
+  return (
+    <ul className="my-files picked-files">
+      {items.map((f) => (
+        <li key={f.key} className="my-file">
+          <Icon name="file" size={16} />
+          <span className="picked-name truncate" title={f.name}>
+            {f.name}
+          </span>
+          <span className="dim num">{kb(f.size)}</span>
+          <Button size="sm" variant="ghost" icon="close" iconOnly label={`Прибрати: ${f.name}`} onClick={() => onChange(items.filter((x) => x !== f))} />
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+const TYPE_TEXT: Record<DraftFields['type'], string> = {
+  download: 'Покупець отримає файли (шаблон, PDF, картинку) одразу після оплати. Нічого не треба пересилати.',
+  physical: 'Річ, яку ви запакуєте й відправите поштою. Потрібен профіль доставки — він налаштовується на Etsy.'
 }
 
 /**
@@ -130,9 +188,12 @@ function DraftEditor({ draft, onBack }: { draft: ListingDraft | null; onBack: ()
   const [processing, setProcessing] = useState<ShippingOption[] | null>(null)
   const [physicalError, setPhysicalError] = useState<string | null>(null)
   const [progress, setProgress] = useState<CreateListingProgress | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState<null | 'save' | 'draft' | 'publish'>(null)
+  // The last failure of this session, said in the save bar next to the clicked button.
+  const [error, setError] = useState<{ title: string; text: string } | null>(null)
   const [savedNote, setSavedNote] = useState<string | null>(null)
+  // Did the user change anything since the draft was opened / last saved? (Auto-picked profiles don't count.)
+  const [edited, setEdited] = useState(false)
   const readOnly = current?.sentListingId != null
 
   useEffect(() => {
@@ -179,12 +240,36 @@ function DraftEditor({ draft, onBack }: { draft: ListingDraft | null; onBack: ()
     readinessStateId: readinessId
   })
   const keys = (v: Slot[]): string[] => v.map((s) => s.key)
+  const snapshot = JSON.stringify([fields(), keys(photos), keys(files)])
+  const [baseline, setBaseline] = useState(snapshot)
+  // A save (or a send) stored the form: what is on screen now is the saved state.
+  useEffect(() => {
+    setBaseline(snapshot)
+  }, [current])
+  const dirty = !readOnly && edited && snapshot !== baseline
+  const lost = dirty
+    ? current
+      ? 'Зміни в чернетці ще не збережено в програмі — вони пропадуть. Щоб їх зберегти, натисніть «Зберегти чернетку».'
+      : 'Нову чернетку ще не збережено — усе, що ви заповнили, пропаде. Щоб її зберегти, натисніть «Зберегти чернетку».'
+    : null
+  useUnsaved(lost)
   const sendProblems = newListingProblems(draftInput(fields(), keys(photos), keys(files), false))
   const publishProblems = newListingProblems(draftInput(fields(), keys(photos), keys(files), true))
 
-  const touched = (): void => {
+  /** Clears the "saved" note and the last error (a new attempt, or the user changed something). */
+  const clearNotes = (): void => {
     setSavedNote(null)
     setError(null)
+  }
+  /** The user changed the form. */
+  const touched = (): void => {
+    clearNotes()
+    setEdited(true)
+  }
+  /** An input handler that also clears the "saved" note and the last error. */
+  const on = (set: (v: string) => void) => (e: { target: { value: string } }) => {
+    set(e.target.value)
+    touched()
   }
 
   const pick = async (kind: 'images' | 'files'): Promise<void> => {
@@ -201,12 +286,13 @@ function DraftEditor({ draft, onBack }: { draft: ListingDraft | null; onBack: ()
       ...(current ? { id: current.id } : {}),
       fields: fields(),
       photos: photos.map((p) => p.ref),
-      files: type === 'download' ? files.map((f) => f.ref) : files.map((f) => f.ref)
+      files: files.map((f) => f.ref)
     })
     if (!res.ok) {
-      setError(res.error)
+      setError({ title: 'Не вдалося зберегти чернетку', text: res.error })
       return null
     }
+    setEdited(false)
     setCurrent(res.value)
     setPhotos(stored(res.value, 'photos'))
     setFiles(stored(res.value, 'files'))
@@ -214,12 +300,12 @@ function DraftEditor({ draft, onBack }: { draft: ListingDraft | null; onBack: ()
   }
 
   const onSave = async (): Promise<void> => {
-    setBusy(true)
-    touched()
+    setBusy('save')
+    clearNotes()
     try {
       if (await save()) setSavedNote('Чернетку збережено в програмі.')
     } finally {
-      setBusy(false)
+      setBusy(null)
     }
   }
 
@@ -227,399 +313,497 @@ function DraftEditor({ draft, onBack }: { draft: ListingDraft | null; onBack: ()
     if (
       !(await requestConfirm(
         publish
-          ? 'Надіслати й опублікувати на Etsy? Etsy стягне звичайну плату за публікацію ($0.20).'
-          : 'Надіслати на Etsy як чернетку? Покупці її не побачать, доки ви не опублікуєте.'
+          ? `Надіслати й опублікувати на Etsy?\nТовар одразу побачать покупці, а Etsy стягне звичайну плату за публікацію (${LISTING_FEE} за 4 місяці).`
+          : 'Надіслати на Etsy як чернетку?\nПокупці її не побачать, доки ви не опублікуєте. Плати за це немає.'
       ))
     ) {
       return
     }
-    setBusy(true)
-    touched()
+    setBusy(publish ? 'publish' : 'draft')
+    clearNotes()
     setProgress(null)
     try {
       const d = await save()
       if (!d) return
       const res = await window.api.sendDraft(d.id, publish)
-      if (!res.ok) setError(res.error)
+      if (!res.ok) setError({ title: publish ? 'Не вдалося опублікувати на Etsy' : 'Не вдалося надіслати на Etsy', text: res.error })
       const fresh = (await window.api.listDrafts()).find((x) => x.id === d.id)
       if (fresh) setCurrent(fresh)
     } finally {
-      setBusy(false)
+      setBusy(null)
       setProgress(null)
     }
   }
 
   const onDelete = async (): Promise<void> => {
     if (!current) return onBack()
-    if (!(await requestConfirm('Видалити цю чернетку з програми? На Etsy вона не впливає.'))) return
+    if (!(await requestConfirm('Видалити цю чернетку з програми?\nЇї поля, фото й файли зникнуть звідси. На Etsy нічого не зміниться.'))) return
     await window.api.deleteDraft(current.id)
     onBack()
   }
 
+  /** "До чернеток": asks first when something is unsaved. */
+  const leave = async (): Promise<void> => {
+    if (lost && !(await confirmDiscard(lost))) return
+    onBack()
+  }
+  const back = (
+    <Button variant="ghost" size="sm" icon="chevron-left" onClick={() => void leave()}>
+      До чернеток
+    </Button>
+  )
+
   if (readOnly && current) {
     return (
-      <div data-testid="draft-sent">
-        <div className={`test-result ${current.lastError ? 'err' : 'ok'}`} role="status">
+      <div data-testid="draft-sent" className="my-sent">
+        <div className="my-back">{back}</div>
+        <Callout
+          tone={current.lastError ? 'error' : 'success'}
+          role="status"
+          title={current.lastError ? 'Надіслано з проблемою' : current.sentPublished ? 'Товар опубліковано' : 'Чернетку створено на Etsy'}
+        >
           {current.lastError
             ? current.lastError
-            : `Надіслано на Etsy: лістинг #${current.sentListingId} (${current.sentPublished ? 'опубліковано' : 'чернетка на Etsy'}).`}
-        </div>
-        <p className="hint">
+            : `Надіслано на Etsy: товар № ${current.sentListingId} (${current.sentPublished ? 'опубліковано' : 'чернетка на Etsy'}).`}
+        </Callout>
+        <p className="my-muted">
           {current.sentPublished
-            ? 'Він з’явиться серед товарів магазину після наступного сканування.'
-            : 'Далі його видно в «✏️ Керувати» → «Чернетки» і в Shop Manager на Etsy.'}
+            ? 'Він з’явиться серед товарів магазину в програмі після наступного сканування.'
+            : 'Далі її видно у вікні «Мій магазин» → «Товари» → «Чернетки» і в кабінеті продавця на Etsy. Опублікувати можна там.'}
         </p>
-        <h3 className="draft-title">{current.fields.title || '(без назви)'}</h3>
-        <SlotList items={photos} onChange={() => undefined} ordered readOnly />
-        <div className="settings-actions">
+        <section className="my-card">
+          <h3 className="my-card-title draft-title">{current.fields.title || '(без назви)'}</h3>
+          <PhotoList items={photos} onChange={() => undefined} readOnly />
+        </section>
+        <div className="ui-row my-sent-actions">
           {current.sentPublished && shop && (
-            <button
-              className="btn primary"
+            <Button
+              variant="primary"
+              icon="refresh"
               onClick={() => {
                 void scanShop(shop.id)
                 openDrafts(null)
               }}
             >
               Сканувати магазин зараз
-            </button>
+            </Button>
           )}
-          <button className="btn" onClick={() => void onDelete()}>
+          <Button icon="trash" onClick={() => void onDelete()}>
             Прибрати з чернеток
-          </button>
+          </Button>
         </div>
       </div>
     )
   }
 
+  const currency = shop?.currency
   return (
-    <div className="create-listing" data-testid="draft-form">
-      {current?.source === 'mcp' && <div className="hint mcp-note">🤖 Цю чернетку підготував Claude — перевірте перед надсиланням.</div>}
-      {current?.lastError && (
-        <div className="test-result err" role="alert">
-          Минула спроба надіслати: {current.lastError}
-        </div>
-      )}
-      <div className="field">
-        <label>Тип товару</label>
-        <div className="radio-row">
-          <label className="check">
-            <input
-              type="radio"
-              name="type"
-              checked={type === 'download'}
-              onChange={() => {
-                setType('download')
-                touched()
-              }}
-            />{' '}
-            Цифровий (файли)
-          </label>
-          <label className="check">
-            <input
-              type="radio"
-              name="type"
-              checked={type === 'physical'}
-              onChange={() => {
-                setType('physical')
-                if (quantity === '999') setQuantity('1')
-                touched()
-              }}
-            />{' '}
-            Фізичний
-          </label>
-        </div>
-      </div>
-      <div className="field">
-        <label htmlFor="new-title">
-          Назва <span className="dim">({title.trim().length}/{TITLE_MAX})</span>
-        </label>
-        <input id="new-title" value={title} onChange={(e) => (setTitle(e.target.value), touched())} />
-      </div>
-      <div className="field">
-        <label htmlFor="new-desc">Опис</label>
-        <textarea id="new-desc" rows={6} value={description} onChange={(e) => (setDescription(e.target.value), touched())} />
-      </div>
-      <div className="field-row">
-        <div className="field">
-          <label htmlFor="new-price">Ціна{shop?.currency ? `, ${shop.currency}` : ''}</label>
-          <input id="new-price" inputMode="decimal" placeholder="5.99" value={price} onChange={(e) => (setPrice(e.target.value), touched())} />
-        </div>
-        <div className="field">
-          <label htmlFor="new-qty">Кількість</label>
-          <input id="new-qty" inputMode="numeric" value={quantity} onChange={(e) => (setQuantity(e.target.value), touched())} />
-        </div>
-      </div>
-      <div className="field">
-        <label htmlFor="new-cat">Категорія</label>
-        {category ? (
-          <div className="chosen-cat">
-            <span>{category.path}</span>
-            <button className="btn small" onClick={() => (setCategory(null), touched())}>
-              Змінити
-            </button>
-          </div>
-        ) : (
-          <>
-            <input
-              id="new-cat"
-              placeholder={taxonomy ? 'Почніть вводити, напр. planner або spreadsheet' : 'Завантаження категорій…'}
-              disabled={!taxonomy}
-              value={catQuery}
-              onChange={(e) => setCatQuery(e.target.value)}
-            />
-            {taxonomyError && <div className="hint err">{taxonomyError}</div>}
-            {matches.length > 0 && (
-              <ul className="cat-results" role="listbox" aria-label="Категорії">
-                {matches.map((t) => (
-                  <li key={t.id}>
-                    <button
-                      role="option"
-                      aria-selected={false}
-                      onClick={() => {
-                        setCategory(t)
-                        setCatQuery('')
-                        touched()
-                      }}
-                    >
-                      {t.path}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </>
+    <div className="create-listing my-editor" data-testid="draft-form">
+      <div className="my-back">
+        {back}
+        {current && (
+          <Button variant="danger" size="sm" icon="trash" disabled={!!busy} tooltip="Видалити чернетку з програми (на Etsy нічого не зміниться)" onClick={() => void onDelete()}>
+            Видалити
+          </Button>
         )}
       </div>
-      <div className="field-row">
-        <div className="field">
-          <label htmlFor="new-who">Хто виготовив</label>
-          <select id="new-who" value={whoMade} onChange={(e) => (setWhoMade(e.target.value), touched())}>
-            {WHO_MADE.map((w) => (
-              <option key={w.value} value={w.value}>
-                {w.label}
-              </option>
-            ))}
-          </select>
+      {current?.source === 'mcp' && (
+        <Callout tone="info" icon="sparkle" role="note" title="Цю чернетку підготував Claude — перевірте перед надсиланням.">
+          Помічник заповнив поля на ваше прохання. Прогляньте кожне поле й фото: на Etsy нічого не потрапить, доки ви не
+          натиснете «Надіслати».
+        </Callout>
+      )}
+      {current?.lastError && !error && (
+        <Callout tone="error" title="Минулого разу не вдалося надіслати">
+          Минула спроба надіслати: {current.lastError}
+        </Callout>
+      )}
+
+      <section className="my-card">
+        <BlockHead label="Тип товару" />
+        <Segmented
+          label="Тип товару"
+          value={type}
+          onChange={(v) => {
+            setType(v)
+            if (v === 'physical' && quantity === '999') setQuantity('1')
+            touched()
+          }}
+          options={[
+            { value: 'download', label: 'Цифровий', icon: 'download' },
+            { value: 'physical', label: 'Фізичний', icon: 'box' }
+          ]}
+        />
+        <p className="ui-field-hint my-type-note">
+          <Term glossary={type === 'physical' ? 'physicalProduct' : 'digitalProduct'} />: {TYPE_TEXT[type]}
+        </p>
+      </section>
+
+      <section className="my-card">
+        <h3 className="my-card-title">Основне</h3>
+        <Field label="Назва" glossary="myshop.title" aside={<span className="num">{`${title.trim().length}/${TITLE_MAX}`}</span>}>
+          <input id="new-title" value={title} onChange={on(setTitle)} />
+        </Field>
+        <Field label="Опис" glossary="myshop.description" hint="Що це, з чого, які розміри, що саме отримає покупець.">
+          <textarea id="new-desc" rows={6} value={description} onChange={on(setDescription)} />
+        </Field>
+        <div className="ui-form-grid">
+          <Field
+            label={`Ціна${currency ? `, ${currency}` : ''}`}
+            glossary="basePrice"
+            hint="Наприклад 5,99 — можна з комою або крапкою. Без податку: Etsy сам додасть його для покупців."
+          >
+            <input id="new-price" inputMode="decimal" placeholder="5,99" value={price} onChange={on(setPrice)} />
+          </Field>
+          <Field
+            label="Кількість"
+            glossary="quantity"
+            hint={type === 'physical' ? 'Скільки штук є в наявності.' : 'Скільки разів товар можна купити. Для цифрових зазвичай 999.'}
+          >
+            <input id="new-qty" inputMode="numeric" value={quantity} onChange={on(setQuantity)} />
+          </Field>
         </div>
-        <div className="field">
-          <label htmlFor="new-when">Коли виготовлено</label>
-          <select id="new-when" value={whenMade} onChange={(e) => (setWhenMade(e.target.value), touched())}>
-            {WHEN_MADE.map((w) => (
-              <option key={w.value} value={w.value}>
-                {w.label}
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
-      <div className="field">
-        <label className="check">
-          <input type="checkbox" checked={isSupply} onChange={(e) => (setIsSupply(e.target.checked), touched())} /> Це матеріал
-          чи інструмент для творчості (supply)
-        </label>
-      </div>
-      <div className="field">
-        <label htmlFor="new-tags">
-          Теги через кому <span className="dim">({splitList(tags).length}/{MAX_TAGS})</span>
-        </label>
-        <input id="new-tags" value={tags} onChange={(e) => (setTags(e.target.value), touched())} />
-      </div>
-      <div className="field">
-        <label htmlFor="new-materials">Матеріали через кому</label>
-        <input id="new-materials" value={materials} onChange={(e) => (setMaterials(e.target.value), touched())} />
-      </div>
-      {type === 'physical' && (
-        <div className="field-row">
-          <div className="field">
-            <label htmlFor="new-shipping">Профіль доставки</label>
-            {physicalError ? (
-              <div className="hint err">{physicalError}</div>
+      </section>
+
+      <section className="my-card">
+        <h3 className="my-card-title">Як покупці знайдуть товар</h3>
+        <Field
+          label="Категорія"
+          glossary="category"
+          id="new-cat"
+          hint={category ? undefined : 'Почніть вводити англійською — назви категорій Etsy англійські, наприклад planner або spreadsheet.'}
+          error={taxonomyError ?? undefined}
+        >
+          {(p) =>
+            category ? (
+              <div className="chosen-cat my-chosen">
+                <Icon name="folder" size={15} />
+                <span className="my-chosen-path">{category.path}</span>
+                <Button size="sm" onClick={() => (setCategory(null), touched())}>
+                  Змінити
+                </Button>
+              </div>
             ) : (
-              <select
-                id="new-shipping"
-                value={shippingId ?? ''}
-                onChange={(e) => (setShippingId(e.target.value ? Number(e.target.value) : null), touched())}
-              >
-                <option value="">{shipping ? (shipping.length ? 'Виберіть…' : 'Немає профілів — створіть на Etsy') : 'Завантаження…'}</option>
-                {shipping?.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.label}
-                  </option>
-                ))}
-              </select>
-            )}
-          </div>
-          <div className="field">
-            <label htmlFor="new-readiness">Час обробки</label>
-            <select
-              id="new-readiness"
-              value={readinessId ?? ''}
-              onChange={(e) => (setReadinessId(e.target.value ? Number(e.target.value) : null), touched())}
-            >
-              <option value="">{processing ? 'Не вказано' : 'Завантаження…'}</option>
-              {processing?.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.label}
+              <>
+                <input
+                  {...p}
+                  placeholder={taxonomy ? 'Наприклад, planner' : taxonomyError ? 'Категорії недоступні' : 'Завантаження категорій…'}
+                  disabled={!taxonomy}
+                  value={catQuery}
+                  onChange={(e) => setCatQuery(e.target.value)}
+                />
+                {matches.length > 0 && (
+                  <ul className="cat-results my-cat-results" role="listbox" aria-label="Категорії">
+                    {matches.map((t) => (
+                      <li key={t.id}>
+                        <button
+                          type="button"
+                          role="option"
+                          aria-selected={false}
+                          onClick={() => {
+                            setCategory(t)
+                            setCatQuery('')
+                            touched()
+                          }}
+                        >
+                          {t.path}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {taxonomy && catQuery.trim().length >= 2 && matches.length === 0 && (
+                  <div className="ui-field-hint">Нічого не знайдено. Спробуйте інше слово англійською.</div>
+                )}
+              </>
+            )
+          }
+        </Field>
+        <div className="ui-form-grid">
+          <Field label="Теги" glossary="tags" aside={<span className="num">{`${splitList(tags).length}/${MAX_TAGS}`}</span>} hint={GLOSSARY['myshop.tagRules'].short}>
+            <input id="new-tags" value={tags} onChange={on(setTags)} />
+          </Field>
+          <Field
+            label="Матеріали"
+            glossary="materials"
+            aside={<span className="num">{`${splitList(materials).length}/${MAX_MATERIALS}`}</span>}
+            hint="Через кому: з чого зроблено товар. Необов’язково."
+          >
+            <input id="new-materials" value={materials} onChange={on(setMaterials)} />
+          </Field>
+        </div>
+      </section>
+
+      <section className="my-card">
+        <h3 className="my-card-title">Про виготовлення</h3>
+        <div className="ui-form-grid">
+          <Field label="Хто виготовив" glossary="whoMade">
+            <select id="new-who" value={whoMade} onChange={on(setWhoMade)}>
+              {WHO_MADE.map((w) => (
+                <option key={w.value} value={w.value}>
+                  {w.label}
                 </option>
               ))}
             </select>
+          </Field>
+          <Field label="Коли виготовлено" glossary="whenMade" hint="Для цифрових і нових речей — «Виготовляю на замовлення» або нинішні роки.">
+            <select id="new-when" value={whenMade} onChange={on(setWhenMade)}>
+              {WHEN_MADE.map((w) => (
+                <option key={w.value} value={w.value}>
+                  {w.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </div>
+        <Toggle
+          label="Це матеріал чи інструмент для творчості"
+          glossary="supply"
+          hint="Увімкніть, якщо продаєте не готову річ, а те, з чого її роблять: намистини, тканину, схеми."
+          checked={isSupply}
+          onChange={(v) => (setIsSupply(v), touched())}
+        />
+      </section>
+
+      {type === 'physical' && (
+        <section className="my-card">
+          <h3 className="my-card-title">Доставка</h3>
+          {physicalError ? (
+            <Callout tone="error" title="Не вдалося прочитати профілі доставки">
+              {physicalError}
+            </Callout>
+          ) : (
+            <div className="ui-form-grid">
+              <Field
+                label="Профіль доставки"
+                glossary="shippingProfile"
+                hint={shipping && shipping.length === 0 ? 'Профілів ще немає — створіть його на Etsy або у вкладці «Доставка» вікна «Мій магазин».' : undefined}
+              >
+                <select id="new-shipping" value={shippingId ?? ''} onChange={(e) => (setShippingId(e.target.value ? Number(e.target.value) : null), touched())}>
+                  <option value="">{shipping ? (shipping.length ? 'Виберіть…' : 'Немає профілів') : 'Завантаження…'}</option>
+                  {shipping?.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.label}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Час на підготовку" glossary="processingProfile" hint="Скільки днів вам потрібно, щоб підготувати й відправити замовлення.">
+                <select id="new-readiness" value={readinessId ?? ''} onChange={(e) => (setReadinessId(e.target.value ? Number(e.target.value) : null), touched())}>
+                  <option value="">{processing ? 'Не вказано' : 'Завантаження…'}</option>
+                  {processing?.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.label}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            </div>
+          )}
+        </section>
+      )}
+
+      <section className="my-card">
+        {type === 'download' && <h3 className="my-card-title">Фото і файли</h3>}
+        <div className="my-block">
+          <BlockHead
+            label="Фото"
+            heading={type !== 'download'}
+            glossary="myshop.photos"
+            aside={<span className="num">{`${photos.length}/${MAX_IMAGES}`}</span>}
+          />
+          <div className="ui-field-hint">JPG, PNG або GIF. Перше фото — головне: його видно в пошуку. Стрілка ↑ піднімає фото вище.</div>
+          <PhotoList items={photos} onChange={(v) => (setPhotos(v), touched())} readOnly={false} />
+          <div className="ui-row">
+            <Button size="sm" icon="plus" disabled={photos.length >= MAX_IMAGES} onClick={() => void pick('images')}>
+              Додати фото
+            </Button>
           </div>
         </div>
-      )}
-      <div className="field">
-        <label className="check">
-          <input type="checkbox" checked={autoRenew} onChange={(e) => (setAutoRenew(e.target.checked), touched())} /> Автоматично
-          продовжувати
-        </label>
-      </div>
-      <div className="field">
-        <label>
-          Фото <span className="dim">(до {MAX_IMAGES}; JPG, PNG, GIF; перше — головне)</span>
-        </label>
-        <SlotList items={photos} onChange={(v) => (setPhotos(v), touched())} ordered readOnly={false} />
-        <button className="btn small add-files" disabled={photos.length >= MAX_IMAGES} onClick={() => void pick('images')}>
-          ＋ Додати фото
-        </button>
-      </div>
-      {type === 'download' && (
-        <div className="field">
-          <label>
-            Файли для покупця <span className="dim">(до {MAX_DIGITAL_FILES}, кожен до 20 МБ)</span>
-          </label>
-          <SlotList items={files} onChange={(v) => (setFiles(v), touched())} ordered={false} readOnly={false} />
-          <button className="btn small add-files" disabled={files.length >= MAX_DIGITAL_FILES} onClick={() => void pick('files')}>
-            ＋ Додати файли
-          </button>
-        </div>
-      )}
+        {type === 'download' && (
+          <div className="my-block">
+            <BlockHead label="Файли для покупця" glossary="myshop.digitalFiles" aside={<span className="num">{`${files.length}/${MAX_DIGITAL_FILES}`}</span>} />
+            <div className="ui-field-hint">До {MAX_DIGITAL_FILES} файлів, кожен до 20 МБ. Покупець завантажить їх одразу після оплати.</div>
+            <FileList items={files} onChange={(v) => (setFiles(v), touched())} />
+            <div className="ui-row">
+              <Button size="sm" icon="plus" disabled={files.length >= MAX_DIGITAL_FILES} onClick={() => void pick('files')}>
+                Додати файли
+              </Button>
+            </div>
+          </div>
+        )}
+      </section>
+
+      <section className="my-card">
+        <h3 className="my-card-title">Продаж</h3>
+        <Toggle
+          label="Автоматично продовжувати"
+          glossary="autoRenew"
+          hint={`Коли 4 місяці розміщення минуть, Etsy сам поновить товар і візьме ${LISTING_FEE}.`}
+          checked={autoRenew}
+          onChange={(v) => (setAutoRenew(v), touched())}
+        />
+      </section>
+
       {sendProblems.length > 0 ? (
-        <div className="hint problems" data-testid="create-problems">
-          Щоб надіслати на Etsy, ще потрібно:
-          <ul>
-            {sendProblems.map((p) => (
-              <li key={p}>{p}</li>
-            ))}
-          </ul>
+        <div data-testid="create-problems">
+          <Callout tone="warn" role="note" title="Щоб надіслати на Etsy, ще потрібно:">
+            <ul className="my-bullets">
+              {sendProblems.map((p) => (
+                <li key={p}>{p}</li>
+              ))}
+            </ul>
+          </Callout>
+        </div>
+      ) : publishProblems.length > 0 ? (
+        <div data-testid="publish-problems">
+          <Callout tone="info" role="note" title="Можна надіслати як чернетку.">
+            {publishProblems.join(' ')}
+          </Callout>
         </div>
       ) : (
-        publishProblems.length > 0 && (
-          <div className="hint" data-testid="publish-problems">
-            Можна надіслати як чернетку. {publishProblems.join(' ')}
-          </div>
-        )
+        <Callout tone="success" role="note" compact>
+          Усе заповнено — товар можна одразу опублікувати.
+        </Callout>
       )}
-      {error && (
-        <div className="test-result err" role="alert">
-          {error}
-        </div>
-      )}
-      {savedNote && <div className="test-result ok">{savedNote}</div>}
-      {busy && progress && (
-        <div className="hint" role="status">
-          {progress.label}
-        </div>
-      )}
-      <div className="settings-actions wrap">
-        <button className="btn" disabled={busy} onClick={() => void onSave()}>
+      <SaveBar
+        error={error}
+        status={
+          busy && progress ? (
+            <span role="status">{progress.label}</span>
+          ) : savedNote ? (
+            <span className="my-saved">
+              <Icon name="check" size={15} />
+              <span>{savedNote}</span>
+            </span>
+          ) : dirty ? (
+            'Є незбережені зміни.'
+          ) : current ? (
+            'Усе збережено в програмі.'
+          ) : null
+        }
+      >
+        <Button icon="check" busy={busy === 'save'} disabled={!!busy} tooltip="Зберегти лише в програмі. На Etsy нічого не надсилається." onClick={() => void onSave()}>
           Зберегти чернетку
-        </button>
-        <button className="btn" disabled={busy || sendProblems.length > 0} onClick={() => void onSend(false)}>
+        </Button>
+        <Button
+          icon="draft"
+          busy={busy === 'draft'}
+          disabled={!!busy || sendProblems.length > 0}
+          tooltip={sendProblems.length ? 'Спершу заповніть те, що вказано вище.' : GLOSSARY['myshop.sendAsDraft'].short}
+          onClick={() => void onSend(false)}
+        >
           Надіслати на Etsy як чернетку
-        </button>
-        <button
-          className="btn primary"
-          disabled={busy || publishProblems.length > 0}
-          title={publishProblems.length && !sendProblems.length ? publishProblems.join(' ') : undefined}
+        </Button>
+        <Button
+          variant="primary"
+          icon="upload"
+          busy={busy === 'publish'}
+          disabled={!!busy || publishProblems.length > 0}
+          tooltip={publishProblems.length && !sendProblems.length ? publishProblems.join(' ') : GLOSSARY['myshop.publish'].short}
           onClick={() => void onSend(true)}
         >
-          {busy ? 'Надсилаю…' : 'Надіслати й опублікувати'}
-        </button>
-        {current && (
-          <button className="btn danger" disabled={busy} onClick={() => void onDelete()}>
-            Видалити
-          </button>
-        )}
-      </div>
+          Надіслати й опублікувати
+        </Button>
+      </SaveBar>
     </div>
   )
 }
 
 function DraftList(): JSX.Element {
   const { drafts, openDrafts } = useStore()
+  const add = (
+    <Button variant="primary" icon="plus" onClick={() => openDrafts({ draftId: null })}>
+      Нова чернетка
+    </Button>
+  )
   return (
-    <div data-testid="draft-list">
-      <p className="hint">
-        Лістинги, підготовлені в програмі — вами або Claude (через MCP). Перевірте й надішліть на Etsy: як чернетку
-        або одразу з публікацією.
+    <div data-testid="draft-list" className="my-drafts">
+      <p className="my-lead">
+        Заготовки нових <Term glossary="listing">товарів</Term>, які зберігаються лише на цьому комп’ютері. Їх готуєте ви або
+        помічник <Term glossary="claude" />. Перевірте й надішліть на Etsy — як чернетку або одразу з публікацією.
       </p>
-      <div className="settings-actions">
-        <button className="btn primary" onClick={() => openDrafts({ draftId: null })}>
-          ＋ Нова чернетка
-        </button>
-      </div>
       {drafts.length === 0 ? (
-        <div className="hint">Чернеток ще немає.</div>
+        <EmptyState icon="draft" title="Чернеток ще немає" action={add}>
+          Створіть першу — заповніть назву, ціну й фото, а надіслати на Etsy можна будь-коли пізніше.
+        </EmptyState>
       ) : (
-        <ul className="my-listings">
-          {drafts.map((d) => (
-            <li key={d.id}>
-              {d.photos[0] ? <img src={`etsyimg://draft/${d.photos[0].id}`} alt="" /> : <span className="thumb-empty" />}
-              <div className="my-listing-text">
-                <div className="my-listing-title">
-                  {d.fields.title || '(без назви)'}
-                  {d.source === 'mcp' && <span className="mcp-badge">від Claude</span>}
+        <>
+          <div className="my-toolbar">
+            <span className="my-count num">Чернеток: {drafts.length}</span>
+            {add}
+          </div>
+          <ul className="my-listings my-rows">
+            {drafts.map((d) => (
+              <li key={d.id} className="my-row">
+                {d.photos[0] ? (
+                  <img className="my-thumb my-thumb--md" src={`etsyimg://draft/${d.photos[0].id}`} alt="" />
+                ) : (
+                  <span className="my-thumb my-thumb--md my-thumb--empty" aria-hidden="true">
+                    <Icon name="image" size={20} />
+                  </span>
+                )}
+                <div className="my-listing-text my-row-main">
+                  <div className="my-row-titleline">
+                    <span className="my-listing-title my-row-title truncate" title={d.fields.title}>
+                      {d.fields.title || '(без назви)'}
+                    </span>
+                    {d.source === 'mcp' && <ClaudeBadge />}
+                  </div>
+                  <div className="my-meta">
+                    <Badge tone={STATUS_TONE[d.status]} hint={STATUS_HINT[d.status]}>
+                      {DRAFT_STATUS[d.status]}
+                    </Badge>
+                    {d.sentListingId != null && <span className="dim num">товар № {d.sentListingId}</span>}
+                    {d.status !== 'sent' && d.problems.length > 0 && (
+                      <Tooltip content={d.problems.join(' ')}>
+                        <span className="my-warn-text" tabIndex={0}>
+                          ще потрібно: {d.problems.length}
+                        </span>
+                      </Tooltip>
+                    )}
+                    <span className="dim">змінено {formatDateTime(d.updatedAt)}</span>
+                  </div>
                 </div>
-                <div className="dim">
-                  {DRAFT_STATUS[d.status]}
-                  {d.sentListingId != null && ` (#${d.sentListingId})`}
-                  {d.status !== 'sent' && d.problems.length > 0 && ` · ще потрібно: ${d.problems.length}`}
-                  {` · ${formatDateTime(d.updatedAt)}`}
-                </div>
-              </div>
-              <button className="btn small" onClick={() => openDrafts({ draftId: d.id })}>
-                {d.status === 'sent' ? 'Переглянути' : 'Відкрити'}
-              </button>
-            </li>
-          ))}
-        </ul>
+                <Button size="sm" icon={d.status === 'sent' ? 'eye' : 'edit'} onClick={() => openDrafts({ draftId: d.id })}>
+                  {d.status === 'sent' ? 'Переглянути' : 'Відкрити'}
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </>
       )}
     </div>
   )
 }
 
 /**
- * "📝 Чернетки" / "＋ Новий лістинг" (own shop): listing drafts kept in the
- * app, prepared here or by Claude over MCP, reviewed and sent to Etsy.
+ * "Чернетки" / "Новий товар" (own shop): listing drafts kept in the app,
+ * prepared here or by Claude over MCP, reviewed and sent to Etsy.
  */
 export function DraftsModal(): JSX.Element | null {
   const { draftsView, openDrafts, drafts } = useStore()
-  const close = (): void => openDrafts(null)
-  useEscape(close, draftsView != null)
+  // What the open editor would lose; closing the window asks first.
+  const unsaved = useRef<string | null>(null)
+  const close = (): void => leaveThen(unsaved, () => openDrafts(null))
   if (draftsView == null) return null
   const editing = draftsView !== 'list'
   const draft = editing && draftsView.draftId != null ? (drafts.find((d) => d.id === draftsView.draftId) ?? null) : null
   return (
-    <div className="modal-backdrop" onClick={close}>
-      <div className="modal my-shop-modal" role="dialog" aria-labelledby="drafts-title" onClick={(e) => e.stopPropagation()}>
-        <h2 id="drafts-title">{!editing ? 'Чернетки лістингів' : draft ? 'Чернетка' : 'Новий лістинг'}</h2>
-        {editing ? (
-          <>
-            <div className="editor-head">
-              <button className="btn small" onClick={() => openDrafts('list')}>
-                ← До чернеток
-              </button>
-            </div>
-            <DraftEditor key={draft?.id ?? 'new'} draft={draft} onBack={() => openDrafts('list')} />
-          </>
-        ) : (
-          <DraftList />
-        )}
-        <div className="modal-actions">
-          <button className="btn" onClick={close}>
-            Закрити
-          </button>
-        </div>
-      </div>
-    </div>
+    <Modal
+      title={!editing ? 'Чернетки нових товарів' : draft ? 'Чернетка товару' : 'Новий товар'}
+      subtitle={
+        !editing
+          ? 'Зберігаються в програмі, поки ви не надішлете їх на Etsy.'
+          : 'Заповніть поля — підказки ⓘ пояснюють кожне. Зберегти можна будь-коли, навіть неповну.'
+      }
+      size="lg"
+      onClose={close}
+      className="my-shop-modal drafts-modal"
+    >
+      <UnsavedContext.Provider value={unsaved}>
+        {editing ? <DraftEditor key={draft?.id ?? 'new'} draft={draft} onBack={() => openDrafts('list')} /> : <DraftList />}
+      </UnsavedContext.Provider>
+    </Modal>
   )
 }

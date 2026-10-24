@@ -1,0 +1,10 @@
+// UI harness: a consistent COPY of the app's database (never the original) → .ui-harness/copy.db
+const { DatabaseSync } = require('node:sqlite')
+const { mkdirSync, rmSync } = require('fs')
+const { join } = require('path')
+const src = join(process.env.HOME, '.config/etsy-tracker/etsy-tracker.db')
+const out = join(__dirname, '../../.ui-harness/copy.db')
+mkdirSync(join(__dirname, '../../.ui-harness'), { recursive: true })
+rmSync(out, { force: true })
+new DatabaseSync(src, { readOnly: true }).exec(`VACUUM INTO '${out.replace(/'/g, "''")}'`)
+console.log('copied →', out)

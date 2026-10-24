@@ -1,12 +1,23 @@
 // `etsyimg://img/{listing_image_id}/{size}` — how the renderer shows listing
-// images (and `etsyimg://review/{review row id}/fullxfull` review photos). Main resolves the id in listing_images and streams the MinIO copy;
+// images (and `etsyimg://review/{review row id}/fullxfull` review photos,
+// `etsyimg://shop/{shop_id}/icon|banner` a shop's logo/banner and
+// `etsyimg://video/{video_id}/thumbnail` a video's preview frame — those two
+// only from the CDN, they are not copied to MinIO). Main resolves the id in listing_images and streams the MinIO copy;
 // when there is none (not synced yet, MinIO off or down) it fetches the Etsy
 // CDN URL itself and passes it through. The renderer never sees MinIO
 // credentials or object keys, and CSP only has to allow `etsyimg:`.
 
 import { Readable } from 'stream'
 import type { ImageSize } from '../shared/types'
-import { type Db, type ImageRow, type ReviewImageRow, getImageRow, getReviewImageRow } from './db'
+import {
+  type Db,
+  type ImageRow,
+  type ReviewImageRow,
+  getImageRow,
+  getReviewImageRow,
+  getShopImageUrl,
+  getVideoThumbnailUrl
+} from './db'
 import type { ImageStore } from './imageStore'
 import { getDraftMediaData } from './drafts'
 import { isEtsyCdnUrl } from '../shared/externalUrl'
@@ -57,6 +68,36 @@ export function parseDraftImageUrl(url: string): number | null {
   }
   if (u.protocol !== `${IMAGE_SCHEME}:` || u.hostname !== 'draft') return null
   const m = u.pathname.match(/^\/(\d{1,20})$/)
+  if (!m) return null
+  const id = Number(m[1])
+  return Number.isSafeInteger(id) && id > 0 ? id : null
+}
+
+/** `etsyimg://shop/5/icon` → {shopId: 5, kind: 'icon'} (also `banner`); null otherwise. */
+export function parseShopImageUrl(url: string): { shopId: number; kind: 'icon' | 'banner' } | null {
+  let u: URL
+  try {
+    u = new URL(url)
+  } catch {
+    return null
+  }
+  if (u.protocol !== `${IMAGE_SCHEME}:` || u.hostname !== 'shop') return null
+  const m = u.pathname.match(/^\/(\d{1,20})\/(icon|banner)$/)
+  if (!m) return null
+  const shopId = Number(m[1])
+  return Number.isSafeInteger(shopId) && shopId > 0 ? { shopId, kind: m[2] as 'icon' | 'banner' } : null
+}
+
+/** `etsyimg://video/9/thumbnail` → 9; null otherwise. */
+export function parseVideoThumbUrl(url: string): number | null {
+  let u: URL
+  try {
+    u = new URL(url)
+  } catch {
+    return null
+  }
+  if (u.protocol !== `${IMAGE_SCHEME}:` || u.hostname !== 'video') return null
+  const m = u.pathname.match(/^\/(\d{1,20})\/thumbnail$/)
   if (!m) return null
   const id = Number(m[1])
   return Number.isSafeInteger(id) && id > 0 ? id : null
@@ -170,6 +211,17 @@ export function createImageProtocolHandler(deps: ImageProtocolDeps): (req: Reque
         status: 200,
         headers: { 'content-type': row.mime, 'cache-control': 'no-store' }
       })
+    }
+    // A shop's logo/banner and a video's preview frame: straight from the CDN.
+    const shopImage = parseShopImageUrl(req.url)
+    if (shopImage) {
+      const url = getShopImageUrl(deps.db, shopImage.shopId, shopImage.kind)
+      return url ? fromCdn(url) : new Response(null, { status: 404 })
+    }
+    const videoId = parseVideoThumbUrl(req.url)
+    if (videoId != null) {
+      const url = getVideoThumbnailUrl(deps.db, videoId)
+      return url ? fromCdn(url) : new Response(null, { status: 404 })
     }
     let src: ImageSource
     let onMissing: (() => void) | undefined

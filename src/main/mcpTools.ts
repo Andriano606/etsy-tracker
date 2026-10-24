@@ -184,6 +184,7 @@ function attributes(d: ListingDetails | null | undefined) {
     skus: list(d.skus),
     digital_files: n(d.fileData),
     taxable: d.isTaxable,
+    non_taxable: d.nonTaxable,
     auto_renew: d.shouldAutoRenew,
     private: d.isPrivate,
     expires_at: isoSec(d.endingAt),
@@ -229,6 +230,15 @@ function productFull(l: Listing, newIds: ReadonlySet<number>, storeName: string 
       : null,
     images: l.images.map(imageOf),
     video_count: l.videos?.length ?? 0,
+    videos: (l.videos ?? []).map((v, i) => ({
+      video_id: v.id,
+      position: i + 1,
+      width: v.width,
+      height: v.height,
+      state: v.state,
+      /** get_product_video_preview returns its preview frame as an image. */
+      has_preview: !!v.thumbnailUrl
+    })),
     listed_at: isoSec(l.etsyCreatedAt),
     updated_at: isoSec(l.etsyUpdatedAt),
     last_seen_at: isoMs(l.lastSeenAt)
@@ -276,7 +286,11 @@ function storeSummary(s: ShopSummary, mine: number | null = null) {
     name: n(s.shopName),
     title: n(s.title),
     currency: s.currency,
+    /** get_store_logo returns it as an image. */
+    has_logo: !!s.iconUrl,
     active_products: s.activeCount,
+    /** The store's own count of active products at the latest snapshot (may differ while products move). */
+    reported_active_products: s.etsyActiveCount,
     sales_count: s.stats?.transactionSoldCount ?? p?.transactionSoldCount ?? null,
     rating: s.stats?.reviewAverage ?? p?.reviewAverage ?? null,
     review_count: s.stats?.reviewCount ?? p?.reviewCount ?? null,
@@ -296,6 +310,8 @@ function storeFull(s: ShopSummary, mine: number | null = null) {
   return {
     ...storeSummary(s, mine),
     owner_username: n(p?.loginName),
+    /** get_store_logo with kind "banner". */
+    has_banner: !!p?.bannerUrl,
     announcement: n(p?.announcement),
     sale_message: n(p?.saleMessage),
     digital_sale_message: n(p?.digitalSaleMessage),
@@ -588,7 +604,7 @@ export const MCP_INSTRUCTIONS = `Read-only access to a local catalog of online s
 
 How the data is collected: the user's app takes periodic snapshots of each store. A snapshot records every active product of the store (title, description, price, tags, materials, photos, attributes, popularity numbers) and what changed since the previous snapshot: products added, removed, returned, or edited (and which fields). Customer reviews of each store are stored too and linked to the reviewed product. Nothing here is live — every number is as of the latest snapshot (see latest_snapshot.finished_at).
 
-Where to start: list_stores → get_store / search_products → get_product. "What is new?" → get_snapshot_changes. Trends → get_store_stats and get_product_history. To look at a product, call get_product_image.
+Where to start: list_stores → get_store / search_products → get_product. "What is new?" → get_snapshot_changes. Trends → get_store_stats and get_product_history. To look at a product, call get_product_image (get_product_video_preview for a frame of its video); a store's logo or banner: get_store_logo.
 
 Prices: "base" is the seller's own price before tax and discounts. "current" is what a customer in customer_country pays now (tax included, discount applied when one runs); it equals "base" when no customer price is known. "regular" is the customer price before the discount. Currencies are never converted.
 
@@ -1033,6 +1049,84 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
                 position: index + 1,
                 of: l.images.length,
                 alt_text: n(img.alt)
+              })
+            },
+            { type: 'image', data: out.data.toString('base64'), mimeType: out.mimeType }
+          ]
+        }
+      }
+    },
+    {
+      name: 'get_store_logo',
+      title: 'Store logo',
+      description:
+        'Returns the store\'s logo (has_logo = true in list_stores / get_store) or its banner (kind "banner"; has_banner in get_store) as an image.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          store_id: idArg('Store id from list_stores.'),
+          kind: { type: 'string', enum: ['logo', 'banner'], default: 'logo' }
+        },
+        required: ['store_id'],
+        additionalProperties: false
+      },
+      run: async (a) => {
+        const s = requireStore(db, a.store_id)
+        const banner = a.kind === 'banner'
+        const has = banner ? !!s.profile?.bannerUrl : !!s.iconUrl
+        if (!has) throw new ToolInputError(`Store ${s.id} has no ${banner ? 'banner' : 'logo'}.`)
+        const out = await readImage([`etsyimg://shop/${s.id}/${banner ? 'banner' : 'icon'}`])
+        if ('error' in out) return errorResult(out.error)
+        return {
+          content: [
+            { type: 'text', text: JSON.stringify({ store_id: s.id, name: n(s.shopName), kind: banner ? 'banner' : 'logo' }) },
+            { type: 'image', data: out.data.toString('base64'), mimeType: out.mimeType }
+          ]
+        }
+      }
+    },
+    {
+      name: 'get_product_video_preview',
+      title: 'Product video preview',
+      description:
+        'Returns the preview frame of a product video (videos in get_product, has_preview = true) as a small image. The video itself is not available.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          product_id: idArg('Product id.'),
+          video_id: idArg('A video id from get_product.'),
+          position: { type: 'integer', minimum: 1, default: 1, description: '1 = the first video.' }
+        },
+        required: ['product_id'],
+        additionalProperties: false
+      },
+      run: async (a) => {
+        const l = requireProduct(db, a.product_id)
+        const videos = l.videos ?? []
+        if (!videos.length) throw new ToolInputError(`Product ${l.listingId} has no videos.`)
+        const index =
+          a.video_id != null ? videos.findIndex((v) => v.id === Number(a.video_id)) : num(a.position, 1) - 1
+        const v = videos[index]
+        if (!v) {
+          throw new ToolInputError(
+            a.video_id != null
+              ? `Product ${l.listingId} has no video ${String(a.video_id)}.`
+              : `Product ${l.listingId} has ${videos.length} video(s).`
+          )
+        }
+        if (!v.thumbnailUrl) throw new ToolInputError(`Video ${v.id} has no preview.`)
+        const out = await readImage([`etsyimg://video/${v.id}/thumbnail`])
+        if ('error' in out) return errorResult(out.error)
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                product_id: l.listingId,
+                title: n(l.title),
+                video_id: v.id,
+                position: index + 1,
+                of: videos.length
               })
             },
             { type: 'image', data: out.data.toString('base64'), mimeType: out.mimeType }

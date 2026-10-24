@@ -42,6 +42,16 @@ async function buildWorld(): Promise<World> {
   etsy.listings[0].description = 'Hand made. More at https://www.etsy.com/shop/CeramicStudioUA or etsy.me/abc — thanks, Etsy shoppers! #etsyfinds'
   etsy.listings[0].tags = ['mug', 'Etsy gift']
   etsy.shop.announcement = 'Welcome to our Etsy shop!'
+  etsy.listings[0].videos = [
+    {
+      video_id: 91_234_567,
+      height: 1080,
+      width: 1920,
+      thumbnail_url: 'https://v.etsystatic.com/video/upload/ac_none,so_0/thumb.jpg',
+      video_url: 'https://v.etsystatic.com/video/upload/ac_none/video.mp4',
+      video_state: 'active'
+    }
+  ]
   let t = 1_760_000_000_000
   const now = (): number => (t += 60_000)
   const scanner = createScanner({ db, client: etsy.client({ maxRetries: 1 }), now, getBuyerCountry: () => 'UA' })
@@ -417,6 +427,61 @@ describe('photos', () => {
     expect(await toolError('get_review_photo', { review_id: 99_999 })).toContain('No review')
   })
 
+  it('get_store_logo: the logo (default) and the banner; flags in list_stores / get_store', async () => {
+    const stores = await data('list_stores')
+    expect(stores.stores[0].has_logo).toBe(true)
+    const store = await data('get_store', { store_id: SHOP_ID })
+    expect(store).toMatchObject({ has_logo: true, has_banner: true, reported_active_products: expect.any(Number) })
+    expect((await data('get_product', { product_id: 1 })).attributes).toHaveProperty('non_taxable')
+
+    const logo = await call('get_store_logo', { store_id: SHOP_ID })
+    expect(JSON.parse((logo.content[0] as { text: string }).text)).toMatchObject({ store_id: SHOP_ID, kind: 'logo' })
+    const img = logo.content[1] as { type: string; data: string; mimeType: string }
+    expect(img).toMatchObject({ type: 'image', mimeType: 'image/jpeg' })
+    expect(Buffer.from(img.data, 'base64')).toEqual(
+      cdnBytes('https://i.etsystatic.com/isla/bb22cc/12345678/isla_fullxfull.12345678_efgh.jpg')
+    )
+    const banner = await call('get_store_logo', { store_id: SHOP_ID, kind: 'banner' })
+    expect(Buffer.from((banner.content[1] as { data: string }).data, 'base64')).toEqual(
+      cdnBytes('https://i.etsystatic.com/isbl/aa11bb/12345678/isbl_760x100.12345678_abcd.jpg')
+    )
+    expect(await toolError('get_store_logo', { store_id: 999 })).toContain('999')
+    expect(await toolError('get_store_logo', { store_id: SHOP_ID, kind: 'icon' })).toContain('must be one of')
+  })
+
+  it('get_store_logo: a store without a logo/banner is a tool error', async () => {
+    const db = memDb()
+    seedShop(db, { id: 7, iconUrl: null })
+    const tools = createMcpTools({ db, readImage: async () => ({ data: Buffer.from('x'), mimeType: 'image/png' }) })
+    const run = async (args: Record<string, unknown>) => {
+      const res = await handleMcpMessage(
+        { info: mcpServerInfo('0.1.0'), tools },
+        { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_store_logo', arguments: args } }
+      )
+      const r = res!.result as McpToolResult
+      expect(r.isError).toBe(true)
+      return (r.content[0] as { text: string }).text
+    }
+    expect(await run({ store_id: 7 })).toContain('has no logo')
+    expect(await run({ store_id: 7, kind: 'banner' })).toContain('has no banner')
+  })
+
+  it('get_product_video_preview: the video frame; the product lists its videos', async () => {
+    const p = await data('get_product', { product_id: 1 })
+    expect(p.video_count).toBe(1)
+    expect(p.videos).toEqual([{ video_id: 91_234_567, position: 1, width: 1920, height: 1080, state: 'active', has_preview: true }])
+    const r = await call('get_product_video_preview', { product_id: 1 })
+    expect(JSON.parse((r.content[0] as { text: string }).text)).toMatchObject({ product_id: 1, video_id: 91_234_567, of: 1 })
+    expect(Buffer.from((r.content[1] as { data: string }).data, 'base64')).toEqual(
+      cdnBytes('https://v.etsystatic.com/video/upload/ac_none,so_0/thumb.jpg')
+    )
+    const byId = await call('get_product_video_preview', { product_id: 1, video_id: 91_234_567 })
+    expect(byId.isError).toBeFalsy()
+    expect(await toolError('get_product_video_preview', { product_id: 2 })).toContain('has no videos')
+    expect(await toolError('get_product_video_preview', { product_id: 1, position: 2 })).toContain('has 1 video(s)')
+    expect(await toolError('get_product_video_preview', { product_id: 1, video_id: 5 })).toContain('has no video 5')
+  })
+
   describe('formats a client can show (Etsy\'s CDN sends Chromium AVIF/WebP for some 570 px copies)', () => {
     /** Tools whose photo reads answer per size: `mime` or null (missing). */
     function toolsWith(bySize: Record<string, string | null>) {
@@ -503,6 +568,9 @@ describe('neutrality: a client never learns where the data comes from', () => {
     await data('get_store_stats', { store_id: SHOP_ID })
     await call('get_product_image', { product_id: 1 })
     await call('get_review_photo', { review_id: w.photoReviewId })
+    await call('get_store_logo', { store_id: SHOP_ID })
+    await call('get_store_logo', { store_id: SHOP_ID, kind: 'banner' })
+    await call('get_product_video_preview', { product_id: 1 })
     await call('get_product', { product_id: 0 })
 
     const list = await handleMcpMessage(

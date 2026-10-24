@@ -11,6 +11,8 @@ import {
   createImageProtocolHandler,
   parseImageUrl,
   parseReviewImageUrl,
+  parseShopImageUrl,
+  parseVideoThumbUrl,
   resolveImageSource,
   resolveReviewImageSource
 } from '../../src/main/imageProtocol'
@@ -290,5 +292,75 @@ describe('etsyimg://review/{id}/fullxfull (review photos)', () => {
     expect((await get(`etsyimg://review/${id}/fullxfull`)).status).toBe(404)
     expect((await get('etsyimg://review/999/fullxfull')).status).toBe(404)
     expect((await get(`etsyimg://review/${id}/570xN`)).status).toBe(400)
+  })
+})
+
+describe('etsyimg://shop/{id}/icon|banner and etsyimg://video/{id}/thumbnail (CDN only)', () => {
+  const ICON = 'https://i.etsystatic.com/isla/icon_fullxfull.jpg'
+  const BANNER = 'https://i.etsystatic.com/isbl/banner_760x100.jpg'
+  const THUMB = 'https://v.etsystatic.com/video/upload/thumb.jpg'
+
+  function setup() {
+    const db = memDb()
+    seedShop(db, { id: 5, iconUrl: ICON })
+    seedShop(db, { id: 6, shopName: 'Other', iconUrl: 'file:///etc/passwd' })
+    db.prepare('UPDATE shops SET banner_url = ? WHERE id = 5').run(BANNER)
+    upsertListing(
+      db,
+      mkInput(1, {
+        shopId: 5,
+        videos: [{ id: 9, width: 100, height: 100, thumbnailUrl: THUMB, videoUrl: null, state: 'active' }]
+      }),
+      1
+    )
+    upsertListing(
+      db,
+      mkInput(2, { shopId: 5, videos: [{ id: 10, width: 1, height: 1, thumbnailUrl: null, videoUrl: null, state: null }] }),
+      1
+    )
+    const cdn = fakeCdn()
+    const store = new FakeImageStore()
+    const handler = createImageProtocolHandler({ db, getStore: async () => store, fetch: cdn })
+    return { handler, cdn }
+  }
+
+  it('parses only shop/{id}/icon|banner and video/{id}/thumbnail', () => {
+    expect(parseShopImageUrl('etsyimg://shop/5/icon')).toEqual({ shopId: 5, kind: 'icon' })
+    expect(parseShopImageUrl('etsyimg://shop/5/banner')).toEqual({ shopId: 5, kind: 'banner' })
+    expect(parseShopImageUrl('etsyimg://shop/5/logo')).toBeNull()
+    expect(parseShopImageUrl('etsyimg://shop/0/icon')).toBeNull()
+    expect(parseShopImageUrl('etsyimg://img/5/icon')).toBeNull()
+    expect(parseVideoThumbUrl('etsyimg://video/9/thumbnail')).toBe(9)
+    expect(parseVideoThumbUrl('etsyimg://video/9/full')).toBeNull()
+    expect(parseVideoThumbUrl('etsyimg://video/x/thumbnail')).toBeNull()
+  })
+
+  it('serves the logo, the banner and the video frame from the CDN', async () => {
+    const { handler, cdn } = setup()
+    for (const [url, src] of [
+      ['etsyimg://shop/5/icon', ICON],
+      ['etsyimg://shop/5/banner', BANNER],
+      ['etsyimg://video/9/thumbnail', THUMB]
+    ]) {
+      const res = await handler(new Request(url))
+      expect(res.status).toBe(200)
+      expect(new Uint8Array(await res.arrayBuffer())).toEqual(new Uint8Array(cdnBytes(src)))
+    }
+    expect(cdn.calls).toEqual([ICON, BANNER, THUMB])
+  })
+
+  it('404 for an unknown shop/video, a missing banner/frame, or a URL that is not the CDN', async () => {
+    const { handler, cdn } = setup()
+    for (const url of [
+      'etsyimg://shop/99/icon',
+      'etsyimg://shop/6/banner',
+      'etsyimg://shop/6/icon',
+      'etsyimg://video/10/thumbnail',
+      'etsyimg://video/99/thumbnail'
+    ]) {
+      expect((await handler(new Request(url))).status).toBe(404)
+    }
+    expect(cdn.calls).toEqual([])
+    expect((await handler(new Request('etsyimg://shop/5/logo'))).status).toBe(400)
   })
 })

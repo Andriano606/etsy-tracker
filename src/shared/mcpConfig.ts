@@ -91,6 +91,8 @@ export const MCP_TOOL_SUMMARY: ReadonlyArray<{ name: string; text: string; write
   { name: 'list_reviews', text: 'відгуки покупців з фільтрами за оцінкою, датою, текстом' },
   { name: 'get_store_stats', text: 'статистика магазину за період (те саме, що «📊 Статистика»)' },
   { name: 'get_product_image', text: 'фото товару як картинка' },
+  { name: 'get_store_logo', text: 'логотип або банер магазину як картинка' },
+  { name: 'get_product_video_preview', text: 'кадр-прев’ю відео товару як картинка' },
   { name: 'get_review_photo', text: 'фото з відгуку як картинка' },
   { name: 'list_my_products', text: 'мій магазин: товари в будь-якому стані (чернетки, неактивні…)' },
   { name: 'find_categories', text: 'пошук категорії для нового товару' },

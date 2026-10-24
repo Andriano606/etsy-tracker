@@ -152,9 +152,9 @@ docker run -d --name etsy-tracker-minio --restart unless-stopped \
 
 Що варто знати:
 
-- **Читання** — 11 інструментів: `list_stores`, `get_store`, `search_products`,
+- **Читання** — 13 інструментів: `list_stores`, `get_store`, `search_products`,
   `get_product`, `get_product_history`, `list_snapshots`, `get_snapshot_changes`,
-  `list_reviews`, `get_store_stats`, `get_product_image`, `get_review_photo`.
+  `list_reviews`, `get_store_stats`, `get_product_image`, `get_review_photo`, `get_store_logo` (логотип або банер магазину), `get_product_video_preview` (кадр-прев’ю відео товару).
 - **Нейтральні дані.** Назви й опис інструментів, поля відповідей («store», «product»,
   «snapshot» = сканування, «discount» = акція, «customer price» = ціна для покупця) не
   згадують майданчик. Посилання на нього, адреси CDN і сирий JSON API не віддаються; слово

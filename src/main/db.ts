@@ -2625,6 +2625,23 @@ export function getReviewImageRow(db: Db, id: number): ReviewImageRow | null {
   return (r as ReviewImageRow | undefined) ?? null
 }
 
+/** A shop's logo (`icon`) or banner URL as stored from Etsy; null = none / unknown shop. */
+export function getShopImageUrl(db: Db, shopId: number, kind: 'icon' | 'banner'): string | null {
+  const col = kind === 'icon' ? 'icon_url' : 'banner_url'
+  const r = db.prepare(`SELECT ${col} AS url FROM shops WHERE id = ?`).get(shopId) as { url: string | null } | undefined
+  return r?.url || null
+}
+
+/** A video's preview frame URL (videos are shared across listings — any row that has one). */
+export function getVideoThumbnailUrl(db: Db, videoId: number): string | null {
+  const r = db
+    .prepare(
+      'SELECT thumbnail_url AS url FROM listing_videos WHERE video_id = ? AND thumbnail_url IS NOT NULL ORDER BY removed_at IS NOT NULL LIMIT 1'
+    )
+    .get(videoId) as { url: string | null } | undefined
+  return r?.url || null
+}
+
 /** Review photos still to copy: 'pending', and 'error' with < maxAttempts tries (null = all). */
 export function listReviewImagesToSync(
   db: Db,

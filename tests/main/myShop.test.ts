@@ -52,6 +52,20 @@ describe('mapping', () => {
       currency: 'UAH'
     })
     expect(l.imageUrl).toMatch(/^https:\/\/i\.etsystatic\.com\/.*170x135/)
+    // the same first photo at full size, for the image viewer
+    expect(l.imageFullUrl).toBe(l.imageUrl!.replace('170x135', 'fullxfull'))
+  })
+
+  it('the full-size URL: first by rank, validated, 570xN when there is no fullxfull', () => {
+    const l = mkEtsyListing(2)
+    const [a, b] = l.images!
+    l.images = [{ ...b, rank: 2 }, { ...a, rank: 1 }]
+    expect(toMyListing(l).imageFullUrl).toBe(a.url_fullxfull)
+    l.images = [{ ...a, url_fullxfull: 'https://evil.example/full.jpg' }]
+    expect(toMyListing(l).imageFullUrl).toBeNull()
+    l.images = [{ ...a, url_fullxfull: undefined as never }]
+    expect(toMyListing(l).imageFullUrl).toBe(a.url_570xN)
+    expect(toMyListing({ ...mkEtsyListing(1), images: [] }).imageFullUrl).toBeNull()
   })
 
   it('no images / a non-CDN image URL → no thumbnail', () => {

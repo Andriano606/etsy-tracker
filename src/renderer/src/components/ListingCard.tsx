@@ -1,10 +1,11 @@
 import type { ReactNode } from 'react'
-import type { Listing } from '@shared/types'
+import type { Listing, ListingImage } from '@shared/types'
 import { formatCount, formatPrice, formatRating, formatReviewCount } from '@shared/format'
 import { GLOSSARY, type GlossaryKey } from '@shared/glossary'
 import { buyerPriceIncludes, discountLabel, formatMoney, hasActiveDiscount, shownPrice } from '@shared/price'
 import { imageSrc } from '../imageUrl'
-import { Icon, Tooltip, type IconName } from '../ui'
+import { Icon, Tooltip, ZoomButton, type IconName } from '../ui'
+import type { ViewerImage } from '../store'
 import { NowPrice, WasPrice } from './PriceParts'
 
 /** A tooltip body: the glossary term in bold, its short text and an optional extra line. */
@@ -193,6 +194,19 @@ export function PopularityBadges({ listing }: { listing: Listing }): JSX.Element
   )
 }
 
+/**
+ * A listing's photos for the image viewer, at their biggest size (fullxfull),
+ * in the listing's order — the card's magnifier and the listing window's gallery.
+ */
+export function listingGallery(images: ListingImage[], title: string): ViewerImage[] {
+  const n = images.length
+  return images.map((img, i) => ({
+    src: imageSrc(img, 'fullxfull'),
+    alt: img.alt || title,
+    caption: n > 1 ? `${title} — фото ${i + 1} з ${n}` : title
+  }))
+}
+
 export function ListingCard({
   listing,
   isNew,
@@ -204,33 +218,43 @@ export function ListingCard({
 }): JSX.Element {
   const img = listing.images[0]
   return (
-    <button
-      className={`listing-card${isNew ? ' is-new' : ''}`}
-      onClick={() => onOpen(listing)}
-      data-testid="listing-card"
-    >
-      <div className="thumb">
-        {img ? (
-          <img src={imageSrc(img, '570xN')} alt={img.alt ?? ''} loading="lazy" referrerPolicy="no-referrer" />
-        ) : (
-          <span className="no-img">
-            <Icon name="image" size={22} />
-            без фото
-          </span>
-        )}
-        {isNew && (
-          <Tooltip content={tipOf('listingNew')} describe={false}>
-            <span className="badge-new">Новий</span>
-          </Tooltip>
-        )}
-      </div>
-      <div className="card-body">
-        <div className="card-title" title={listing.title}>
-          {listing.title}
+    // The card is a button; the magnifier over the photo's corner is its sibling (never nested).
+    <div className="listing-card-host ui-zoom-host">
+      <button
+        className={`listing-card${isNew ? ' is-new' : ''}`}
+        onClick={() => onOpen(listing)}
+        data-testid="listing-card"
+      >
+        <div className="thumb">
+          {img ? (
+            <img src={imageSrc(img, '570xN')} alt={img.alt ?? ''} loading="lazy" referrerPolicy="no-referrer" />
+          ) : (
+            <span className="no-img">
+              <Icon name="image" size={22} />
+              без фото
+            </span>
+          )}
+          {isNew && (
+            <Tooltip content={tipOf('listingNew')} describe={false}>
+              <span className="badge-new">Новий</span>
+            </Tooltip>
+          )}
         </div>
-        <PriceTag listing={listing} />
-        <PopularityBadges listing={listing} />
-      </div>
-    </button>
+        <div className="card-body">
+          <div className="card-title" title={listing.title}>
+            {listing.title}
+          </div>
+          <PriceTag listing={listing} />
+          <PopularityBadges listing={listing} />
+        </div>
+      </button>
+      {img && (
+        <ZoomButton
+          images={listingGallery(listing.images, listing.title)}
+          label={`Відкрити фото на весь розмір: ${listing.title}`}
+          className="ui-zoom-corner card-zoom"
+        />
+      )}
+    </div>
   )
 }

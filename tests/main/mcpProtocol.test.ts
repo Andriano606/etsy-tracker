@@ -38,7 +38,7 @@ const boom: McpTool = {
 }
 
 const opts = (over: Partial<McpHandlerOptions> = {}): McpHandlerOptions => ({
-  info: { name: 'shop-catalog', title: 'Shop Catalog', version: '1.2.3', instructions: 'Read-only catalog.' },
+  info: { name: 'etsy-tracker', title: 'Etsy Tracker', version: '1.2.3', instructions: 'Etsy Tracker data.' },
   tools: [add, boom],
   ...over
 })
@@ -58,8 +58,8 @@ describe('initialize', () => {
       result: {
         protocolVersion: '2025-06-18',
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: 'shop-catalog', title: 'Shop Catalog', version: '1.2.3' },
-        instructions: 'Read-only catalog.'
+        serverInfo: { name: 'etsy-tracker', title: 'Etsy Tracker', version: '1.2.3' },
+        instructions: 'Etsy Tracker data.'
       }
     })
     expect(onInitialize).toHaveBeenCalledWith('claude-code')
@@ -135,12 +135,23 @@ describe('tools', () => {
 
 describe('write tools', () => {
   it('a tool marked readOnly: false is annotated as changing things (destructive when said so)', async () => {
-    const w: McpTool = { ...add, name: 'publish', readOnly: false, destructive: true }
-    const u: McpTool = { ...add, name: 'upload', readOnly: false }
+    const w: McpTool = { ...add, name: 'publish', readOnly: false, destructive: true, openWorld: true }
+    const u: McpTool = { ...add, name: 'upload', readOnly: false, openWorld: true }
     const res = await handleMcpMessage(opts({ tools: [add, w, u] }), call('tools/list'))
     const ann = (res!.result as { tools: Array<{ annotations: Record<string, boolean> }> }).tools.map((t) => t.annotations)
     expect(ann[0]).toMatchObject({ readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false })
     expect(ann[1]).toMatchObject({ readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true })
+    expect(ann[2]).toMatchObject({ readOnlyHint: false, destructiveHint: false, openWorldHint: true })
+  })
+
+  it('openWorldHint follows the openWorld flag alone (default false), for reads and writes alike', async () => {
+    const live: McpTool = { ...add, name: 'live_read', openWorld: true }
+    const local: McpTool = { ...add, name: 'local_write', readOnly: false }
+    const off: McpTool = { ...add, name: 'explicit_off', openWorld: false }
+    const res = await handleMcpMessage(opts({ tools: [add, live, local, off] }), call('tools/list'))
+    const ann = (res!.result as { tools: Array<{ annotations: Record<string, boolean> }> }).tools.map((t) => t.annotations)
+    expect(ann.map((a) => a.openWorldHint)).toEqual([false, true, false, false])
+    expect(ann[1]).toMatchObject({ readOnlyHint: true, idempotentHint: true })
     expect(ann[2]).toMatchObject({ readOnlyHint: false, destructiveHint: false })
   })
 })

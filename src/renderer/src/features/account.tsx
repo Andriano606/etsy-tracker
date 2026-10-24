@@ -1,10 +1,11 @@
 // Feature "account" (the reference UI — copy its shape): the "Акаунт" tab in "Мій магазин".
 
+import './account.css'
 import { useEffect, useState } from 'react'
 import type { AccountAddress, AccountSummary } from '@shared/features/account'
 // The permissions in the words "Мій магазин" uses ("товар", not Etsy's "лістинг").
 import { scopeText } from '../components/MyShopModal'
-import { Badge, Button, Callout, EmptyState, Icon, InfoTip, Loading } from '../ui'
+import { Badge, Button, Callout, EmptyState, Icon, InfoTip, Loading, ZoomImage } from '../ui'
 import { featureCall } from './call'
 import type { FeatureUi } from './types'
 
@@ -47,9 +48,16 @@ function AccountTab(): JSX.Element {
   return (
     <div className="account-tab ui-stack" data-testid="account-tab">
       <section className="ui-card account-head" aria-label="Акаунт Etsy">
-        <div className="account-avatar" aria-hidden="true">
-          {a.avatarUrl ? <img src={a.avatarUrl} alt="" referrerPolicy="no-referrer" /> : <Icon name="user" size={26} />}
-        </div>
+        {a.avatarUrl ? (
+          // Etsy gives the avatar only at 75×75 — the viewer opens that.
+          <div className="account-avatar">
+            <ZoomImage className="account-avatar-zoom" src={a.avatarUrl} alt={name ? `Фото профілю: ${name}` : 'Фото профілю'} />
+          </div>
+        ) : (
+          <div className="account-avatar" aria-hidden="true">
+            <Icon name="user" size={26} />
+          </div>
+        )}
         <div className="account-who">
           <div className="account-kicker">
             Ваш акаунт Etsy <InfoTip glossary="features.account.account" />

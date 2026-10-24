@@ -20,7 +20,7 @@ import {
 import { formatCount, formatPrice } from '@shared/format'
 import type { ShopSummary } from '@shared/types'
 import { useStore } from '../store'
-import { Badge, Button, Callout, EmptyState, Field, GLOSSARY, Icon, InfoTip, Loading, Select, Term, Tooltip } from '../ui'
+import { Badge, Button, Callout, EmptyState, Field, GLOSSARY, Icon, InfoTip, Loading, Select, Term, Tooltip, ZoomImage } from '../ui'
 import { featureCall } from './call'
 import { ErrorNote, IconStat, scrollBehavior } from './compete/common'
 import { LazyDetails } from './LazyDetails'
@@ -255,7 +255,14 @@ function ResultCard({
     <article className="market-card" data-testid="market-result">
       <div className="market-thumb">
         {l.imageUrl ? (
-          <img src={l.imageUrl} alt="" loading="lazy" referrerPolicy="no-referrer" />
+          <ZoomImage
+            className="market-zoom"
+            src={l.imageUrl}
+            full={l.imageFullUrl ?? l.imageUrl}
+            alt={l.title}
+            caption={l.title}
+            loading="lazy"
+          />
         ) : (
           <span className="market-no-img">
             <Icon name="image" size={20} />

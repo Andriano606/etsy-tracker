@@ -284,9 +284,9 @@ const VARIATIONS: VariationImagesData = {
   listingId: 1001,
   properties: [{ propertyId: 513, name: 'Size', values: [{ valueId: 901, value: 'S' }, { valueId: 902, value: 'M' }] }],
   photos: [
-    { imageId: 5001, url: 'https://i.etsystatic.com/1/a.jpg', rank: 1, alt: null },
-    { imageId: 5002, url: 'https://i.etsystatic.com/1/b.jpg', rank: 2, alt: null },
-    { imageId: 5003, url: null, rank: 3, alt: null }
+    { imageId: 5001, url: 'https://i.etsystatic.com/1/a.jpg', urlFull: 'https://i.etsystatic.com/1/a-full.jpg', rank: 1, alt: null },
+    { imageId: 5002, url: 'https://i.etsystatic.com/1/b.jpg', urlFull: 'https://i.etsystatic.com/1/b-full.jpg', rank: 2, alt: 'Blue' },
+    { imageId: 5003, url: null, urlFull: null, rank: 3, alt: null }
   ],
   assigned: [{ propertyId: 513, valueId: 901, value: 'S', imageId: 5002 }]
 }
@@ -418,6 +418,7 @@ const row = (over: Partial<InventoryOverviewRow>): InventoryOverviewRow => ({
   title: 'Sized planner',
   state: 'active',
   imageUrl: 'https://i.etsystatic.com/1/s.jpg',
+  imageFullUrl: 'https://i.etsystatic.com/1/s-full.jpg',
   priceMin: usd(1000),
   priceMax: usd(1400),
   totalQuantity: 15,
@@ -466,7 +467,7 @@ describe('Мій магазин → Ціни й залишки', () => {
     const sized = screen.getByTestId('prices-row-1001')
     expect(sized).toHaveTextContent(/10,00\sUSD – 14,00\sUSD/)
     expect(sized).toHaveTextContent('15')
-    expect(within(sized).queryByRole('button')).toBeNull()
+    expect(within(sized).queryByRole('button', { name: /Змінити/ })).toBeNull()
     expect(sized).toHaveTextContent('Змінюйте в редакторі')
     expect(within(sized).getByText('в редакторі')).toHaveAccessibleDescription(/У товару 3 варіанти: відкрийте вкладку «Товари»/)
     expect(within(sized).getByText('3')).toBeInTheDocument()
@@ -589,5 +590,51 @@ describe('Мій магазин → Ціни й залишки', () => {
     mockFeature({ 'inventory.overview': { ok: false, error: 'Для цього потрібен дозвіл: читання товарів.' } })
     await renderTab()
     expect(screen.getByRole('alert')).toHaveTextContent('читання товарів')
+  })
+})
+
+describe('Відкрити на весь розмір', () => {
+  const viewer = () => useStore.getState().viewer
+
+  it('Ціни й залишки: the thumbnail opens the main photo at full size; the row does not start editing', async () => {
+    mockFeature({ 'inventory.overview': PAGE })
+    render(<PricesTab />)
+    await act(async () => {})
+    const sized = screen.getByTestId('prices-row-1001')
+    await act(async () => {
+      fireEvent.click(within(sized).getByRole('button', { name: 'Відкрити на весь розмір: Головне фото: Sized planner' }))
+    })
+    expect(viewer()).toEqual({
+      images: [{ src: 'https://i.etsystatic.com/1/s-full.jpg', alt: 'Головне фото: Sized planner', caption: 'Sized planner' }],
+      index: 0
+    })
+    expect(api.featureCall).toHaveBeenCalledTimes(1)
+    // no photo → no button
+    expect(within(screen.getByTestId('prices-row-1002')).queryByRole('button', { name: /на весь розмір/ })).toBeNull()
+  })
+
+  it('Фото варіантів: a magnifier beside each photo opens the listing photos as a gallery; the choice does not change', async () => {
+    mockFeature({ 'inventory.variationImages': VARIATIONS })
+    render(<VariationImagesSection listing={mkMyListing(1001)} />)
+    await act(async () => {})
+    const group = screen.getByRole('radiogroup', { name: 'Фото для «M»' })
+    // photo 3 has no picture: nothing to open
+    expect(within(group).queryByRole('button', { name: 'Відкрити фото 3 на весь розмір' })).toBeNull()
+    await act(async () => {
+      fireEvent.click(within(group).getByRole('button', { name: 'Відкрити фото 2 на весь розмір' }))
+    })
+    expect(viewer()).toEqual({
+      images: [
+        { src: 'https://i.etsystatic.com/1/a-full.jpg', alt: 'Фото 1', caption: 'Фото 1' },
+        { src: 'https://i.etsystatic.com/1/b-full.jpg', alt: 'Blue', caption: 'Фото 2 — Blue' }
+      ],
+      index: 1
+    })
+    expect(screen.getByRole('radio', { name: '«M»: без фото' })).toBeChecked()
+    expect(screen.getByRole('radio', { name: '«M»: фото 2' })).not.toBeChecked()
+    // arrows on the magnifier don't move the radio choice
+    fireEvent.keyDown(within(group).getByRole('button', { name: 'Відкрити фото 1 на весь розмір' }), { key: 'ArrowRight' })
+    expect(screen.getByRole('radio', { name: '«M»: без фото' })).toBeChecked()
+    expect(screen.getByRole('button', { name: 'Зберегти фото варіантів' })).toBeDisabled()
   })
 })

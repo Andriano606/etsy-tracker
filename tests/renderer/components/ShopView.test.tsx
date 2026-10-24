@@ -7,6 +7,7 @@ import { ShopView, imageErrorText } from '../../../src/renderer/src/components/S
 import { ConfirmModal } from '../../../src/renderer/src/components/ConfirmModal'
 import { HistoryModal } from '../../../src/renderer/src/components/ScanHistory'
 import { useStore } from '../../../src/renderer/src/store'
+import { ImageViewer } from '../../../src/renderer/src/ui'
 import { GLOSSARY } from '../../../src/shared/glossary'
 import { etsyIn, idleReviews, idleSync, mkBuyerPrice, mkChange, mkListing, mkPromotion, mkReview, mkScan, mkShop, setupRenderer, withKey, type Api } from '../helpers'
 
@@ -632,7 +633,7 @@ describe('ShopView: buyer prices and promotions', () => {
     const started = within(screen.getByTestId('promotions-started'))
     expect(started.getByText('Sale mug')).toBeInTheDocument()
     expect(started.getByText('−60%')).toBeInTheDocument()
-    expect(within(screen.getByTestId('promotions-started')).getByRole('button').querySelector('img')).toHaveAttribute(
+    expect(within(screen.getByTestId('promotions-started')).getByRole('button', { name: 'Sale mug' }).querySelector('img')).toHaveAttribute(
       'src',
       'etsyimg://img/50/75x75'
     )
@@ -914,5 +915,102 @@ describe('HistoryModal (redesign)', () => {
     useStore.setState({ historyScan: mkScan({ id: 4 }), historyChanges: [] })
     render(<HistoryModal />)
     expect(screen.getByText('Змін не було.')).toBeInTheDocument()
+  })
+})
+
+describe('ShopView: every picture opens full size in the image viewer', () => {
+  const showWithViewer = (over: Parameters<typeof useStore.setState>[0]) => {
+    useStore.setState({ keyStatus: withKey, activeShopId: 1, ...(over as object) })
+    return render(
+      <>
+        <ShopView />
+        <ImageViewer />
+      </>
+    )
+  }
+  const viewerImg = () => screen.getByRole('dialog', { name: 'Перегляд зображення' }).querySelector('img')!
+
+  it('the header shop logo opens the icon URL; without a logo there is nothing to open', async () => {
+    const icon = 'https://i.etsystatic.com/isla/abc/iusa_fullxfull.1.jpg'
+    const { unmount } = showWithViewer({ shops: [mkShop({ iconUrl: icon, lastOkScan: mkScan() })], listings: [] })
+    const btn = screen.getByRole('button', { name: 'Відкрити логотип магазину CeramicStudioUA на весь розмір' })
+    expect(btn.querySelector('img')).toHaveAttribute('src', icon)
+    await act(async () => fireEvent.click(btn))
+    expect(useStore.getState().viewer?.images[0].src).toBe(icon)
+    expect(viewerImg()).toHaveAttribute('src', icon)
+    unmount()
+    act(() => useStore.getState().closeImage())
+    showWithViewer({ shops: [mkShop({ iconUrl: null, lastOkScan: mkScan() })], listings: [] })
+    expect(screen.queryByRole('button', { name: /логотип магазину/ })).toBeNull()
+  })
+
+  it('new reviews: the buyer photo opens full; the listing thumbnail opens its photo, not the listing', async () => {
+    showWithViewer({
+      shops: [mkShop({ lastOkScan: mkScan() })],
+      newReviews: [mkReview(1, { listingId: 3, listingTitle: 'Blue mug', listingImageId: 10, hasImage: true })]
+    })
+    const group = screen.getByTestId('new-reviews')
+    await act(async () => fireEvent.click(within(group).getByRole('button', { name: /Відкрити на весь розмір: Фото покупця/ })))
+    expect(viewerImg()).toHaveAttribute('src', 'etsyimg://review/1/fullxfull')
+    act(() => useStore.getState().closeImage())
+    const zoom = within(group).getByRole('button', { name: 'Відкрити фото на весь розмір: Blue mug' })
+    expect(within(group).getByTitle('Blue mug').contains(zoom)).toBe(false)
+    await act(async () => fireEvent.click(zoom))
+    expect(api.getListing).not.toHaveBeenCalled()
+    expect(useStore.getState().detailListing).toBeNull()
+    expect(viewerImg()).toHaveAttribute('src', 'etsyimg://img/10/fullxfull')
+  })
+
+  it('a promotion row: the thumbnail magnifier opens the photo, the row still opens the listing', async () => {
+    const l = mkListing(5, { title: 'Sale mug' })
+    api.getListing.mockResolvedValue(l)
+    showWithViewer({
+      shops: [mkShop({ lastOkScan: mkScan({ promotionsStarted: 1 }) })],
+      listings: [l],
+      scanPromotions: { started: [mkPromotion(1, { listingId: 5, listingTitle: 'Sale mug', listingImageId: 50 })], ended: [] }
+    })
+    const started = within(screen.getByTestId('promotions-started'))
+    await act(async () => fireEvent.click(started.getByRole('button', { name: 'Відкрити фото на весь розмір: Sale mug' })))
+    expect(viewerImg()).toHaveAttribute('src', 'etsyimg://img/50/fullxfull')
+    expect(api.getListing).not.toHaveBeenCalled()
+    act(() => useStore.getState().closeImage())
+    await act(async () => fireEvent.click(started.getByRole('button', { name: 'Sale mug' })))
+    expect(api.getListing).toHaveBeenCalledWith(5)
+    expect(useStore.getState().viewer).toBeNull()
+  })
+
+  it('a changed row: the thumbnail magnifier opens the listing photos as a gallery; the row still opens the listing', async () => {
+    const img = (id: number, rank: number) => ({ ...mkListing(1).images[0], id, rank })
+    const changed = mkListing(7, { title: 'Edited mug', images: [img(71, 1), img(72, 2)] })
+    showWithViewer({
+      shops: [mkShop({ lastOkScan: mkScan({ changed: 1 }) })],
+      listings: [changed],
+      lastChanges: [mkChange(1, 'changed', changed, { oldValue: { title: 'Old' }, newValue: { title: 'Edited mug' } })]
+    })
+    const zoom = screen.getAllByRole('button', { name: 'Відкрити фото на весь розмір: Edited mug' }).find((b) => b.classList.contains('change-zoom'))!
+    const row = zoom.parentElement!.querySelector('.change-row') as HTMLElement
+    expect(row.contains(zoom)).toBe(false)
+    await act(async () => fireEvent.click(zoom))
+    expect(useStore.getState().detailListing).toBeNull()
+    expect(useStore.getState().viewer?.images.map((i) => i.src)).toEqual(['etsyimg://img/71/fullxfull', 'etsyimg://img/72/fullxfull'])
+    expect(viewerImg()).toHaveAttribute('src', 'etsyimg://img/71/fullxfull')
+    act(() => useStore.getState().closeImage())
+    await act(async () => fireEvent.click(row))
+    expect(useStore.getState().detailListing?.listingId).toBe(7)
+    expect(useStore.getState().viewer).toBeNull()
+  })
+
+  it('a new listing card in the results and the grid: the magnifier opens the photo, not the listing', async () => {
+    const fresh = mkListing(3, { title: 'Brand new mug' })
+    showWithViewer({
+      shops: [mkShop({ lastOkScan: mkScan({ added: 1 }), newCount: 1 })],
+      listings: [fresh],
+      lastChanges: [mkChange(1, 'added', fresh)]
+    })
+    const zooms = screen.getAllByRole('button', { name: /^Відкрити фото на весь розмір: / })
+    expect(zooms.length).toBeGreaterThanOrEqual(2) // the results card + the grid card
+    await act(async () => fireEvent.click(zooms[0]))
+    expect(useStore.getState().detailListing).toBeNull()
+    expect(viewerImg()).toHaveAttribute('src', 'etsyimg://img/30/fullxfull')
   })
 })

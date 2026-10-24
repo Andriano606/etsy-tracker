@@ -1,10 +1,12 @@
-// The MCP server's read-only tools over the app's database. Everything a
-// client sees is neutral on purpose: "store", "product", "snapshot" (a scan),
-// "discount" (a promotion), "customer price" (Etsy's buyer price) — no
-// marketplace name, no marketplace URLs (listing/shop links, CDN image URLs),
-// no raw API JSON. Free text from the data itself (descriptions, policies,
-// reviews…) goes through `neutralText`. tests/main/mcpTools.test.ts asserts
-// that no "etsy" reaches a client anywhere.
+// The "etsy-tracker" MCP server's core tools over the app's local database:
+// the Etsy shops the user tracks, as of their latest scans. The JSON keys keep
+// their original names — "store" = an Etsy shop, "product" = a listing,
+// "snapshot" = a scan, "discount" = an Etsy sale/promotion, "customer price" =
+// Etsy's buyer price, "favorites" = favorers. Text from the data goes out
+// exactly as stored (Etsy's text, HTML entities decoded); the Etsy page URLs of shops and
+// listings go out as `url`. Never sent: raw API JSON (raw_json), tokens/keys,
+// CDN image URLs (photos go out as MCP image content). tests/main/mcpTools.test.ts
+// checks all of that over every tool.
 
 import type {
   BuyerPrice,
@@ -30,6 +32,7 @@ import { priceValue } from '../shared/format'
 import { filterListings, type SortMode } from '../shared/listingFilter'
 import { discountPercent, hasActiveDiscount, shownPrice } from '../shared/price'
 import { MCP_SERVER_NAME } from '../shared/mcpConfig'
+import { isAllowedExternalUrl } from '../shared/externalUrl'
 import {
   type Db,
   getListing,
@@ -47,11 +50,8 @@ import {
 } from './db'
 import { type McpServerInfo, type McpTool, ToolInputError, errorResult, textResult } from './mcpProtocol'
 import { shopStatsPayload } from './shopStats'
-import { neutralText } from './neutral'
 import { type OwnStoreDeps, createDraftTools, createStoreTools } from './mcpStoreTools'
 import { featureMcpTools } from './features'
-
-export { neutralText }
 
 export interface McpToolDeps {
   db: Db
@@ -69,6 +69,7 @@ export interface McpToolDeps {
 
 /** Larger images are refused (base64 in a model's context). */
 export const MCP_MAX_IMAGE_BYTES = 5 * 1024 * 1024
+const TOO_LARGE = 'The image is larger than 5 MB and cannot be returned.'
 
 /**
  * Image types MCP clients (Claude) can show. Etsy's CDN negotiates the format
@@ -83,15 +84,16 @@ export function imageMime(contentType: string): string {
   return t === 'image/jpg' ? 'image/jpeg' : t
 }
 
-// ------------------------------------------------------------- neutral output
+// ------------------------------------------------------------- output shapes
 
-const n = neutralText
-const list = (a: readonly string[] | null | undefined): string[] => (a ?? []).map((s) => n(s))
+const list = (a: readonly string[] | null | undefined): string[] => [...(a ?? [])]
 const isoSec = (s: number | null | undefined): string | null => (s == null ? null : new Date(s * 1000).toISOString())
 const isoMs = (ms: number | null | undefined): string | null => (ms == null ? null : new Date(ms).toISOString())
 const val = (m: MoneyValue | null | undefined): number | null => (m ? priceValue(m.amount, m.divisor) : null)
 const featured = (r: number | null | undefined): number | null => (r != null && r >= 1 ? r : null)
 const productType = (t: string | null | undefined): string | null => (t === 'download' ? 'digital' : (t ?? null))
+/** A stored shop/listing page URL, only when it is an https etsy.com page. */
+const pageUrl = (u: string | null | undefined): string | null => (u && isAllowedExternalUrl(u) ? u : null)
 
 /** ISO date/time argument → epoch seconds. */
 function parseDateArg(v: unknown, name: string): number | null {
@@ -144,7 +146,9 @@ function productSummary(l: Listing, newIds: ReadonlySet<number>) {
   return {
     id: l.listingId,
     store_id: l.shopId,
-    title: n(l.title),
+    title: l.title,
+    /** The listing's Etsy page. */
+    url: pageUrl(l.url),
     status: l.removedAt == null ? 'active' : 'removed',
     price: priceSummary(l),
     quantity: l.quantity,
@@ -182,7 +186,7 @@ function attributes(d: ListingDetails | null | undefined) {
       : null,
     language: d.language,
     skus: list(d.skus),
-    digital_files: n(d.fileData),
+    digital_files: d.fileData,
     taxable: d.isTaxable,
     non_taxable: d.nonTaxable,
     auto_renew: d.shouldAutoRenew,
@@ -198,7 +202,7 @@ function imageOf(img: ListingImage, i: number) {
     position: i + 1,
     width: img.width,
     height: img.height,
-    alt_text: n(img.alt),
+    alt_text: img.alt,
     color_hex: img.hexCode ?? null,
     is_black_and_white: img.isBlackAndWhite ?? null,
     added_at: isoSec(img.createdAt)
@@ -209,18 +213,18 @@ function productFull(l: Listing, newIds: ReadonlySet<number>, storeName: string 
   const d = l.details ?? null
   return {
     ...productSummary(l, newIds),
-    store_name: n(storeName),
+    store_name: storeName,
     price: priceFull(l),
     state: l.state ?? null,
-    description: n(l.description),
+    description: l.description,
     tags: list(l.tags),
     materials: list(d?.materials),
     styles: list(d?.styles),
     attributes: attributes(d),
     personalization_questions: d?.personalization
       ? d.personalization.map((q) => ({
-          question: n(q.text),
-          instructions: n(q.instructions),
+          question: q.text,
+          instructions: q.instructions,
           type: q.type,
           required: q.required,
           max_chars: q.maxChars,
@@ -261,7 +265,7 @@ function snapshotOf(s: ScanSummary) {
     discounts_started: s.promotionsStarted ?? 0,
     discounts_ended: s.promotionsEnded ?? 0,
     customer_country: s.buyerCountry ?? null,
-    /** Very large store: only the first ≈12 000 products were read, removals not detected. */
+    /** Very large shop: Etsy's paging stops at ≈12 100 active listings, so not all were read and removals were not detected. */
     partial: s.truncated
   }
 }
@@ -281,15 +285,17 @@ function storeSummary(s: ShopSummary, mine: number | null = null) {
   const p = s.profile ?? null
   return {
     id: s.id,
-    /** The user's own store (connected in the app): list_my_products / create_product / … work on it. */
+    /** The user's own Etsy shop (signed in in the app): list_my_products / create_product / … work on it. */
     is_mine: mine != null && s.id === mine,
-    name: n(s.shopName),
-    title: n(s.title),
+    name: s.shopName,
+    title: s.title,
+    /** The shop's Etsy page. */
+    url: pageUrl(s.url),
     currency: s.currency,
     /** get_store_logo returns it as an image. */
     has_logo: !!s.iconUrl,
     active_products: s.activeCount,
-    /** The store's own count of active products at the latest snapshot (may differ while products move). */
+    /** Etsy's own count of the shop's active listings (listing_active_count) at the latest scan. */
     reported_active_products: s.etsyActiveCount,
     sales_count: s.stats?.transactionSoldCount ?? p?.transactionSoldCount ?? null,
     rating: s.stats?.reviewAverage ?? p?.reviewAverage ?? null,
@@ -300,7 +306,9 @@ function storeSummary(s: ShopSummary, mine: number | null = null) {
     tracked_since: isoMs(s.addedAt),
     new_products_in_latest_snapshot: s.newCount,
     latest_snapshot: s.lastOkScan ? snapshotOf(s.lastOkScan) : null,
-    latest_update_failed: s.lastScan?.status === 'error'
+    latest_update_failed: s.lastScan?.status === 'error',
+    /** Why the latest scan failed (the app's message); null when it didn't. */
+    latest_update_error: s.lastScan?.status === 'error' ? (s.lastScan.error ?? null) : null
   }
 }
 
@@ -309,15 +317,15 @@ function storeFull(s: ShopSummary, mine: number | null = null) {
   const r = s.reviews ?? null
   return {
     ...storeSummary(s, mine),
-    owner_username: n(p?.loginName),
+    owner_username: p?.loginName ?? null,
     /** get_store_logo with kind "banner". */
     has_banner: !!p?.bannerUrl,
-    announcement: n(p?.announcement),
-    sale_message: n(p?.saleMessage),
-    digital_sale_message: n(p?.digitalSaleMessage),
+    announcement: p?.announcement ?? null,
+    sale_message: p?.saleMessage ?? null,
+    digital_sale_message: p?.digitalSaleMessage ?? null,
     on_vacation: p?.isVacation ?? null,
-    vacation_message: n(p?.vacationMessage),
-    vacation_autoreply: n(p?.vacationAutoreply),
+    vacation_message: p?.vacationMessage ?? null,
+    vacation_autoreply: p?.vacationAutoreply ?? null,
     accepts_custom_requests: p?.acceptsCustomRequests ?? null,
     languages: p?.languages ?? [],
     ships_from_country: p?.shippingFromCountryIso ?? null,
@@ -325,13 +333,13 @@ function storeFull(s: ShopSummary, mine: number | null = null) {
     updated_at: isoSec(p?.etsyUpdatedAt),
     policies: p
       ? {
-          welcome: n(p.policies.welcome),
-          payment: n(p.policies.payment),
-          shipping: n(p.policies.shipping),
-          refunds: n(p.policies.refunds),
-          additional: n(p.policies.additional),
-          seller_info: n(p.policies.sellerInfo),
-          privacy: n(p.policies.privacy),
+          welcome: p.policies.welcome,
+          payment: p.policies.payment,
+          shipping: p.policies.shipping,
+          refunds: p.policies.refunds,
+          additional: p.policies.additional,
+          seller_info: p.policies.sellerInfo,
+          privacy: p.policies.privacy,
           updated_at: isoSec(p.policies.updatedAt)
         }
       : null,
@@ -371,14 +379,14 @@ function reviewOf(r: ReviewRow) {
     review_id: r.id,
     store_id: r.shop_id,
     product_id: r.listing_id,
-    product_title: n(r.listing_title),
+    product_title: r.listing_title,
     rating: r.rating,
-    text: n(r.review) || null,
+    text: r.review || null,
     language: r.language,
     has_photo: !!r.has_photo,
     created_at: isoSec(r.created_timestamp),
     updated_at: isoSec(r.updated_timestamp),
-    /** Found by a snapshot after the store's review history was loaded (not part of the initial history). */
+    /** Found by the review sync after a scan, once the shop's review history had been loaded (not part of the initial history). */
     is_new: r.origin === 'new',
     first_seen_snapshot_id: r.first_seen_scan_id
   }
@@ -417,7 +425,7 @@ const END_REASON: Record<PromotionEndReason, string> = {
 function discountOf(p: Promotion) {
   return {
     product_id: p.listingId,
-    product_title: n(p.listingTitle ?? null),
+    product_title: p.listingTitle ?? null,
     discount_percent: p.discountPercentage,
     discount_amount: val(p.discountAmount),
     regular_price: val(p.original),
@@ -435,16 +443,16 @@ function discountOf(p: Promotion) {
   }
 }
 
-/** A change row's tracked fields with neutral names. */
-export function neutralFields(t: TrackedFields | null | undefined): Record<string, unknown> | null {
+/** A change row's tracked fields under the MCP output's names. */
+export function changeFields(t: TrackedFields | null | undefined): Record<string, unknown> | null {
   if (!t) return null
   const o: Record<string, unknown> = {}
-  if ('title' in t) o.title = n(t.title ?? null)
+  if ('title' in t) o.title = t.title ?? null
   if ('priceAmount' in t || 'currency' in t) {
     o.base_price = t.priceAmount != null && t.priceDivisor ? priceValue(t.priceAmount, t.priceDivisor) : null
     o.base_currency = t.currency ?? null
   }
-  if ('description' in t) o.description = n(t.description ?? null)
+  if ('description' in t) o.description = t.description ?? null
   if ('tags' in t) o.tags = t.tags ? list(t.tags) : null
   if ('materials' in t) o.materials = t.materials ? list(t.materials) : null
   if ('styles' in t) o.styles = t.styles ? list(t.styles) : null
@@ -463,10 +471,10 @@ export function neutralFields(t: TrackedFields | null | undefined): Record<strin
   if ('hasVariations' in t) o.has_variations = t.hasVariations
   if ('personalization' in t) {
     o.personalization_questions = t.personalization
-      ? t.personalization.map((q) => ({ question: n(q.text), required: q.required, type: q.type }))
+      ? t.personalization.map((q) => ({ question: q.text, required: q.required, type: q.type }))
       : null
   }
-  if ('dimensions' in t) o.weight_and_dimensions = n(t.dimensions ?? null)
+  if ('dimensions' in t) o.weight_and_dimensions = t.dimensions ?? null
   return o
 }
 
@@ -503,7 +511,7 @@ const bucketOf = (b: StatsReviewBucket) => ({
 
 const topRow = (r: StatsTopRow) => ({
   product_id: r.listingId,
-  title: n(r.title),
+  title: r.title,
   start: r.start,
   end: r.end,
   change: r.delta
@@ -511,7 +519,7 @@ const topRow = (r: StatsTopRow) => ({
 
 // -------------------------------------------------------------------- queries
 
-/** Products added by the store's latest successful snapshot. */
+/** Listings added by the shop's latest successful scan. */
 function newProductIds(db: Db, shop: ShopSummary | null): Set<number> {
   const scanId = shop?.lastOkScan?.id
   if (scanId == null) return new Set()
@@ -555,13 +563,13 @@ function productChanges(db: Db, listingId: number) {
     }
   }
   return rows.map((r) => {
-    const after = neutralFields(parse(r.new_value))
+    const after = changeFields(parse(r.new_value))
     return {
       snapshot_id: r.scan_id,
       at: isoMs(r.finished_at),
       kind: r.kind,
       ...(r.kind === 'changed'
-        ? { changed_fields: Object.keys(after ?? {}), before: neutralFields(parse(r.old_value)), after }
+        ? { changed_fields: Object.keys(after ?? {}), before: changeFields(parse(r.old_value)), after }
         : {})
     }
   })
@@ -600,23 +608,27 @@ const offsetArg = { type: 'integer' as const, minimum: 0, default: 0, descriptio
 
 const num = (v: unknown, def: number): number => (typeof v === 'number' ? v : def)
 
-export const MCP_INSTRUCTIONS = `Read-only access to a local catalog of online stores that the user follows (competitor and market research).
+export const MCP_INSTRUCTIONS = `Etsy Tracker is the user's desktop app that watches Etsy shops through the official Etsy Open API v3 (competitor and market research) and manages the user's own Etsy shop. Names used by these tools: a "store" is an Etsy shop, a "product" is an Etsy listing, a "snapshot" is one scan the app made of a shop, a "discount" is an Etsy sale (promotion), "favorites" are Etsy favorers, the "customer price" is Etsy's buyer price.
 
-How the data is collected: the user's app takes periodic snapshots of each store. A snapshot records every active product of the store (title, description, price, tags, materials, photos, attributes, popularity numbers) and what changed since the previous snapshot: products added, removed, returned, or edited (and which fields). Customer reviews of each store are stored too and linked to the reviewed product. Nothing here is live — every number is as of the latest snapshot (see latest_snapshot.finished_at).
+Local data — no Etsy request, no API quota: list_stores, get_store, search_products, get_product, get_product_history, list_snapshots, get_snapshot_changes, list_reviews, get_store_stats. They read the app's database, filled when the user scans the shops they track (you cannot start a scan; if latest_snapshot.finished_at is old, ask the user to rescan). A scan stores every active listing of the shop (title, description, price, tags, materials, photos, videos, attributes, views, favorers, featured rank) and records what changed since the previous scan: listings added, removed, returned and edited (which fields, old → new). After each scan the app also syncs the shop's Etsy reviews (the whole history first, then the new ones) and copies listing and review photos into a local image store. Text fields are Etsy's text with HTML entities decoded (&amp; → &); in the change records of get_snapshot_changes and get_product_history a description's old and new values are excerpts of at most 1000 characters (get_product has the full current text). url fields are the shops' and listings' Etsy pages.
 
-Where to start: list_stores → get_store / search_products → get_product. "What is new?" → get_snapshot_changes. Trends → get_store_stats and get_product_history. To look at a product, call get_product_image (get_product_video_preview for a frame of its video); a store's logo or banner: get_store_logo.
+Photos as images: get_product_image and get_review_photo return the app's local copy when there is one, else download the photo from Etsy's image CDN; get_store_logo and get_product_video_preview always download from Etsy's image CDN (those images are never copied locally). CDN downloads cost no API quota.
 
-Prices: "base" is the seller's own price before tax and discounts. "current" is what a customer in customer_country pays now (tax included, discount applied when one runs); it equals "base" when no customer price is known. "regular" is the customer price before the discount. Currencies are never converted.
+Where to start: list_stores → get_store / search_products → get_product. "What is new?" → get_snapshot_changes. Trends → get_store_stats and get_product_history.
 
-Popularity: favorites = how many people saved the product; views = total views (updated about once a day); featured_position = position among the products the store features (null = not featured). *_change fields compare the latest snapshot with the previous one. Store sales_count is the store's total number of sales; per-product sales are not available — review counts are the best proxy for how often a product sells.
+Prices: "base" is the seller's price as the API reports it (no VAT, no sale). "current" is what a buyer in customer_country sees on Etsy: the buyer price (VAT included where the country charges it, shipping included for GB, the sale applied while one runs); the app asks Etsy for one buyer country, set in its Settings. It equals "base" when no buyer price is known. "regular" is the buyer price before the sale. Currencies are never converted.
 
-Ids: store ids, product ids, image ids, review ids and snapshot ids are stable numbers. Times are ISO 8601 UTC.
+Popularity: favorites = Etsy favorers; views = total listing views (Etsy updates them about once a day); featured_position = the listing's place among the shop's featured listings (null = not featured). *_change fields compare the latest scan with the previous one. A shop's sales_count is Etsy's total for the whole shop; Etsy does not give other shops' sales per listing — review counts are the best proxy. Review counts cover the reviews the app has stored (complete: false = the history is still loading, the counts are lower bounds).
 
-The user's own store: if the user connected it in the app, list_stores marks it with is_mine: true. list_my_products reads its products live in any status (drafts and inactive ones too); find_categories and get_product_options help to prepare a new product. create_product, update_my_product, add_product_media and update_my_store CHANGE the live store: use them only for changes the user asked for, prefer drafts (publish=false) unless the user said to publish, and confirm before publishing because a listing fee applies. They work only while the user allows changes in the app; otherwise they answer how to enable it.
+Ids: store, product, image and video ids are Etsy's (shop_id, listing_id, …); review and snapshot ids are the app's own. Times are ISO 8601 UTC.
 
-More tools: search_market searches the WHOLE marketplace (not only the followed stores) — keywords, category (list_market_categories), price; get_store_sections / get_store_featured / get_store_return_policies / get_product_live_details read live details of any store or product. For the user's own store there are also tools for inventory (price, quantity, variations), photos/video/files, attributes, personalization, translations, sections, shipping/processing profiles, return policies, holidays, orders (list_my_orders, mark_my_order_shipped…), sales (list_my_sales) and money (list_my_ledger); reads need the store connected, changes also need "allow changes". Buyer contact details are left out unless explicitly asked for.
+Live Etsy tools (Etsy API requests on the user's daily quota; the app's API key is enough, no Etsy sign-in needed): search_market, list_market_categories, get_market_category_properties search all of Etsy, not only the tracked shops; get_store_sections, get_store_featured, get_store_return_policies, get_product_live_details read any shop or listing now (only the shipping part of get_product_live_details needs the sign-in); list_shipping_carriers; find_categories (Etsy's seller categories, for a new listing's category_id) and get_category_attributes (the attributes a seller category supports). The two category trees (find_categories, list_market_categories) are read from Etsy once per app run and then matched locally, so repeated searches make no further requests.
 
-To propose a NEW product, prefer prepare_product: it saves a draft inside the user's app (nothing reaches the store); the user reviews, edits and sends it from there. list_prepared_products shows those drafts; send_prepared_product sends one only when the user asks you to (needs the 'allow changes' switch).`
+The user's own Etsy shop: once the user signed in to Etsy in the app ("Мій магазин", OAuth), list_stores marks it is_mine: true and the *_my_* tools work on it live through the Etsy API: the account (get_my_account), listings in any state (list_my_products: drafts, inactive, expired, sold out), allowed values and the shop's shipping/processing profiles for new listings (get_product_options), inventory and prices, photos / video / digital files, attributes, personalization, translations, sections, shipping and processing profiles, return policies, public-holiday processing preferences (get_my_holidays, set_my_holiday: whether the shop processes orders on each public holiday of its country — not vacation mode, which no tool changes), production partners, orders (list_my_orders, mark_my_order_shipped…), sales (list_my_sales) and the payment ledger (list_my_ledger). A tool whose OAuth permission the sign-in lacks says which one is missing. Buyer email and street address are left out unless explicitly asked for.
+
+Changing the shop: every tool that writes to Etsy — create_product, update_my_product, add_product_media, update_my_store, send_prepared_product, mark_my_order_shipped, update_my_order, consolidate_my_return_policies and every create_/update_/set_/replace_/upload_/remove_/delete_ tool with "my" in its name — needs the Etsy sign-in and works only while "allow changes" is switched on in the app's MCP window; otherwise it answers how to enable it. The exception: prepare_product and delete_prepared_product change only drafts kept inside the app — they are annotated readOnlyHint: false too, but need neither the sign-in nor the switch. Change only what the user asked for, prefer Etsy drafts (publish=false) unless the user said to publish, and confirm with the user before publishing a draft (create_product / send_prepared_product with publish=true, or update_my_product status "active" on a draft) or renewing an expired or sold-out listing (update_my_product status "active"): Etsy charges a $0.20 listing fee for that. Reactivating an inactive listing costs no fee.
+
+New listings: prefer prepare_product — it saves a draft inside the app (nothing is sent to Etsy, no "allow changes" needed, incomplete drafts are fine); the user reviews, edits and sends it from the app's drafts window (the "Чернетки" button in their own shop's header, shown only while they are signed in to Etsy in the app). list_prepared_products and delete_prepared_product manage those drafts; send_prepared_product sends one to Etsy (as an Etsy draft or published) only when the user asks you to.`
 
 export function createMcpTools(deps: McpToolDeps): McpTool[] {
   const { db } = deps
@@ -629,9 +641,9 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
   const tools: McpTool[] = [
     {
       name: 'list_stores',
-      title: 'List stores',
+      title: 'Tracked Etsy shops (local)',
       description:
-        'All stores the user follows, with their headline numbers (active products, total sales, rating, review count, favorites) and the latest snapshot (when it was taken, how many products were added/removed/changed). Start here to get store ids.',
+        "The Etsy shops the user tracks in the app (local data, as of each shop's latest scan): id (Etsy shop_id), name, url (the shop's Etsy page), is_mine (the user's own shop), headline numbers (active listings, total sales, rating, review count, favorers), the latest successful scan (when, listings added/removed/changed/returned) and whether the latest scan failed (latest_update_error = the app's error message, in Ukrainian). Start here to get store ids.",
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
       run: () => {
         const m = mine()
@@ -641,9 +653,9 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
     },
     {
       name: 'get_store',
-      title: 'Store profile',
+      title: 'Etsy shop profile (local)',
       description:
-        "One store's full profile: announcement, messages to buyers, vacation status, policies (shipping, payment, refunds, …), languages, country, headline numbers at the latest snapshot and their change since the previous one, and what is known about its stored reviews.",
+        "One tracked Etsy shop from the local database (as of its latest scan): everything list_stores gives plus the owner's username, announcement, sale messages, vacation status and messages, policies (welcome, payment, shipping, refunds, additional, seller info, privacy), languages, ships-from country, digital listing count, the shop's numbers at the latest scan and their change since the previous scan, and the reviews the app has stored (count, average, whether the history is complete).",
       inputSchema: {
         type: 'object',
         properties: { store_id: idArg('Store id from list_stores.') },
@@ -654,9 +666,9 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
     },
     {
       name: 'search_products',
-      title: 'Search products',
+      title: 'Search tracked listings (local)',
       description:
-        "Find products: in one store or across all stores, by text (title, tags, optionally description), with sorting (newest, price, most favorited/viewed/reviewed, favorites growth, new reviews, biggest discount) and paging. Returns compact product summaries (price, popularity, reviews, flags like new_in_latest_snapshot); call get_product for everything about one product.",
+        "Find listings in the local database (as of the latest scans), in one tracked Etsy shop or all of them: by text (title or tags, optionally the description; case-insensitive), status, sale/new filters, with sorting and paging. Returns total and compact summaries (url, price, quantity, favorers, views and their change, featured position, review summary, new_in_latest_snapshot); get_product has everything about one listing. To search all of Etsy live, use search_market.",
       inputSchema: {
         type: 'object',
         properties: {
@@ -671,19 +683,20 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
             type: 'string',
             enum: ['active', 'removed', 'all'],
             default: 'active',
-            description: 'active = currently offered; removed = no longer offered by the store (kept with their last known data).'
+            description: 'active = active on Etsy at the latest scan; removed = no longer active in the shop (deactivated, sold out, deleted…; kept with their last known data); all = both.'
           },
-          on_sale_only: { type: 'boolean', default: false, description: 'Only products with a running discount.' },
+          on_sale_only: { type: 'boolean', default: false, description: 'Only listings whose buyer price had a running Etsy sale at the latest scan.' },
           new_only: {
             type: 'boolean',
             default: false,
-            description: "Only products added by their store's latest snapshot."
+            description: "Only listings added by their shop's latest successful scan (a shop's first scan adds none)."
           },
           sort: {
             type: 'string',
             enum: Object.keys(SORTS),
             default: 'newest',
-            description: 'newest = most recently created first. Price sorts use the current price (currencies are not converted).'
+            description:
+              'newest = most recently listed or renewed on Etsy first. price_low/price_high use the current price (currencies are not converted). favorites_growth / new_reviews = change since the previous scan; most_reviewed = stored reviews. Unknown values sort last.'
           },
           limit: limitArg(50, 200),
           offset: offsetArg
@@ -716,12 +729,12 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
     },
     {
       name: 'get_product',
-      title: 'Product details',
+      title: 'Listing details (local)',
       description:
-        'Everything stored about one product: title, full description, tags, materials, styles, price (base, customer price, discount and its dates, shipping), stock quantity, popularity, review summary, attributes (type, who made it, when, processing time, weight/dimensions, variations, personalization questions), photos (ids, sizes, alt text, colors) and dates (created, first/last seen, removed).',
+        "Everything the local database has about one listing of a tracked shop, as of the latest scan (also listings that have left the shop): title, full description, tags, materials, styles, url (its Etsy page), state, price (base, buyer price with VAT, the sale and its dates, shipping), quantity, favorers/views and their change, featured position, review summary, attributes (type, who made it, when, category and section ids, processing time, weight/dimensions, variations, SKUs, auto-renew, expiry), personalization questions, photos (ids, sizes, alt text, colors), videos, and dates (created_at = first listed, listed_at = last listed/renewed, first/last seen by the app, removed).",
       inputSchema: {
         type: 'object',
-        properties: { product_id: idArg('Product id.') },
+        properties: { product_id: idArg('Etsy listing id (from search_products).') },
         required: ['product_id'],
         additionalProperties: false
       },
@@ -733,14 +746,14 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
     },
     {
       name: 'get_product_history',
-      title: 'Product history',
+      title: 'Listing history (local)',
       description:
-        "One product over time: its popularity, stock, review count and prices at every snapshot (oldest first), its discounts (start/end, percent, prices) and every recorded change (added, edited — with the fields' old and new values —, removed, returned).",
+        "One listing over time, from the local database: per successful scan (oldest first): views, favorers, featured position, quantity, stored review count and average, seller and buyer price (current, regular, sale %); its Etsy sales as the app observed them (newest first: %, prices, Etsy's start/end dates, first/last seen, how it started and ended); and every recorded change, oldest first (added, edited — the fields' old and new values; a description's are excerpts of at most 1000 characters, get_product has the full current text —, removed, returned).",
       inputSchema: {
         type: 'object',
         properties: {
           product_id: idArg('Product id.'),
-          limit: { ...limitArg(100, 1000), description: 'Most recent snapshots to include (default 100, max 1000).' }
+          limit: { ...limitArg(100, 1000), description: 'Most recent scans to include (default 100, max 1000); snapshot_count is the total.' }
         },
         required: ['product_id'],
         additionalProperties: false
@@ -772,7 +785,7 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
         })
         return textResult({
           product_id: l.listingId,
-          title: n(l.title),
+          title: l.title,
           snapshot_count: points.length,
           snapshots,
           discounts: listListingPromotions(db, l.listingId).map(discountOf),
@@ -782,12 +795,15 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
     },
     {
       name: 'list_snapshots',
-      title: 'Snapshot history',
+      title: 'Scan history (local)',
       description:
-        "A store's snapshots, newest first: when each was taken, whether it succeeded, how many products it saw and how many were added, removed, changed, returned, and discounts started/ended.",
+        "One tracked shop's scans from the local database, newest first: start/end time, status (ok, failed or running), is_first (the shop's first scan, which records no changes), listings seen, added, removed, changed, returned, Etsy sales started/ended, the buyer country asked, partial (too many listings to read them all).",
       inputSchema: {
         type: 'object',
-        properties: { store_id: idArg('Store id.'), limit: limitArg(50, 500) },
+        properties: {
+          store_id: idArg('Store id.'),
+          limit: { ...limitArg(50, 500), description: 'Newest scans to return (default 50, max 500).' }
+        },
         required: ['store_id'],
         additionalProperties: false
       },
@@ -798,14 +814,14 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
     },
     {
       name: 'get_snapshot_changes',
-      title: 'What changed',
+      title: 'What a scan found (local)',
       description:
-        "What one snapshot found compared with the store's previous snapshot: new products, removed products, products that came back, edited products (which fields, old → new values), new customer reviews, and discounts that started or ended. Defaults to the latest successful snapshot — i.e. \"what is new in this store\". The first snapshot of a store has no changes (everything was new).",
+        "What one scan of a tracked shop found compared with the shop's previous successful scan (local data): new listings, removed listings, listings that came back, edited listings (which fields, old → new values; a description's are excerpts of at most 1000 characters, get_product has the full current text), reviews that the review sync after it found new, and Etsy sales that started or ended. Defaults to the latest successful scan — i.e. \"what is new in this shop\". A shop's first scan records no changes (everything was new); a failed or still running scan has none either. Each group: exact total + up to limit items.",
       inputSchema: {
         type: 'object',
         properties: {
           store_id: idArg('Store id.'),
-          snapshot_id: idArg('A snapshot of that store (list_snapshots); omit = the latest successful one.'),
+          snapshot_id: idArg('A scan of that shop (list_snapshots); omit = the latest successful one.'),
           limit: { ...limitArg(100, 500), description: 'Max items per group (default 100, max 500); totals are always exact.' }
         },
         required: ['store_id'],
@@ -819,7 +835,11 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
           return textResult({ store_id: s.id, snapshot: null, note: 'The store has no successful snapshot yet.' })
         }
         if (scan.status !== 'ok') {
-          return textResult({ store_id: s.id, snapshot: snapshotOf(scan), note: 'This snapshot did not succeed; it recorded no changes.' })
+          const note =
+            scan.status === 'running'
+              ? 'This snapshot is still running; its changes are recorded when it finishes.'
+              : 'This snapshot did not succeed; it recorded no changes.'
+          return textResult({ store_id: s.id, snapshot: snapshotOf(scan), note })
         }
         const limit = num(a.limit, 100)
         const changes = listScanChanges(db, scan.id)
@@ -844,12 +864,12 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
           returned: group('returned', brief),
           removed: group('removed', brief),
           changed: group('changed', (c) => {
-            const after = neutralFields(c.newValue)
+            const after = changeFields(c.newValue)
             return {
               product_id: c.listingId,
-              title: n(c.listing?.title ?? null),
+              title: c.listing?.title ?? null,
               changed_fields: Object.keys(after ?? {}),
-              before: neutralFields(c.oldValue),
+              before: changeFields(c.oldValue),
               after
             }
           }),
@@ -861,9 +881,9 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
     },
     {
       name: 'list_reviews',
-      title: 'Customer reviews',
+      title: 'Stored Etsy reviews (local)',
       description:
-        "Customer reviews (rating 1–5, text, language, date, whether a photo is attached, the reviewed product), of one product, one store, or all stores. Filter by rating range, date range, text; sort by date or rating; paged. Review counts per product are the best available proxy for how often it sells.",
+        "Etsy reviews the app has stored for the tracked shops (synced from Etsy after each scan; reviews later deleted on Etsy are kept): rating 1–5, text, language, created/updated dates, whether a photo is attached, the reviewed listing, is_new. Of one listing, one shop, or all tracked shops. Filters: rating range, created date range, text, with text only; sort by date or rating; paged; total = all matches. Review counts per listing are the best available proxy for how often it sells.",
       inputSchema: {
         type: 'object',
         properties: {
@@ -873,7 +893,7 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
           max_rating: { type: 'integer', minimum: 1, maximum: 5, description: 'Highest rating to include.' },
           since: { type: 'string', maxLength: 40, description: 'Created at or after this ISO date/time.' },
           until: { type: 'string', maxLength: 40, description: 'Created at or before this ISO date/time.' },
-          query: { type: 'string', maxLength: 200, description: 'Case-insensitive text the review must contain.' },
+          query: { type: 'string', maxLength: 200, description: 'Text the review must contain (case-insensitive for Latin letters only).' },
           with_text_only: { type: 'boolean', default: false, description: 'Skip reviews without text.' },
           sort: { type: 'string', enum: Object.keys(REVIEW_SORT), default: 'newest' },
           limit: limitArg(50, 200),
@@ -934,9 +954,9 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
     },
     {
       name: 'get_store_stats',
-      title: 'Store trends',
+      title: 'Etsy shop trends (local)',
       description:
-        "A store's numbers over time for a period: per snapshot (sales count, favorites, reviews, rating, active products, total product views/favorites, discounted products, added/removed/changed), the change between consecutive snapshots, sales per day, customer reviews per week or month (count, average, ratings 1–5), and the products that grew most in views, favorites and reviews.",
+        "One tracked shop's numbers over a period, from the local database (the app's Statistics view): per successful scan in the period (sales count, favorers, review count, rating, active listings, total views/favorers of its listings, listings on sale, added/removed/changed/returned), before_period (the last scan before it, the starting point), the change between consecutive scans, sales per day (derived from Etsy's shop sales count between scans at least 1 h apart), stored reviews per week or month (count, average, ratings 1–5; UTC) and the top 10 listings by growth in views, favorers and reviews.",
       inputSchema: {
         type: 'object',
         properties: {
@@ -1007,9 +1027,10 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
     },
     {
       name: 'get_product_image',
-      title: 'Product photo',
+      openWorld: true,
+      title: 'Listing photo',
       description:
-        "Returns one photo of a product as an image you can look at. Pick it by image_id (from get_product) or position (1 = the main photo). size: medium (≈570 px wide, the default) or full (the original, can be large).",
+        "One photo of a tracked listing as an image you can look at: the app's local copy, else downloaded from Etsy's image CDN (no API quota). Pick it by image_id (from get_product) or position (1 = the main photo). size: medium (≈570 px wide, the default; the original when that copy can't be shown) or full (the original; over 5 MB is refused).",
       inputSchema: {
         type: 'object',
         properties: {
@@ -1036,7 +1057,10 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
         }
         // medium = the 570 px copy, else the original (a missing or AVIF copy).
         const sizes = a.size === 'full' ? ['fullxfull'] : ['570xN', 'fullxfull']
-        const out = await readImage(sizes.map((size) => `etsyimg://img/${img.id}/${size}`))
+        const out = await readImage(sizes.map((size) => `etsyimg://img/${img.id}/${size}`), {
+          local: true,
+          tooLarge: a.size === 'full' ? `${TOO_LARGE} Ask for size "medium".` : TOO_LARGE
+        })
         if ('error' in out) return errorResult(out.error)
         return {
           content: [
@@ -1044,11 +1068,11 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
               type: 'text',
               text: JSON.stringify({
                 product_id: l.listingId,
-                title: n(l.title),
+                title: l.title,
                 image_id: img.id,
                 position: index + 1,
                 of: l.images.length,
-                alt_text: n(img.alt)
+                alt_text: img.alt
               })
             },
             { type: 'image', data: out.data.toString('base64'), mimeType: out.mimeType }
@@ -1058,9 +1082,10 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
     },
     {
       name: 'get_store_logo',
-      title: 'Store logo',
+      openWorld: true,
+      title: 'Etsy shop logo or banner',
       description:
-        'Returns the store\'s logo (has_logo = true in list_stores / get_store) or its banner (kind "banner"; has_banner in get_store) as an image.',
+        'A tracked shop\'s logo (has_logo = true in list_stores / get_store) or its banner (kind "banner"; has_banner in get_store) as an image, downloaded from Etsy\'s image CDN (no API quota).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -1075,11 +1100,11 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
         const banner = a.kind === 'banner'
         const has = banner ? !!s.profile?.bannerUrl : !!s.iconUrl
         if (!has) throw new ToolInputError(`Store ${s.id} has no ${banner ? 'banner' : 'logo'}.`)
-        const out = await readImage([`etsyimg://shop/${s.id}/${banner ? 'banner' : 'icon'}`])
+        const out = await readImage([`etsyimg://shop/${s.id}/${banner ? 'banner' : 'icon'}`], { local: false })
         if ('error' in out) return errorResult(out.error)
         return {
           content: [
-            { type: 'text', text: JSON.stringify({ store_id: s.id, name: n(s.shopName), kind: banner ? 'banner' : 'logo' }) },
+            { type: 'text', text: JSON.stringify({ store_id: s.id, name: s.shopName, kind: banner ? 'banner' : 'logo' }) },
             { type: 'image', data: out.data.toString('base64'), mimeType: out.mimeType }
           ]
         }
@@ -1087,9 +1112,10 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
     },
     {
       name: 'get_product_video_preview',
-      title: 'Product video preview',
+      openWorld: true,
+      title: 'Listing video preview',
       description:
-        'Returns the preview frame of a product video (videos in get_product, has_preview = true) as a small image. The video itself is not available.',
+        "The preview frame of a tracked listing's video (videos in get_product, has_preview = true) as an image, downloaded from Etsy's image CDN (no API quota). Pick it by video_id or position. The video itself is not available.",
       inputSchema: {
         type: 'object',
         properties: {
@@ -1115,7 +1141,7 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
           )
         }
         if (!v.thumbnailUrl) throw new ToolInputError(`Video ${v.id} has no preview.`)
-        const out = await readImage([`etsyimg://video/${v.id}/thumbnail`])
+        const out = await readImage([`etsyimg://video/${v.id}/thumbnail`], { local: false })
         if ('error' in out) return errorResult(out.error)
         return {
           content: [
@@ -1123,7 +1149,7 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
               type: 'text',
               text: JSON.stringify({
                 product_id: l.listingId,
-                title: n(l.title),
+                title: l.title,
                 video_id: v.id,
                 position: index + 1,
                 of: videos.length
@@ -1136,8 +1162,10 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
     },
     {
       name: 'get_review_photo',
+      openWorld: true,
       title: 'Review photo',
-      description: 'Returns the photo a customer attached to a review (has_photo = true in list_reviews) as an image.',
+      description:
+        "The photo a buyer attached to a stored Etsy review (has_photo = true in list_reviews) as an image: the app's local copy, else downloaded from Etsy's image CDN (no API quota).",
       inputSchema: {
         type: 'object',
         properties: { review_id: idArg('Review id from list_reviews.') },
@@ -1151,7 +1179,7 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
           .get(id) as { id: number; has_photo: number } | undefined
         if (!r) throw new ToolInputError(`No review with id ${id}.`)
         if (!r.has_photo) throw new ToolInputError(`Review ${id} has no photo.`)
-        const out = await readImage([`etsyimg://review/${id}/fullxfull`])
+        const out = await readImage([`etsyimg://review/${id}/fullxfull`], { local: true })
         if ('error' in out) return errorResult(out.error)
         return {
           content: [
@@ -1178,8 +1206,16 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
     })
   )
 
-  /** The first of `urls` that reads as a showable image of an acceptable size. */
-  async function readImage(urls: string[]): Promise<{ data: Buffer; mimeType: string } | { error: string }> {
+  /**
+   * The first of `urls` that reads as a showable image of an acceptable size.
+   * `local`: the app may have its own copy (listing and review photos); else
+   * the image only ever comes from Etsy's CDN. `tooLarge`: the tool's own
+   * message for an image over MCP_MAX_IMAGE_BYTES.
+   */
+  async function readImage(
+    urls: string[],
+    opts: { local: boolean; tooLarge?: string }
+  ): Promise<{ data: Buffer; mimeType: string } | { error: string }> {
     let unsupported: string | null = null
     let tooLarge = false
     for (const url of urls) {
@@ -1190,14 +1226,18 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
       else if (img.data.length > MCP_MAX_IMAGE_BYTES) tooLarge = true
       else return { data: img.data, mimeType }
     }
-    if (tooLarge) return { error: 'The photo is too large to return; ask for size "medium".' }
-    if (unsupported) return { error: `The photo is only available as ${unsupported}, which cannot be returned as an image.` }
-    return { error: 'The photo is not available right now (not stored locally and could not be downloaded).' }
+    if (tooLarge) return { error: opts.tooLarge ?? TOO_LARGE }
+    if (unsupported) return { error: `The image is only available as ${unsupported}, which cannot be returned as an image.` }
+    return {
+      error: opts.local
+        ? "The image is not available right now (no local copy, and it could not be downloaded from Etsy's image CDN)."
+        : "The image could not be downloaded from Etsy's image CDN right now."
+    }
   }
 
   return tools
 }
 
 export function mcpServerInfo(version: string): McpServerInfo {
-  return { name: MCP_SERVER_NAME, title: 'Shop Catalog', version, instructions: MCP_INSTRUCTIONS }
+  return { name: MCP_SERVER_NAME, title: 'Etsy Tracker', version, instructions: MCP_INSTRUCTIONS }
 }

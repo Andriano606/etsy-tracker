@@ -53,6 +53,8 @@ export interface MarketListing {
   createdAt: number | null
   /** The first photo (570xN) on the Etsy CDN, validated; null = none or not loaded. */
   imageUrl: string | null
+  /** The same photo at full size (fullxfull, validated; 570xN when Etsy gave none) — for the image viewer. */
+  imageFullUrl: string | null
 }
 
 export interface MarketSearchResult {
@@ -137,7 +139,10 @@ export function marketPriceStats(listings: readonly MarketListing[]): MarketPric
 
 /** The MCP tools of this feature, in Ukrainian for the MCP modal. */
 export const MARKET_TOOL_SUMMARY: ReadonlyArray<{ name: string; text: string; write?: boolean }> = [
-  { name: 'search_market', text: 'пошук товарів по всьому Etsy: слова, категорія, ціна, сортування, розташування магазину' },
-  { name: 'list_market_categories', text: 'категорії покупця Etsy за назвою (id і шлях)' },
-  { name: 'get_market_category_properties', text: 'властивості категорії та їхні можливі значення' }
+  {
+    name: 'search_market',
+    text: 'пошук активних товарів по всьому Etsy наживо (не лише у відстежуваних магазинах): слова, категорія, ціна, розташування магазину, сортування; без фото, з посиланням на товар'
+  },
+  { name: 'list_market_categories', text: 'категорії покупця Etsy за словами або id (id, шлях, рівень); без запиту — верхній рівень' },
+  { name: 'get_market_category_properties', text: 'властивості категорії покупця Etsy (колір, матеріал, розмір…): шкали й можливі значення' }
 ]

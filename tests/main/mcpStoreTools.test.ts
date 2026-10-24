@@ -4,7 +4,7 @@ import { join } from 'path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { EtsyApiError, type EtsyClient } from '../../src/main/etsyApi'
 import { type McpToolResult, handleMcpMessage } from '../../src/main/mcpProtocol'
-import { NOT_SIGNED_IN, WRITES_OFF, type OwnStoreDeps, createStoreTools, neutralError } from '../../src/main/mcpStoreTools'
+import { NOT_SIGNED_IN, WRITES_OFF, type OwnStoreDeps, createStoreTools, mcpErrorText } from '../../src/main/mcpStoreTools'
 import { createMcpTools, mcpServerInfo } from '../../src/main/mcpTools'
 import { MyShopError } from '../../src/main/myShop'
 import type { EtsyAuthStatus } from '../../src/shared/types'
@@ -35,17 +35,40 @@ beforeAll(() => {
 })
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
-/** Everything a client got, for the neutrality checks. */
+/** Everything a client got, for the honesty checks. */
 const seen: string[] = []
+/** The OAuth token the deps can hand out — it must never reach a client. */
+const TOKEN = 'oauth-access-token-SECRET-123'
+/** Text from Etsy data that mentions Etsy and links to it: passed through as is. */
+const ETSY_TEXT = 'Made for Etsy sellers — see https://www.etsy.com/shop/TidyFoxSheets'
 
-function world(over: { status?: EtsyAuthStatus; writes?: boolean; client?: Partial<Record<keyof EtsyClient, unknown>> } = {}) {
+function world(
+  over: {
+    status?: EtsyAuthStatus
+    writes?: boolean
+    client?: Partial<Record<keyof EtsyClient, unknown>>
+    /** The ranks of the listing's photos / files already on Etsy (add_product_media reads them). */
+    existing?: { photos?: number[]; files?: number[] }
+  } = {}
+) {
   const uploads: Array<{ kind: string; name: string; type: string; rank?: number; bytes: string }> = []
+  const existing = { photos: over.existing?.photos ?? [], files: over.existing?.files ?? [] }
   const client = {
+    call: vi.fn(async (path: string) => {
+      const ranks = /\/images$/.test(path) ? existing.photos : /\/files$/.test(path) ? existing.files : null
+      if (!ranks) throw new Error(`unexpected call ${path}`)
+      return { count: ranks.length, results: ranks.map((rank) => ({ rank })) }
+    }),
     getShop: vi.fn(async (id: number) => ({ ...shopFx, shop_id: id, shop_name: 'TidyFoxSheets' })),
     updateShop: vi.fn(async (id: number, form: Record<string, string>) => ({ ...shopFx, shop_id: id, shop_name: 'TidyFoxSheets', ...form })),
     getShopListingsByState: vi.fn(async () => ({
       count: 1,
-      results: [{ ...mkEtsyListing(7, { title: 'Etsy best planner', state: 'draft' }), listing_type: 'download' }]
+      results: [
+        {
+          ...mkEtsyListing(7, { title: 'Etsy best planner', state: 'draft', description: ETSY_TEXT, tags: ['etsy planner'] }),
+          listing_type: 'download'
+        }
+      ]
     })),
     createDraftListing: vi.fn(async () => ({ listing_id: 4242 })),
     uploadListingImage: vi.fn(async (_s: number, _l: number, f: { name: string; type: string; rank?: number; data: Uint8Array }) => {
@@ -71,7 +94,8 @@ function world(over: { status?: EtsyAuthStatus; writes?: boolean; client?: Parti
       { id: 2, path: 'Paper & Party Supplies › Paper › Calendars & Planners' },
       { id: 3, path: 'Home & Living › Office › Planners' },
       { id: 4, path: 'Etsy Gift Cards' }
-    ]
+    ],
+    accessToken: async () => TOKEN
   }
   const tools = createStoreTools(own)
   async function call(name: string, args: Record<string, unknown> = {}): Promise<McpToolResult> {
@@ -100,13 +124,22 @@ function world(over: { status?: EtsyAuthStatus; writes?: boolean; client?: Parti
 const valid = { title: 'Budget Planner', description: 'Track money.', price: 5.99, category_id: 2 }
 
 describe('reading the own store', () => {
-  it('list_my_products: any status, neutral (no links, the marketplace name taken out)', async () => {
+  it('list_my_products: any status, Etsy texts unchanged, no listing URL or CDN photo URL', async () => {
     const w = world()
     const d = await w.data('list_my_products', { status: 'draft' })
     expect(w.client.getShopListingsByState).toHaveBeenCalledWith(SHOP, 'draft', 0)
     expect(d).toMatchObject({ store_id: SHOP, status: 'draft', total: 1 })
-    expect(d.products[0]).toMatchObject({ id: 7, status: 'draft', title: 'marketplace best planner', product_type: 'digital', price: 10.07 })
+    expect(d.products[0]).toMatchObject({
+      id: 7,
+      status: 'draft',
+      title: 'Etsy best planner',
+      description: ETSY_TEXT,
+      tags: ['etsy planner'],
+      product_type: 'digital',
+      price: 10.07
+    })
     expect(Object.keys(d.products[0])).not.toContain('url')
+    expect(JSON.stringify(d)).not.toContain('etsystatic.com')
   })
 
   it('find_categories: every word must match, the most specific first', async () => {
@@ -119,7 +152,7 @@ describe('reading the own store', () => {
     ])
     expect((await w.data('find_categories', { query: 'paper' })).categories.map((c: { category_id: number }) => c.category_id)).toEqual([2, 1])
     expect((await w.data('find_categories', { query: 'office planners' })).categories).toHaveLength(1)
-    expect((await w.data('find_categories', { query: 'gift cards' })).categories[0].path).toBe('marketplace Gift Cards')
+    expect((await w.data('find_categories', { query: 'gift cards' })).categories[0].path).toBe('Etsy Gift Cards')
   })
 
   it('get_product_options: values, limits, profiles, and whether changes are allowed', async () => {
@@ -172,6 +205,7 @@ describe('changing the own store', () => {
       files: [{ path: sheet }]
     })
     expect(d).toMatchObject({ product_id: 4242, status: 'draft', photos_uploaded: 2, files_uploaded: 1 })
+    expect(d.note).toContain('Etsy draft')
     expect(w.client.createDraftListing).toHaveBeenCalledWith(
       SHOP,
       expect.objectContaining({ title: 'Budget Planner', price: 5.99, type: 'download', quantity: 999, taxonomy_id: 2, tags: ['budget', 'planner'] })
@@ -228,31 +262,55 @@ describe('changing the own store', () => {
     expect(r.isError).toBe(true)
     const body = JSON.parse((r.content[0] as { text: string }).text)
     expect(body.product_id).toBe(4242)
-    expect(body.error).toContain('The store rejected the request as invalid (HTTP 400): Image too small')
-    expect(body.error).not.toMatch(/etsy/i)
+    expect(body.error).toContain('Etsy rejected the request as invalid (HTTP 400): Image too small')
   })
 
-  it('update_my_product: only the given fields, status active/inactive', async () => {
+  it('update_my_product: only the given fields, status active/inactive; `updated` names the arguments', async () => {
     const w = world()
     const d = await w.data('update_my_product', { product_id: 7, title: 'New', tags: ['a'], auto_renew: false, status: 'inactive' })
     expect(w.client.updateListing).toHaveBeenCalledWith(SHOP, 7, { title: 'New', tags: ['a'], should_auto_renew: false, state: 'inactive' })
-    expect(d.updated).toEqual(['title', 'tags', 'shouldAutoRenew', 'state'])
+    expect(d.updated).toEqual(['title', 'tags', 'auto_renew', 'status'])
     expect(await w.error('update_my_product', { product_id: 7 })).toContain('Nothing to change')
     expect(await w.error('update_my_product', { product_id: 7, status: 'draft' })).toContain('must be one of')
     expect(await w.error('update_my_product', { product_id: 7, tags: [1] })).toContain('array of strings')
     expect(await w.error('update_my_product', { product_id: 7, tags: ['bad/tag'] })).toContain('недозволений символ')
   })
 
-  it('add_product_media: appended (no rank), photos then files; a failure lists what was uploaded', async () => {
-    const w = world()
-    const d = await w.data('add_product_media', { product_id: 7, photos: [{ path: photo }], files: [{ path: sheet }] })
-    expect(d).toEqual({ product_id: 7, uploaded: ['cover.jpg', 'Planner.xlsx'] })
-    expect(w.uploads.map((u) => [u.kind, u.rank])).toEqual([
-      ['photo', undefined],
-      ['file', undefined]
+  it('add_product_media: appended after the existing ones (explicit ranks), photos then files', async () => {
+    const w = world({ existing: { photos: [1, 2, 3], files: [1] } })
+    const d = await w.data('add_product_media', {
+      product_id: 7,
+      photos: [{ path: photo }, { data_base64: Buffer.from('PNGDATA').toString('base64'), name: 'inside.png' }],
+      files: [{ path: sheet }]
+    })
+    expect(d).toEqual({ product_id: 7, uploaded: ['cover.jpg', 'inside.png', 'Planner.xlsx'] })
+    // The OAS default rank is 1 (= first): every upload gets the next free position.
+    expect(w.uploads.map((u) => [u.kind, u.name, u.rank])).toEqual([
+      ['photo', 'cover.jpg', 4],
+      ['photo', 'inside.png', 5],
+      ['file', 'Planner.xlsx', 2]
     ])
+    // Photos are read with the API key (public), files with the sign-in.
+    expect(w.client.call).toHaveBeenCalledWith('/v3/application/listings/7/images', {})
+    expect(w.client.call).toHaveBeenCalledWith(`/v3/application/shops/${SHOP}/listings/7/files`, { oauth: true })
+    // A listing without photos/files starts at 1; a kind not uploaded isn't read.
+    const empty = world()
+    await empty.data('add_product_media', { product_id: 8, photos: [{ path: photo }] })
+    expect(empty.uploads.map((u) => u.rank)).toEqual([1])
+    expect(empty.client.call).toHaveBeenCalledTimes(1)
+  })
+
+  it('add_product_media: bad input and full listings are refused before any upload; a failure lists what was uploaded', async () => {
+    const w = world({ existing: { photos: [1, 2, 3, 4, 5, 6, 7, 8, 9], files: [1, 2, 3, 4, 5] } })
     expect(await w.error('add_product_media', { product_id: 7 })).toContain('at least one photo or file')
-    expect(await w.error('add_product_media', { product_id: 7, photos: [{ path: sheet }] })).toContain('JPG, PNG or GIF')
+    expect(await w.error('add_product_media', { product_id: 7, photos: [{ path: photo }, { path: sheet }] })).toContain('JPG, PNG or GIF')
+    expect(await w.error('add_product_media', { product_id: 7, photos: [{ path: photo }, { path: photo }] })).toBe(
+      'An Etsy listing can have at most 10 photos: this one has 9.'
+    )
+    expect(await w.error('add_product_media', { product_id: 7, files: [{ path: sheet }] })).toBe(
+      'An Etsy listing can have at most 5 files: this one has 5.'
+    )
+    expect(w.uploads).toEqual([])
     const bad = world({
       client: {
         uploadListingFile: vi.fn(async () => {
@@ -262,21 +320,22 @@ describe('changing the own store', () => {
     })
     const r = await bad.call('add_product_media', { product_id: 7, photos: [{ path: photo }], files: [{ path: sheet }] })
     expect(JSON.parse((r.content[0] as { text: string }).text)).toEqual({
-      error: 'file "Planner.xlsx" failed: The store refused this action (HTTP 403): Not a digital listing.',
+      error: 'file "Planner.xlsx" failed: Etsy refused this action (HTTP 403): Not a digital listing.',
       uploaded: ['cover.jpg']
     })
   })
 
-  it('update_my_store: store texts; additional policies outside the EU are refused', async () => {
+  it('update_my_store: shop texts (returned as Etsy answered); additional policies outside the EU are refused', async () => {
     const w = world()
-    const d = await w.data('update_my_store', { announcement: 'Sale!' })
-    expect(w.client.updateShop).toHaveBeenCalledWith(SHOP, { announcement: 'Sale!' })
-    expect(d.store.announcement).toBe('Sale!')
+    const d = await w.data('update_my_store', { announcement: ETSY_TEXT })
+    expect(w.client.updateShop).toHaveBeenCalledWith(SHOP, { announcement: ETSY_TEXT })
+    expect(d.updated).toEqual(['announcement'])
+    expect(d.store.announcement).toBe(ETSY_TEXT)
     expect(await w.error('update_my_store', {})).toContain('Nothing to change')
     expect(await w.error('update_my_store', { additional_policies: 'x' })).toContain('ЄС')
   })
 
-  it('an expired sign-in or a refused action reads neutrally', async () => {
+  it('an expired sign-in says so (Etsy named)', async () => {
     const w = world({
       client: {
         updateListing: vi.fn(async () => {
@@ -284,19 +343,48 @@ describe('changing the own store', () => {
         })
       }
     })
-    expect(await w.error('update_my_product', { product_id: 7, title: 'x' })).toContain('sign-in to the user’s store has expired')
+    expect(await w.error('update_my_product', { product_id: 7, title: 'x' })).toContain('The Etsy sign-in has expired')
   })
 })
 
-describe('neutralError', () => {
-  it('maps every kind to neutral English; other texts are neutralized', () => {
-    expect(neutralError(new EtsyApiError('not_signed_in', 'Увійдіть в Etsy'))).toBe(NOT_SIGNED_IN)
-    expect(neutralError(new EtsyApiError('rate_limit', 'x', 429))).toContain('Too many requests')
-    expect(neutralError(new EtsyApiError('network', 'x'))).toContain('No connection')
-    expect(neutralError(new EtsyApiError('not_found', 'x', 404, undefined, 'Etsy listing gone'))).toBe('Not found (HTTP 404): marketplace listing gone.')
-    expect(neutralError(new EtsyApiError('server', 'Сервер Etsy повернув помилку', 500))).toBe('Сервер marketplace повернув помилку')
-    expect(neutralError(new MyShopError('У цього акаунта Etsy немає магазину.'))).toBe('У цього акаунта marketplace немає магазину.')
-    expect(neutralError('plain')).toBe('plain')
+describe('mcpErrorText', () => {
+  it('maps every kind to English naming Etsy, with Etsy\'s own detail; other texts unchanged', () => {
+    expect(mcpErrorText(new EtsyApiError('not_signed_in', 'Увійдіть в Etsy'))).toBe(NOT_SIGNED_IN)
+    expect(NOT_SIGNED_IN).toContain('Etsy shop')
+    expect(WRITES_OFF).toContain('Etsy shop')
+    const expired = mcpErrorText(new EtsyApiError('oauth', 'x', 401))
+    expect(expired).toContain('The Etsy sign-in has expired')
+    expect(expired).toContain('"Керувати" button in their own shop’s header')
+    expect(expired).toContain('"✏️ Мій магазин" button in the sidebar')
+    expect(NOT_SIGNED_IN).toContain('"✏️ Мій магазин" button in the app’s sidebar → "Увійти через Etsy"')
+    expect(WRITES_OFF).toContain('"Дозволити Claude змінювати мій магазин"')
+    expect(WRITES_OFF).toContain('"MCP-сервер для Claude"')
+    expect(WRITES_OFF).toContain('"Доступ для Claude"')
+    expect(WRITES_OFF).not.toContain('sidebar → MCP')
+    expect(mcpErrorText(new EtsyApiError('forbidden', 'x', 403))).toBe('Etsy refused this action (HTTP 403).')
+    expect(mcpErrorText(new EtsyApiError('bad_request', 'x', 400, undefined, 'title too long'))).toBe(
+      'Etsy rejected the request as invalid (HTTP 400): title too long.'
+    )
+    const rate = mcpErrorText(new EtsyApiError('rate_limit', 'x', 429))
+    expect(rate).toContain('per-second limit')
+    expect(rate).toContain('daily quota is used up until it resets')
+    expect(rate).not.toContain('in a minute')
+    expect(mcpErrorText(new EtsyApiError('network', 'x'))).toBe('No connection to the Etsy API — try again.')
+    expect(mcpErrorText(new EtsyApiError('no_key', 'x'))).toBe('The app has no Etsy API key configured (Settings).')
+    expect(mcpErrorText(new EtsyApiError('not_found', 'x', 404, undefined, 'Etsy listing gone'))).toBe('Not found on Etsy (HTTP 404): Etsy listing gone.')
+    expect(mcpErrorText(new EtsyApiError('server', 'Сервер Etsy повернув помилку', 503))).toBe('Etsy API error (HTTP 503) — try again later.')
+    expect(mcpErrorText(new EtsyApiError('auth', 'Etsy відхилив API-ключ', 403, undefined, 'Invalid API key'))).toBe(
+      'Etsy rejected the app’s API key (HTTP 403): Invalid API key. Ask the user to check the keystring and shared secret in the app’s Settings.'
+    )
+    expect(mcpErrorText(new EtsyApiError('bad_response', 'Etsy повернув неочікувану відповідь.'))).toBe(
+      'Etsy answered something unexpected — try again later.'
+    )
+    // Every kind has an English text: no Ukrainian message falls through.
+    for (const kind of ['no_key', 'auth', 'not_found', 'bad_request', 'rate_limit', 'server', 'network', 'bad_response', 'not_signed_in', 'oauth', 'forbidden'] as const) {
+      expect(mcpErrorText(new EtsyApiError(kind, 'Українською', 400))).not.toContain('Українською')
+    }
+    expect(mcpErrorText(new MyShopError('У цього акаунта Etsy немає магазину.'))).toBe('У цього акаунта Etsy немає магазину.')
+    expect(mcpErrorText('plain')).toBe('plain')
   })
 })
 
@@ -315,7 +403,15 @@ describe('in the full tool set', () => {
     expect(stores.find((s) => s.id === SHOP)!.is_mine).toBe(true)
     expect(stores.find((s) => s.id === 1)!.is_mine).toBe(false)
     const res = await handleMcpMessage({ info: mcpServerInfo('1'), tools }, { jsonrpc: '2.0', id: 1, method: 'tools/list' })
-    const listed = (res!.result as { tools: Array<{ name: string; annotations: { readOnlyHint: boolean } }> }).tools
+    const listed = (res!.result as { tools: Array<{ name: string; description: string; annotations: { readOnlyHint: boolean } }> }).tools
+    // Honest descriptions: each own-shop tool says it works on Etsy; the writes name their OAuth scope.
+    const desc = Object.fromEntries(listed.map((t) => [t.name, t.description]))
+    for (const name of ['list_my_products', 'find_categories', 'get_product_options', 'create_product', 'update_my_product', 'add_product_media', 'update_my_store']) {
+      expect(desc[name]).toContain('Etsy')
+    }
+    expect(desc.list_my_products).toContain('listings_r')
+    for (const name of ['create_product', 'update_my_product', 'add_product_media']) expect(desc[name]).toContain('listings_w')
+    expect(desc.update_my_store).toContain('shops_w')
     const ro = Object.fromEntries(listed.map((t) => [t.name, t.annotations.readOnlyHint]))
     expect(ro).toMatchObject({
       list_my_products: true,
@@ -326,17 +422,33 @@ describe('in the full tool set', () => {
       add_product_media: false,
       update_my_store: false
     })
+    const ow = Object.fromEntries(
+      listed.map((t) => [t.name, (t.annotations as { openWorldHint?: boolean }).openWorldHint])
+    )
+    // Every own-store tool talks to the live Etsy API (find_categories fetches the category tree on first use).
+    for (const name of ['list_my_products', 'find_categories', 'get_product_options', 'create_product', 'update_my_product', 'add_product_media', 'update_my_store']) {
+      expect(ow[name]).toBe(true)
+    }
+    // The app's own database only.
+    expect(ow.list_stores).toBe(false)
     seen.push(JSON.stringify(res))
   })
 
-  it('nothing any store tool said (results, errors, tool list) names the marketplace', () => {
+  it('everything any store tool said (results, errors, tool list): Etsy texts as they are, but no CDN URL, raw JSON or token', () => {
     expect(seen.length).toBeGreaterThan(20)
-    expect(seen.join('\n')).not.toMatch(/etsy/i)
+    const all = seen.join('\n')
+    // Text from Etsy data reaches the client unchanged (incl. its etsy.com link).
+    expect(all).toContain(ETSY_TEXT)
+    expect(all).toContain('Etsy Gift Cards')
+    expect(all).not.toContain('etsystatic.com')
+    expect(all).not.toContain('raw_json')
+    expect(all).not.toContain(TOKEN)
   })
 })
 
 import { createDraftTools } from '../../src/main/mcpStoreTools'
 import { getDraft, listDrafts } from '../../src/main/drafts'
+import { etsyListingEditUrl, etsyListingUrl } from '../../src/shared/myShop'
 
 describe('drafts in the app over MCP (prepare → the user reviews → send)', () => {
   function drafts(over: { writes?: boolean; status?: EtsyAuthStatus } = {}) {
@@ -347,7 +459,8 @@ describe('drafts in the app over MCP (prepare → the user reviews → send)', (
       client: w.client,
       status: () => over.status ?? signedIn,
       writesAllowed: () => over.writes ?? true,
-      taxonomy: async () => [{ id: 2, path: 'Paper & Party Supplies › Paper › Calendars & Planners' }]
+      taxonomy: async () => [{ id: 2, path: 'Paper & Party Supplies › Paper › Calendars & Planners' }],
+      accessToken: async () => TOKEN
     }
     const tools = createDraftTools(own, { db, now: () => 1000, onChanged: changed })
     const run = async (name: string, args: Record<string, unknown> = {}) => {
@@ -362,9 +475,15 @@ describe('drafts in the app over MCP (prepare → the user reviews → send)', (
     return { ...w, db, changed, run }
   }
 
-  it('prepare_product saves a draft in the app — no store call, no "allow changes" needed', async () => {
+  it('prepare_product saves a draft in the app — no Etsy call, no "allow changes" needed', async () => {
     const d = drafts({ writes: false })
-    const r = await d.run('prepare_product', { ...valid, tags: ['budget'], photos: [{ path: photo }], files: [{ path: sheet }] })
+    const r = await d.run('prepare_product', {
+      ...valid,
+      description: ETSY_TEXT,
+      tags: ['budget'],
+      photos: [{ path: photo }],
+      files: [{ path: sheet }]
+    })
     expect(r.isError).toBe(false)
     const out = JSON.parse(r.body)
     expect(out).toMatchObject({
@@ -373,13 +492,14 @@ describe('drafts in the app over MCP (prepare → the user reviews → send)', (
       prepared_by: 'assistant',
       type: 'digital',
       title: 'Budget Planner',
+      description: ETSY_TEXT,
       price: '5.99',
       category: 'Paper & Party Supplies › Paper › Calendars & Planners',
       photos: ['cover.jpg'],
       files: ['Planner.xlsx'],
       problems: []
     })
-    expect(out.note).toContain('Nothing was sent')
+    expect(out.note).toBe('Saved in the app as a draft for the user to review. Nothing was sent to Etsy.')
     expect(d.client.createDraftListing).not.toHaveBeenCalled()
     expect(d.changed).toHaveBeenCalled()
     expect(getDraft(d.db, 1)).toMatchObject({ source: 'mcp', fields: { taxonomyPath: 'Paper & Party Supplies › Paper › Calendars & Planners' } })
@@ -415,16 +535,61 @@ describe('drafts in the app over MCP (prepare → the user reviews → send)', (
     const on = drafts()
     await on.run('prepare_product', { ...valid })
     const r = JSON.parse((await on.run('send_prepared_product', { draft_id: 1 })).body)
-    expect(r).toEqual({ draft_id: 1, product_id: 4242, status: 'draft' })
+    expect(r).toEqual({
+      draft_id: 1,
+      product_id: 4242,
+      status: 'draft',
+      url: null,
+      edit_url: 'https://www.etsy.com/your/shops/me/listing-editor/edit/4242'
+    })
     expect(on.client.createDraftListing).toHaveBeenCalledTimes(1)
     expect(JSON.parse((await on.run('list_prepared_products')).body).drafts[0]).toMatchObject({ status: 'sent', sent_product_id: 4242 })
     const again = await on.run('send_prepared_product', { draft_id: 1 })
     expect(again.isError).toBe(true)
-    expect(JSON.parse(again.body).product_id).toBe(4242)
-    expect(again.body).not.toMatch(/etsy/i)
+    expect(JSON.parse(again.body)).toEqual({
+      error: 'Чернетку вже надіслано на Etsy (товар #4242).',
+      product_id: 4242,
+      edit_url: 'https://www.etsy.com/your/shops/me/listing-editor/edit/4242'
+    })
   })
 
-  it('drafts and their errors never name the marketplace', () => {
-    expect(seen.join('\n')).not.toMatch(/etsy/i)
+  it('send_prepared_product with publish=true returns the public page (url) and the editor (edit_url)', async () => {
+    const on = drafts()
+    await on.run('prepare_product', { ...valid, photos: [{ path: photo }], files: [{ path: sheet }] })
+    const r = await on.run('send_prepared_product', { draft_id: 1, publish: true })
+    expect(r.isError).toBe(false)
+    expect(JSON.parse(r.body)).toEqual({
+      draft_id: 1,
+      product_id: 4242,
+      status: 'active',
+      url: etsyListingUrl(4242),
+      edit_url: etsyListingEditUrl(4242)
+    })
+    expect(etsyListingUrl(4242)).toBe('https://www.etsy.com/listing/4242')
+    expect(on.client.updateListing).toHaveBeenCalledWith(SHOP, 4242, expect.objectContaining({ state: 'active' }))
+    expect(JSON.parse((await on.run('list_prepared_products')).body).drafts[0]).toMatchObject({ status: 'sent', sent_product_id: 4242 })
+  })
+
+  it('tools/list: drafts in the app are local, sending them reaches Etsy; texts name the real buttons', async () => {
+    const tools = createDraftTools(undefined, { db: memDb(), now: () => 1000, onChanged: () => {} })
+    const res = await handleMcpMessage({ info: mcpServerInfo('1'), tools }, { jsonrpc: '2.0', id: 1, method: 'tools/list' })
+    const listed = (res!.result as { tools: Array<{ name: string; description: string; annotations: Record<string, boolean> }> }).tools
+    const ann = Object.fromEntries(listed.map((t) => [t.name, t.annotations]))
+    expect(ann.list_prepared_products).toMatchObject({ readOnlyHint: true, openWorldHint: false })
+    expect(ann.delete_prepared_product).toMatchObject({ readOnlyHint: false, openWorldHint: false })
+    // A category_id is looked up in Etsy's category tree (fetched on first use).
+    expect(ann.prepare_product).toMatchObject({ readOnlyHint: false, openWorldHint: true })
+    expect(ann.send_prepared_product).toMatchObject({ readOnlyHint: false, destructiveHint: true, openWorldHint: true })
+    const prepare = listed.find((t) => t.name === 'prepare_product')!.description
+    expect(prepare).toContain('"Чернетки" button in the header of their own shop')
+    expect(prepare).not.toContain('📝')
+  })
+
+  it('drafts and their errors: texts as they are, but no CDN URL, raw JSON or token', () => {
+    const all = seen.join('\n')
+    expect(all).toContain(ETSY_TEXT)
+    expect(all).not.toContain('etsystatic.com')
+    expect(all).not.toContain('raw_json')
+    expect(all).not.toContain(TOKEN)
   })
 })

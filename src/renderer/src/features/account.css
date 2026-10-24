@@ -1,0 +1,16 @@
+/* Feature "account": the avatar opens in the image viewer (ZoomImage fills the round box). */
+.account-avatar > .account-avatar-zoom {
+  width: 100%;
+  height: 100%;
+}
+.account-avatar-zoom .ui-zoom-badge {
+  width: 20px;
+  height: 20px;
+  right: 50%;
+  bottom: 4px;
+  transform: translateX(50%);
+}
+/* the round box clips an outside outline */
+.account-avatar-zoom:focus-visible {
+  outline-offset: -2px;
+}

@@ -1,6 +1,6 @@
-// Inventory feature, the MCP side: neutral tools over the user's own store
-// ("product" = listing, "variant" = inventory product, "offer" = offering,
-// "option" = variation property). Never names the marketplace, never a URL.
+// Inventory feature, the MCP side: live Etsy API tools over the user's own
+// Etsy shop ("product" = listing, "variant" = inventory product, "offer" =
+// offering, "option" = variation property). No URLs: photos go by id.
 
 import {
   inventoryProperties,
@@ -16,7 +16,6 @@ import {
   type VariationImageInput
 } from '../../../shared/features/inventory'
 import { errorResult, textResult, ToolInputError, type JsonSchema, type McpTool, type McpToolResult } from '../../mcpProtocol'
-import { neutralText } from '../../neutral'
 import { mcpFail, mcpOwnShop, mcpWritable } from '../common'
 import type { FeatureMcpDeps } from '../types'
 import {
@@ -36,15 +35,15 @@ import {
   type SingleChange
 } from './api'
 
-/** Refusals quote the store's own option names and values — neutralized like any other store text. */
-const fail = (e: unknown): McpToolResult => (e instanceof InvError ? errorResult(neutralText(e.en)) : mcpFail(e))
+/** Our own refusals answer their English text (it may quote the shop's option names and values as they are). */
+const fail = (e: unknown): McpToolResult => (e instanceof InvError ? errorResult(e.en) : mcpFail(e))
 const amount = (m: InvMoney | null): number | null => (m ? moneyValue(m) : null)
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
 const posInt = (v: unknown): boolean => Number.isSafeInteger(v) && (v as number) > 0
 
 // ------------------------------------------------------------------ outputs
 
-const neutralOffer = (o: InvOffering) => ({
+const offerOut = (o: InvOffering) => ({
   offer_id: o.offeringId,
   price: amount(o.price),
   currency: o.price?.currency ?? null,
@@ -53,40 +52,40 @@ const neutralOffer = (o: InvOffering) => ({
   processing_profile_id: o.readinessStateId
 })
 
-const neutralVariant = (p: InvProduct) => ({
+const variantOut = (p: InvProduct) => ({
   variant_id: p.productId,
-  sku: neutralText(p.sku) || null,
+  sku: p.sku || null,
   options: p.propertyValues.map((v) => ({
     option_id: v.propertyId,
-    option_name: neutralText(v.propertyName),
-    value: neutralText(v.values.join(', ')),
+    option_name: v.propertyName,
+    value: v.values.join(', '),
     value_id: v.valueIds[0] ?? null,
-    scale: neutralText(v.scaleName)
+    scale: v.scaleName
   })),
-  offers: p.offerings.map(neutralOffer)
+  offers: p.offerings.map(offerOut)
 })
 
-export function neutralInventory(inv: ListingInventory) {
+export function inventoryOut(inv: ListingInventory) {
   const s = inventorySummary(inv)
   return {
     product_id: inv.listingId,
     currency: s.priceMin?.currency ?? null,
     options: inventoryProperties(inv.products).map((p) => ({
       option_id: p.propertyId,
-      name: neutralText(p.name),
-      values: p.values.map((v) => ({ value_id: v.valueId, value: neutralText(v.value) }))
+      name: p.name,
+      values: p.values.map((v) => ({ value_id: v.valueId, value: v.value }))
     })),
     price_varies_by: inv.priceOnProperty,
     quantity_varies_by: inv.quantityOnProperty,
     sku_varies_by: inv.skuOnProperty,
     processing_varies_by: inv.readinessStateOnProperty,
-    variants: inv.products.map(neutralVariant)
+    variants: inv.products.map(variantOut)
   }
 }
 
-const neutralRow = (r: InventoryOverviewRow) => ({
+const overviewOut = (r: InventoryOverviewRow) => ({
   product_id: r.listingId,
-  title: neutralText(r.title),
+  title: r.title,
   status: r.state,
   currency: r.priceMin?.currency ?? null,
   price_min: amount(r.priceMin),
@@ -103,7 +102,7 @@ const neutralRow = (r: InventoryOverviewRow) => ({
 const OPTION_SCHEMA: JsonSchema = {
   type: 'object',
   properties: {
-    option_id: { type: 'integer', minimum: 1, description: 'The option id (from get_my_product_inventory; custom options use the ids shown there).' },
+    option_id: { type: 'integer', minimum: 1, description: "The option's Etsy property id (from get_my_product_inventory; Etsy's custom options use 513 and 514)." },
     option_name: { type: 'string', description: 'The option name, e.g. "Size" (default: the current name of that option).' },
     value: { type: 'string', minLength: 1, description: 'The value, e.g. "M". Parentheses are not allowed.' },
     value_id: { type: 'integer', minimum: 1, description: 'The value id when reusing an existing value (default: looked up by text).' },
@@ -118,9 +117,9 @@ const VARIANT_SCHEMA: JsonSchema = {
   properties: {
     options: { type: 'array', items: OPTION_SCHEMA, description: 'This variant’s option values; omit for a product without variants.' },
     sku: { type: 'string', maxLength: 255 },
-    price: { type: 'number', description: 'Price in the store currency, > 0, at most 2 decimals.' },
+    price: { type: 'number', description: "The seller's price in the shop currency (before VAT and sales), > 0, at most 2 decimals." },
     quantity: { type: 'integer', minimum: 0, maximum: 999 },
-    enabled: { type: 'boolean', description: 'Offered to customers (default true).' },
+    enabled: { type: 'boolean', description: 'Offered to buyers (default true).' },
     processing_profile_id: { type: 'integer', minimum: 1, description: 'Default: the current one of the same variant, else of the first variant.' }
   },
   required: ['price', 'quantity'],
@@ -149,7 +148,7 @@ function idsArg(v: unknown, name: string): number[] | undefined {
 const comboKey = (opts: Array<{ propertyId: number; values: string[] }>): string =>
   JSON.stringify([...opts].sort((a, b) => a.propertyId - b.propertyId).map((o) => [o.propertyId, o.values.map((s) => s.trim().toLowerCase())]))
 
-/** The neutral `variants` list → a full inventory, filling ids/names/processing from the current one. */
+/** The MCP `variants` list → a full inventory, filling ids/names/processing from the current one. */
 export function variantsToWrite(cur: ListingInventory, raw: unknown, varies: Record<string, unknown>): InventoryWrite {
   if (!Array.isArray(raw) || !raw.length) throw new ToolInputError('"variants" must be a non-empty list.')
   const props = inventoryProperties(cur.products)
@@ -226,7 +225,8 @@ function linksArg(raw: unknown): VariationImageInput[] {
   })
 }
 
-const LIVE = "This changes the user's live store and customers see it at once — use only when the user asked for this change."
+const LIVE =
+  'This changes the user\'s live Etsy shop — buyers see it at once. Needs the "allow changes" switch in the app\'s MCP window; use only when the user asked for this change.'
 
 // --------------------------------------------------------------------- tools
 
@@ -235,15 +235,16 @@ export function inventoryMcpTools(deps: FeatureMcpDeps): McpTool[] {
   return [
     {
       name: 'get_my_product_inventory',
-      title: 'My product: variants, prices, stock',
+      title: 'My Etsy listing: variants, prices, stock',
+      openWorld: true,
       description:
-        "The variants of one product in the user's own store: each variant's option values (e.g. Size = M), SKU and offers (price, currency, quantity in stock, enabled), the options with their values, and which options the price / quantity / SKU / processing profile vary by. With variant_id: that variant only; with variant_id and offer_id: that one offer only.",
+        "Live from the Etsy API (getListingInventory; OAuth listings_r, 1 request): the inventory of one listing in the user's own Etsy shop — its variants (Etsy inventory products), each with its option values (e.g. Size = M), SKU and offers (Etsy offerings: the seller's price before VAT and sales, currency, quantity in stock, enabled, processing_profile_id); the options with their values; and which option ids the price / quantity / SKU / processing profile vary by. Deleted variants and offers are left out. With variant_id: only that variant (getListingProduct); with variant_id and offer_id: only that offer (getListingOffering).",
       inputSchema: {
         type: 'object',
         properties: {
-          product_id: { type: 'integer', minimum: 1 },
-          variant_id: { type: 'integer', minimum: 1 },
-          offer_id: { type: 'integer', minimum: 1, description: 'Needs variant_id.' }
+          product_id: { type: 'integer', minimum: 1, description: 'The Etsy listing id (from list_my_products).' },
+          variant_id: { type: 'integer', minimum: 1, description: 'An Etsy inventory product id (variant_id from this tool).' },
+          offer_id: { type: 'integer', minimum: 1, description: 'An Etsy offering id (offer_id from this tool); needs variant_id.' }
         },
         required: ['product_id'],
         additionalProperties: false
@@ -256,10 +257,10 @@ export function inventoryMcpTools(deps: FeatureMcpDeps): McpTool[] {
           const offer = args.offer_id as number | undefined
           if (offer != null && variant == null) throw new ToolInputError('offer_id needs variant_id.')
           if (variant != null && offer != null) {
-            return textResult({ product_id: id, variant_id: variant, offer: neutralOffer(await getOffering(client(), id, variant, offer)) })
+            return textResult({ product_id: id, variant_id: variant, offer: offerOut(await getOffering(client(), id, variant, offer)) })
           }
-          if (variant != null) return textResult({ product_id: id, variant: neutralVariant(await getProduct(client(), id, variant)) })
-          return textResult(neutralInventory(await getInventory(client(), id)))
+          if (variant != null) return textResult({ product_id: id, variant: variantOut(await getProduct(client(), id, variant)) })
+          return textResult(inventoryOut(await getInventory(client(), id)))
         } catch (e) {
           return fail(e)
         }
@@ -267,15 +268,16 @@ export function inventoryMcpTools(deps: FeatureMcpDeps): McpTool[] {
     },
     {
       name: 'get_my_inventory_overview',
-      title: 'My products: price ranges and stock',
+      title: 'My Etsy listings: price ranges and stock',
+      openWorld: true,
       description:
-        "Price range (lowest–highest enabled offer), total quantity in stock, number of variants and whether it has a single price entry, for products of the user's own store: the given product_ids (up to 100; ids that don't exist or belong to another store are listed in not_in_store), else a page of the store's active products (offset/limit, total = how many active products there are).",
+        "Live from the Etsy API (OAuth listings_r): per listing of the user's own Etsy shop — title, status, currency, price range (lowest–highest seller price over the enabled offers), total quantity in stock of the enabled offers, number of variants and of enabled variants, single_price_entry (exactly one variant with one offer, so update_my_product_price works) and has_variant_data (false = Etsy returned no inventory record; price and quantity are then the listing's own). With product_ids (1–100): those listings (getListingsInventoryByListingIds, 1 request — more when some ids are unknown to Etsy; ids Etsy doesn't know or that aren't in the user's shop are listed in not_in_store; offset/limit are ignored). Without: one page of the shop's ACTIVE listings (offset/limit; total = the number of active listings; 2 requests).",
       inputSchema: {
         type: 'object',
         properties: {
-          product_ids: IDS('Up to 100 product ids of the user’s store.'),
-          offset: { type: 'integer', minimum: 0, default: 0 },
-          limit: { type: 'integer', minimum: 1, maximum: 100, default: 100 }
+          product_ids: IDS('Up to 100 Etsy listing ids of the user’s shop.'),
+          offset: { type: 'integer', minimum: 0, default: 0, description: 'Without product_ids: where the page of active listings starts.' },
+          limit: { type: 'integer', minimum: 1, maximum: 100, default: 100, description: 'Without product_ids: the page size.' }
         },
         additionalProperties: false
       },
@@ -287,13 +289,13 @@ export function inventoryMcpTools(deps: FeatureMcpDeps): McpTool[] {
             if (!ids.length || ids.length > 100) throw new ToolInputError('"product_ids" must hold 1 to 100 ids.')
             const mine = (await inventoriesByIdsLenient(client(), [...new Set(ids)])).filter((l) => l.shop_id === shopId)
             return textResult({
-              products: mine.map((l) => neutralRow(overviewRow(l))),
+              products: mine.map((l) => overviewOut(overviewRow(l))),
               not_in_store: ids.filter((id) => !mine.some((l) => l.listing_id === id))
             })
           }
           const offset = (args.offset as number | undefined) ?? 0
           const page = await overviewPage(client(), shopId, offset, (args.limit as number | undefined) ?? 100)
-          return textResult({ total: page.total, offset, products: page.rows.map(neutralRow) })
+          return textResult({ total: page.total, offset, products: page.rows.map(overviewOut) })
         } catch (e) {
           return fail(e)
         }
@@ -301,15 +303,16 @@ export function inventoryMcpTools(deps: FeatureMcpDeps): McpTool[] {
     },
     {
       name: 'update_my_product_price',
-      title: 'Change price / stock of a simple product',
-      description: `Sets the price, quantity in stock and/or SKU of a product of the user's own store that has a single variant and offer (no options). For products with variants it fails — use update_my_product_inventory. Returns the new variants. ${LIVE}`,
+      title: 'Change price / stock of a simple Etsy listing',
+      openWorld: true,
+      description: `Sets the price, quantity in stock and/or SKU of a listing in the user's own Etsy shop that has exactly one variant with one offer (no options): reads its inventory, changes those values and writes the whole inventory back (getListingInventory + updateListingInventory; OAuth listings_r + listings_w, 2 requests). Give at least one of price, quantity, sku. Fails for a listing with several variants, or with no inventory record yet — use update_my_product_inventory then. Returns updated: true and the saved inventory (as get_my_product_inventory). ${LIVE}`,
       inputSchema: {
         type: 'object',
         properties: {
-          product_id: { type: 'integer', minimum: 1 },
-          price: { type: 'number', description: 'In the store currency, > 0, at most 2 decimals.' },
+          product_id: { type: 'integer', minimum: 1, description: 'The Etsy listing id (from list_my_products).' },
+          price: { type: 'number', description: "The seller's price in the shop currency (before VAT and sales), > 0, at most 2 decimals." },
           quantity: { type: 'integer', minimum: 0, maximum: 999 },
-          sku: { type: 'string', maxLength: 255 }
+          sku: { type: 'string', maxLength: 255, description: '"" clears the SKU.' }
         },
         required: ['product_id'],
         additionalProperties: false
@@ -324,7 +327,7 @@ export function inventoryMcpTools(deps: FeatureMcpDeps): McpTool[] {
           if (args.quantity != null) change.quantity = args.quantity as number
           if (args.sku != null) change.sku = args.sku as string
           if (!Object.keys(change).length) throw new ToolInputError('Give price, quantity or sku.')
-          return textResult({ updated: true, ...neutralInventory(await updateSingle(client(), args.product_id as number, change)) })
+          return textResult({ updated: true, ...inventoryOut(await updateSingle(client(), args.product_id as number, change)) })
         } catch (e) {
           return fail(e)
         }
@@ -332,12 +335,13 @@ export function inventoryMcpTools(deps: FeatureMcpDeps): McpTool[] {
     },
     {
       name: 'update_my_product_inventory',
-      title: 'Replace all variants of a product',
-      description: `Replaces ALL variants of a product of the user's own store with the given list (every variant must be listed — one left out is deleted): each with its option values, SKU, price, quantity and enabled flag. price_varies_by / quantity_varies_by / sku_varies_by / processing_varies_by list the option ids each of those depends on (default: as now); where a value doesn't vary, it must be the same for the variants concerned. Read get_my_product_inventory first. Returns the new variants. ${LIVE}`,
+      title: 'Replace all variants of an Etsy listing',
+      openWorld: true,
+      description: `Replaces ALL variants of a listing in the user's own Etsy shop with the given list (updateListingInventory; every variant must be listed — one left out is deleted): each with its option values (up to 3 options, the same options in every variant), SKU, price (the seller's price in the shop currency), quantity and enabled flag. Option names, value ids, scales and processing profiles left out are taken from the current inventory. price_varies_by / quantity_varies_by / sku_varies_by / processing_varies_by list the option ids each depends on (default: as now, for the options the new variants still have); where a value doesn't vary, it must be the same for the variants concerned. The rules are checked before anything is written. Read get_my_product_inventory first. OAuth listings_r + listings_w, 2 requests. Returns updated: true and the saved inventory (as get_my_product_inventory). ${LIVE}`,
       inputSchema: {
         type: 'object',
         properties: {
-          product_id: { type: 'integer', minimum: 1 },
+          product_id: { type: 'integer', minimum: 1, description: 'The Etsy listing id (from list_my_products).' },
           variants: { type: 'array', items: VARIANT_SCHEMA, description: 'The full list of variants.' },
           price_varies_by: IDS('Option ids the price depends on ([] = one price for all).'),
           quantity_varies_by: IDS('Option ids the quantity depends on.'),
@@ -354,7 +358,7 @@ export function inventoryMcpTools(deps: FeatureMcpDeps): McpTool[] {
           mcpWritable(deps, [...READ_SCOPES, ...WRITE_SCOPES])
           const id = args.product_id as number
           const write = variantsToWrite(await getInventory(client(), id), args.variants, args)
-          return textResult({ updated: true, ...neutralInventory(await putInventory(client(), id, write)) })
+          return textResult({ updated: true, ...inventoryOut(await putInventory(client(), id, write)) })
         } catch (e) {
           return fail(e)
         }
@@ -362,12 +366,13 @@ export function inventoryMcpTools(deps: FeatureMcpDeps): McpTool[] {
     },
     {
       name: 'get_my_variation_photos',
-      title: 'My product: photos of option values',
+      title: 'My Etsy listing: photos of option values',
+      openWorld: true,
       description:
-        "For a product of the user's own store: its options with their values and the photo linked to each value (photo_id, null = none), and the product's photos (photo_id, position, alt text).",
+        "Live from the Etsy API (OAuth listings_r; 3 requests: inventory, images, variation images): for a listing in the user's own Etsy shop — its options with their values and the photo linked to each value (Etsy variation images; photo_id = the listing image id, null = none), and the listing's photos (photo_id, position = Etsy's rank, alt text). No image bytes: to look at a photo of a listing the app has scanned, use get_product_image.",
       inputSchema: {
         type: 'object',
-        properties: { product_id: { type: 'integer', minimum: 1 } },
+        properties: { product_id: { type: 'integer', minimum: 1, description: 'The Etsy listing id (from list_my_products).' } },
         required: ['product_id'],
         additionalProperties: false
       },
@@ -379,14 +384,14 @@ export function inventoryMcpTools(deps: FeatureMcpDeps): McpTool[] {
             product_id: d.listingId,
             options: d.properties.map((p) => ({
               option_id: p.propertyId,
-              name: neutralText(p.name),
+              name: p.name,
               values: p.values.map((v) => ({
                 value_id: v.valueId,
-                value: neutralText(v.value),
+                value: v.value,
                 photo_id: d.assigned.find((a) => a.propertyId === p.propertyId && a.valueId === v.valueId)?.imageId ?? null
               }))
             })),
-            photos: d.photos.map((p) => ({ photo_id: p.imageId, position: p.rank, alt_text: neutralText(p.alt) }))
+            photos: d.photos.map((p) => ({ photo_id: p.imageId, position: p.rank, alt_text: p.alt }))
           })
         } catch (e) {
           return fail(e)
@@ -395,12 +400,13 @@ export function inventoryMcpTools(deps: FeatureMcpDeps): McpTool[] {
     },
     {
       name: 'set_my_variation_photos',
-      title: 'Link photos to option values',
-      description: `Links photos of a product of the user's own store to values of ONE of its options (e.g. each Color its photo). Replaces every existing link: values left out lose theirs, an empty list removes them all. Ids from get_my_variation_photos. ${LIVE}`,
+      title: 'Link photos to option values of an Etsy listing',
+      openWorld: true,
+      description: `Links photos of a listing in the user's own Etsy shop to values of ONE of its options, e.g. each Color its photo (updateVariationImages; OAuth listings_w, 1 request). Replaces every existing link: values left out lose theirs, an empty list removes them all; each value gets at most one photo. Ids from get_my_variation_photos (the photos must be the listing's own). Returns the links as Etsy saved them. ${LIVE}`,
       inputSchema: {
         type: 'object',
         properties: {
-          product_id: { type: 'integer', minimum: 1 },
+          product_id: { type: 'integer', minimum: 1, description: 'The Etsy listing id (from list_my_products).' },
           links: {
             type: 'array',
             items: {
@@ -426,7 +432,7 @@ export function inventoryMcpTools(deps: FeatureMcpDeps): McpTool[] {
           const saved = await setVariationImages(client(), shopId, args.product_id as number, linksArg(args.links))
           return textResult({
             product_id: args.product_id,
-            links: saved.map((s) => ({ option_id: s.propertyId, value_id: s.valueId, value: neutralText(s.value), photo_id: s.imageId }))
+            links: saved.map((s) => ({ option_id: s.propertyId, value_id: s.valueId, value: s.value, photo_id: s.imageId }))
           })
         } catch (e) {
           return fail(e)

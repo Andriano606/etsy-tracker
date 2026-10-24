@@ -199,3 +199,28 @@ describe('store: buyer prices and promotions', () => {
     expect(useStore.getState().discountOnly).toBe(true)
   })
 })
+
+describe('store: the full-size image viewer', () => {
+  it('one image or a gallery; the index is clamped; empty srcs are dropped keeping the clicked image; close clears it', () => {
+    const A = { src: 'etsyimg://img/1/fullxfull', alt: 'Чашка' }
+    const B = { src: 'etsyimg://img/2/fullxfull' }
+    const C = { src: 'etsyimg://img/3/fullxfull' }
+    const s = () => useStore.getState()
+    s().openImage(A)
+    expect(s().viewer).toEqual({ images: [A], index: 0 })
+    s().openImage([A, B, C], 2)
+    expect(s().viewer).toEqual({ images: [A, B, C], index: 2 })
+    s().openImage([A, B, C], 9)
+    expect(s().viewer!.index).toBe(2)
+    s().openImage([A, B, C], -3)
+    expect(s().viewer!.index).toBe(0)
+    s().openImage([A, B, C], Number.NaN)
+    expect(s().viewer!.index).toBe(0)
+    s().openImage([{ src: '' }, A, { src: '' }, B], 3)
+    expect(s().viewer).toEqual({ images: [A, B], index: 1 })
+    s().closeImage()
+    expect(s().viewer).toBeNull()
+    s().openImage([{ src: '' }])
+    expect(s().viewer).toBeNull()
+  })
+})

@@ -2,7 +2,7 @@
 // state (Etsy processes an upload for a while), delete, upload / replace.
 
 import { MAX_VIDEO_BYTES, VIDEO_STATE_LABEL, VIDEO_UPLOADS_PER_DAY, type MediaVideo, type VideoState } from '@shared/features/media'
-import { Badge, Button, EmptyState, InfoTip, type BadgeTone } from '../../ui'
+import { Badge, Button, EmptyState, InfoTip, ZoomImage, type BadgeTone } from '../../ui'
 import { featureCall } from '../call'
 import type { MediaOps } from './MediaSection'
 
@@ -48,7 +48,11 @@ export function VideoBlock({ videos, ops }: { videos: MediaVideo[]; ops: MediaOp
       </p>
       {video ? (
         <div className="media-video">
-          {video.thumbnailUrl ? <img src={video.thumbnailUrl} alt="Кадр відео" /> : <div className="media-thumb-empty" />}
+          {video.thumbnailUrl ? (
+            <ZoomImage className="media-video-zoom" src={video.thumbnailUrl} alt="Кадр відео" caption="Кадр відео (Etsy дає лише цей кадр, не саме відео)" />
+          ) : (
+            <div className="media-thumb-empty" />
+          )}
           <div className="media-video-info">
             <div className="media-video-state">
               <span>Стан: </span>

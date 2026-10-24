@@ -405,7 +405,7 @@ export function ShopView(): JSX.Element | null {
     <div className="shop-view">
       <header className="shop-header">
         <div className="shop-head-row">
-          <ShopIcon url={shop.iconUrl} name={shop.shopName} size={40} />
+          <ShopIcon url={shop.iconUrl} name={shop.shopName} size={40} zoomable />
           <h1 className="shop-name">
             <span className="truncate" title={shop.shopName}>
               {shop.shopName}

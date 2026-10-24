@@ -4,7 +4,7 @@ import { formatCount, formatDateTime, formatEtsyDate, formatPromoPeriod, ratingS
 import { GLOSSARY } from '@shared/glossary'
 import { formatMoney } from '@shared/price'
 import { imageSrc, reviewImageSrc } from '../imageUrl'
-import { Callout, Icon, InfoTip, type IconName } from '../ui'
+import { Callout, Icon, InfoTip, ZoomButton, ZoomImage, type IconName } from '../ui'
 import { ChangeRows, KIND_LABEL, changedSummary, countOf } from './ChangeList'
 import { ListingCard } from './ListingCard'
 import { WasPrice } from './PriceParts'
@@ -48,7 +48,11 @@ export function ResultsGroup({
   )
 }
 
-/** A listing thumbnail + title button (a review's or a promotion's listing). */
+/**
+ * A listing thumbnail + title button (a review's or a promotion's listing). The
+ * thumbnail carries a magnifier overlay — a sibling of the button, never inside
+ * it — that opens the photo full size; the rest of the button opens the listing.
+ */
 function ListingLink({
   listingId,
   title,
@@ -62,14 +66,23 @@ function ListingLink({
 }): JSX.Element {
   const name = title ?? `Товар ${listingId}`
   return (
-    <button className="review-listing" onClick={() => onOpen(listingId)} title={name}>
-      {imageId != null ? (
-        <img src={imageSrc({ id: imageId }, '75x75')} alt="" referrerPolicy="no-referrer" />
-      ) : (
-        <span className="no-img">—</span>
+    <span className="review-listing-host ui-zoom-host">
+      <button className="review-listing" onClick={() => onOpen(listingId)} title={name}>
+        {imageId != null ? (
+          <img src={imageSrc({ id: imageId }, '75x75')} alt="" referrerPolicy="no-referrer" />
+        ) : (
+          <span className="no-img">—</span>
+        )}
+        <span className="review-listing-title">{name}</span>
+      </button>
+      {imageId != null && (
+        <ZoomButton
+          images={{ src: imageSrc({ id: imageId }, 'fullxfull'), alt: name, caption: name }}
+          label={`Відкрити фото на весь розмір: ${name}`}
+          className="ui-zoom-corner thumb-zoom"
+        />
       )}
-      <span className="review-listing-title">{name}</span>
-    </button>
+    </span>
   )
 }
 
@@ -129,7 +142,14 @@ export function NewReviews({
               </div>
               {r.text && <div className="review-text">{textExcerpt(r.text)}</div>}
               {r.hasImage && (
-                <img className="review-photo" src={reviewImageSrc(r)} alt="Фото покупця" loading="lazy" referrerPolicy="no-referrer" />
+                <ZoomImage
+                  className="review-photo-zoom"
+                  imgClassName="review-photo"
+                  src={reviewImageSrc(r)}
+                  alt="Фото покупця"
+                  caption={`Фото покупця · ${formatEtsyDate(r.createdAt)}`}
+                  loading="lazy"
+                />
               )}
             </div>
           </li>

@@ -96,6 +96,7 @@
 
   /* Layers. */
   --z-modal: 50;
+  --z-viewer: 60; /* the full-size image viewer — above every modal */
   --z-layer: 1000; /* tooltips, menus — above modals */
 
   /* Motion. */
@@ -170,6 +171,12 @@ code {
   from {
     opacity: 0;
     transform: translateY(2px);
+  }
+}
+/* The full-window viewer only fades: a slide/scale would uncover the window's edges while it runs. */
+@keyframes ui-viewer-in {
+  from {
+    opacity: 0;
   }
 }
 @keyframes ui-modal-in {
@@ -1737,4 +1744,212 @@ a.btn {
   color: var(--text-body);
   font-size: 13px;
   line-height: 1.7;
+}
+
+/* ── Full-size image viewer (ui/ImageViewer.tsx) ─────────────────────────── */
+.ui-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-viewer);
+  display: flex;
+  flex-direction: column;
+  /* Nearly opaque: at 0.92 the modal under it still read through (its title right under the caption). */
+  background: rgba(5, 6, 8, 0.96);
+  animation: ui-viewer-in 160ms var(--ease);
+}
+.ui-viewer:focus {
+  outline: none;
+}
+.ui-viewer-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 52px;
+  padding: 8px 12px 8px 20px;
+  /* The backdrop's colour again: whatever is under the caption (a modal's title) must not read through. */
+  background: rgba(5, 6, 8, 0.8);
+  color: var(--text);
+}
+.ui-viewer-caption {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  color: var(--text-dim);
+}
+.ui-viewer-count {
+  font-size: 13px;
+  color: var(--text-dim);
+  padding: 0 6px;
+}
+.ui-viewer-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  flex: none;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  cursor: pointer;
+}
+.ui-viewer-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.16);
+}
+.ui-viewer-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.ui-viewer-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.ui-viewer-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 64px 24px;
+  overflow: hidden;
+}
+.ui-viewer-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 4px;
+  cursor: zoom-in;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
+}
+/* 1:1 — the stage scrolls; `margin: auto` centres a smaller image and never clips a bigger one
+   (centring with justify/align-content would cut off its top/left edge). */
+.ui-viewer-stage.is-actual {
+  overflow: auto;
+  align-items: flex-start;
+  justify-content: flex-start;
+}
+.ui-viewer-stage.is-actual .ui-viewer-img {
+  flex: none;
+  margin: auto;
+  max-width: none;
+  max-height: none;
+  cursor: zoom-out;
+}
+.ui-viewer-img:not([title]) {
+  cursor: default;
+}
+.ui-viewer-note {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+  font-size: 14px;
+  pointer-events: none;
+}
+.ui-viewer-nav {
+  position: absolute;
+  top: 50%;
+  width: 48px;
+  height: 48px;
+  margin-top: -24px;
+  /* At 1:1 (and on narrow windows) the arrows sit over the picture: a dark disc with a light rim
+     stays visible on a white photo as well as on the dark backdrop. */
+  background: rgba(10, 11, 13, 0.66);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.22);
+}
+.ui-viewer-nav:hover:not(:disabled) {
+  background: rgba(10, 11, 13, 0.88);
+}
+.ui-viewer-nav.is-prev {
+  left: 10px;
+}
+.ui-viewer-nav.is-next {
+  right: 10px;
+}
+
+/* A picture that opens the viewer (ZoomImage) and the corner magnifier (ZoomButton). */
+.ui-zoom {
+  position: relative;
+  display: block;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: zoom-in;
+  max-width: 100%;
+}
+.ui-zoom > img {
+  display: block;
+}
+.ui-zoom:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.ui-zoom-badge,
+.ui-zoom-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  background: rgba(10, 11, 13, 0.72);
+  /* A light rim: the dark disc alone disappears on a dark photo. */
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.28);
+  color: #fff;
+}
+.ui-zoom-badge {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  opacity: 0;
+  transition: opacity 120ms var(--ease);
+  pointer-events: none;
+}
+.ui-zoom:hover .ui-zoom-badge,
+.ui-zoom:focus-visible .ui-zoom-badge {
+  opacity: 1;
+}
+.ui-zoom-btn {
+  border: 0;
+  cursor: zoom-in;
+  padding: 0;
+}
+.ui-zoom-btn:hover {
+  background: rgba(10, 11, 13, 0.9);
+}
+.ui-zoom-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* ZoomButton over a picture's corner: put the picture and the button in a `.ui-zoom-host`. */
+.ui-zoom-host {
+  position: relative;
+}
+.ui-zoom-host > .ui-zoom-corner {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  z-index: 2;
+  opacity: 0;
+  transition: opacity 120ms var(--ease);
+}
+.ui-zoom-host:hover > .ui-zoom-corner,
+.ui-zoom-host:focus-within > .ui-zoom-corner {
+  opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ui-viewer {
+    animation: none;
+  }
+  .ui-zoom-badge,
+  .ui-zoom-host > .ui-zoom-corner {
+    transition: none;
+  }
 }

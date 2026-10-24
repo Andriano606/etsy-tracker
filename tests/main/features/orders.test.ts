@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { ordersFeature } from '../../../src/main/features/orders'
 import { ORDERS_TOOL_SUMMARY } from '../../../src/shared/features/orders'
-import { OWN_SHOP, OWN_USER, callTool, featureCtx, mcpDeps, runAction, signedIn, signedOut } from '../../helpers/features'
+import { NOT_SIGNED_IN, WRITES_OFF } from '../../../src/main/mcpStoreTools'
+import { OWN_SHOP, OWN_USER, callTool, featureCtx, mcpDeps, routedFetch, runAction, signedIn, signedOut, testClient } from '../../helpers/features'
 import type { FakeReply } from '../../helpers/fakeFetch'
 
 // ------------------------------------------------------------- fixtures (OAS shapes)
@@ -730,7 +731,7 @@ describe('orders feature — MCP tools', () => {
     expect(fetch.calls).toHaveLength(0)
   })
 
-  it('get_my_order: items, totals, messages (neutralized), gift, shipments, refunds; no address by default', async () => {
+  it('get_my_order: items, totals, messages (as Etsy has them), gift, shipments, refunds; no address by default', async () => {
     const withRefund = {
       ...routes,
       [`GET ${S}/receipts/{id}`]: {
@@ -746,7 +747,7 @@ describe('orders feature — MCP tools', () => {
     expect(r.json).toMatchObject({
       id: 9001,
       payment_method: 'cc',
-      buyer_message: 'Please wrap it & see [link]',
+      buyer_message: 'Please wrap it & see https://www.etsy.com/listing/1',
       gift_message: 'Happy birthday!',
       gift_sender: 'Ira',
       shipments: [{ carrier: 'usps', tracking_code: '1Z', buyer_notified_at: new Date((T0 + 9) * 1000).toISOString() }],
@@ -756,7 +757,7 @@ describe('orders feature — MCP tools', () => {
       sale_id: 1,
       order_id: 9001,
       product_id: 501,
-      title: 'Budget & Bills Planner — marketplace bestseller',
+      title: 'Budget & Bills Planner — Etsy bestseller',
       quantity: 2,
       unit_price: { value: 10, currency: 'USD' },
       variations: [{ name: 'Колір', value: 'Синій & білий' }]
@@ -765,19 +766,20 @@ describe('orders feature — MCP tools', () => {
     expect(r.json.shipping_address).toBeUndefined()
   })
 
-  it('reads: signed out → the sign-in note; no transactions_r → the permission note; Etsy errors neutral', async () => {
+  it('reads: signed out → the sign-in note; no transactions_r → the permission note; Etsy errors with Etsy\'s detail', async () => {
     const out = await callTool(ordersFeature, mcpDeps(routes, { status: signedOut }).deps, 'list_my_orders')
     expect(out.isError).toBe(true)
-    expect(out.text).toContain('has not connected their own store')
+    expect(out.text).toBe(NOT_SIGNED_IN)
     const noScope = await callTool(ordersFeature, mcpDeps(routes, { status: signedIn({ scopes: ['listings_r'] }) }).deps, 'get_my_order', { order_id: 1 })
-    expect(noScope.text).toContain('lacks a permission this needs (transactions_r)')
+    expect(noScope.isError).toBe(true)
+    expect(noScope.text).toContain('(transactions_r)')
     const nf = await callTool(ordersFeature, mcpDeps({ [`GET ${S}/receipts/{id}`]: { status: 404, body: { error: 'Etsy receipt 5 not found' } } }).deps, 'get_my_order', {
       order_id: 5
     })
-    expect(nf.text).toBe('Not found (HTTP 404): marketplace receipt 5 not found.')
+    expect(nf.text).toBe('Not found on Etsy (HTTP 404): Etsy receipt 5 not found.')
     const se = await callTool(ordersFeature, mcpDeps({ [`GET ${S}/receipts`]: { status: 503 } }).deps, 'list_my_orders')
     expect(se.isError).toBe(true)
-    expect(se.text).not.toMatch(/etsy/i)
+    expect(se.text).toContain('HTTP 503')
   })
 
   it('mark_my_order_shipped: POST JSON; returns the shipped order', async () => {
@@ -800,11 +802,11 @@ describe('orders feature — MCP tools', () => {
   it('mark_my_order_shipped: writes off / no transactions_w / signed out / blank / missing / 409 → errors', async () => {
     const args = { order_id: 9001, carrier: 'usps', tracking_code: '1Z' }
     const off = mcpDeps(routes, { writes: false })
-    expect((await callTool(ordersFeature, off.deps, 'mark_my_order_shipped', args)).text).toContain('Changes to the store are switched off')
+    expect((await callTool(ordersFeature, off.deps, 'mark_my_order_shipped', args)).text).toBe(WRITES_OFF)
     const noW = mcpDeps(routes, { status: signedIn({ scopes: ['transactions_r'] }) })
     expect((await callTool(ordersFeature, noW.deps, 'mark_my_order_shipped', args)).text).toContain('(transactions_w)')
     const out = mcpDeps(routes, { status: signedOut })
-    expect((await callTool(ordersFeature, out.deps, 'mark_my_order_shipped', args)).text).toContain('has not connected')
+    expect((await callTool(ordersFeature, out.deps, 'mark_my_order_shipped', args)).text).toBe(NOT_SIGNED_IN)
     const ok = mcpDeps(routes)
     expect((await callTool(ordersFeature, ok.deps, 'mark_my_order_shipped', { ...args, carrier: '   ' })).text).toContain('must not be blank')
     expect((await callTool(ordersFeature, ok.deps, 'mark_my_order_shipped', { order_id: 9001, carrier: 'usps' })).text).toContain(
@@ -814,14 +816,15 @@ describe('orders feature — MCP tools', () => {
     const conflict = mcpDeps({ [`POST ${S}/receipts/{id}/tracking`]: { status: 409, body: { error: 'Etsy says: already shipped' } } })
     const c = await callTool(ordersFeature, conflict.deps, 'mark_my_order_shipped', args)
     expect(c.isError).toBe(true)
-    expect(c.text).toBe('The store refused to record this shipment (HTTP 409): marketplace says: already shipped.')
+    expect(c.text).toBe('Etsy refused to record this shipment (HTTP 409): Etsy says: already shipped.')
     const partner = mcpDeps({ [`POST ${S}/receipts/{id}/tracking`]: { status: 403, body: { error: 'Forbidden' } } })
     const f = await callTool(ordersFeature, partner.deps, 'mark_my_order_shipped', args)
     expect(f.isError).toBe(true)
     expect(f.text).toContain('HTTP 403')
     expect(f.text).toContain('only approved fulfillment-partner apps')
     expect(f.text).toContain('update_my_order (shipped: true)')
-    expect(f.text).not.toMatch(/etsy/i)
+    expect(f.text).toMatch(/^Etsy refused to record this shipment \(HTTP 403\)/)
+    expect(f.text).toContain('Shop Manager')
   })
 
   it('update_my_order: PUT form was_paid / was_shipped; needs a flag; writes off refused', async () => {
@@ -866,7 +869,7 @@ describe('orders feature — MCP tools', () => {
     expect(r.json.products).toHaveLength(2)
     expect(r.json.products[0]).toEqual({
       product_id: 501,
-      title: 'Budget & Bills Planner — marketplace bestseller',
+      title: 'Budget & Bills Planner — Etsy bestseller',
       sales: 2,
       units: 5,
       revenue: [{ value: 50, currency: 'USD' }],
@@ -905,11 +908,11 @@ describe('orders feature — MCP tools', () => {
     expect(query(fetch.calls.at(-1)!)).toEqual({ limit: '25', offset: '0' })
     expect((await callTool(ordersFeature, deps, 'browse_my_sales', { limit: 101 })).isError).toBe(true)
     const out = mcpDeps(routes, { status: signedOut })
-    expect((await callTool(ordersFeature, out.deps, 'browse_my_sales')).text).toContain('has not connected')
+    expect((await callTool(ordersFeature, out.deps, 'browse_my_sales')).text).toBe(NOT_SIGNED_IN)
     expect(out.fetch.calls).toHaveLength(0)
     const se = await callTool(ordersFeature, mcpDeps({ [`GET ${S}/transactions`]: { status: 500 } }).deps, 'browse_my_sales')
     expect(se.isError).toBe(true)
-    expect(se.text).not.toMatch(/etsy/i)
+    expect(se.text).toContain('HTTP 500')
   })
 
   it('list_my_ledger: the range (required) → entries + totals; amounts as decimals', async () => {
@@ -946,7 +949,7 @@ describe('orders feature — MCP tools', () => {
   it('get_my_ledger_entry: the entry + its payments (unless include_payments false)', async () => {
     const { deps, fetch } = mcpDeps(routes)
     const r = await callTool(ordersFeature, deps, 'get_my_ledger_entry', { entry_id: 70 })
-    expect(r.json).toMatchObject({ entry_id: 70, related_entry_id: 69, description: 'Payment from marketplace order', payments: [{ payment_id: 61 }] })
+    expect(r.json).toMatchObject({ entry_id: 70, related_entry_id: 69, description: 'Payment from Etsy order', payments: [{ payment_id: 61 }] })
     expect(query(callOf(fetch, 'GET', `${S}/payment-account/ledger-entries/payments`))).toEqual({ ledger_entry_ids: '70' })
     const n = mcpDeps(routes)
     const r2 = await callTool(ordersFeature, n.deps, 'get_my_ledger_entry', { entry_id: 70, include_payments: false })
@@ -965,7 +968,7 @@ describe('orders feature — MCP tools', () => {
       fees: { value: 1.1, currency: 'USD' },
       net: { value: 24.9, currency: 'USD' },
       adjusted_net: null,
-      refunds: [{ id: 31, amount: { value: 5, currency: 'USD' }, buyer_currency_amount: { value: 200, currency: 'UAH' }, reason: 'marketplace dispute' }]
+      refunds: [{ id: 31, amount: { value: 5, currency: 'USD' }, buyer_currency_amount: { value: 200, currency: 'UAH' }, reason: 'Etsy dispute' }]
     })
     expect(byOrder.json.payments[0].buyer_user_id).toBeUndefined()
 
@@ -984,8 +987,54 @@ describe('orders feature — MCP tools', () => {
     expect(fetch.calls.length).toBe(calls)
   })
 
-  it('neutrality: no tool output (or tool listing) names the marketplace or contains a URL', async () => {
-    const { deps } = mcpDeps({ ...routes, ...salesRoutes })
+  it('honesty: Etsy\'s own text reaches the client unchanged; no CDN URL, raw JSON or token in anything sent', async () => {
+    const ETSY_TEXT = 'Etsy Star Seller — see https://www.etsy.com/shop/TidyFoxSheets'
+    const CDN = 'https://i.etsystatic.com/12345/r/il/abcdef/678_570xN.jpg'
+    const TOKEN = 'oauth-access-token-XYZ987'
+    // Keys the app never forwards (a CDN image URL, a raw-JSON-like blob) ride along on every object.
+    const extra = { image_url_570xN: CDN, url_fullxfull: CDN, raw_json: `{"token":"${TOKEN}"}` }
+    const t = (id: number, over: Record<string, unknown> = {}) =>
+      txn(id, {
+        ...extra,
+        title: ETSY_TEXT,
+        shipping_method: ETSY_TEXT,
+        shipping_upgrade: ETSY_TEXT,
+        variations: [{ property_id: 513, value_id: null, formatted_name: ETSY_TEXT, formatted_value: ETSY_TEXT }],
+        ...over
+      })
+    const r = (id: number) =>
+      receipt(id, {
+        ...extra,
+        city: ETSY_TEXT,
+        message_from_buyer: ETSY_TEXT,
+        message_from_seller: ETSY_TEXT,
+        gift_message: ETSY_TEXT,
+        gift_sender: ETSY_TEXT,
+        transactions: [t(1, { receipt_id: id })],
+        shipments: [{ receipt_shipping_id: 3, shipment_notification_timestamp: T0 + 9, carrier_name: ETSY_TEXT, tracking_code: '1Z' }],
+        refunds: [{ amount: money(500), created_timestamp: T0 + 20, reason: ETSY_TEXT, note_from_issuer: ETSY_TEXT, status: 'complete' }]
+      })
+    const pay = (id: number) => {
+      const p: any = payment(id, extra)
+      p.payment_adjustments[0] = { ...p.payment_adjustments[0], ...extra, reason_code: ETSY_TEXT }
+      return p
+    }
+    const ent = (id: number) => entry(id, { ...extra, description: ETSY_TEXT, ledger_type: ETSY_TEXT })
+    const fetch = routedFetch({
+      [`GET ${S}/receipts`]: page([r(9001)]),
+      [`GET ${S}/receipts/{id}/payments`]: page([pay(61)]),
+      [`GET ${S}/receipts/{id}`]: { body: r(9001) },
+      [`PUT ${S}/receipts/{id}`]: { body: { ...r(9001), is_shipped: true } },
+      [`POST ${S}/receipts/{id}/tracking`]: { body: { ...r(9001), is_shipped: true } },
+      [`GET ${S}/payments`]: page([pay(61)]),
+      [`GET ${S}/payment-account/ledger-entries/payments`]: page([pay(61)]),
+      [`GET ${S}/payment-account/ledger-entries/{id}`]: { body: ent(70) },
+      [`GET ${S}/payment-account/ledger-entries`]: page([ent(70)]),
+      [`GET ${S}/transactions/{id}`]: { body: t(1) },
+      [`GET ${S}/transactions`]: page([t(1)]),
+      [`GET ${S}/listings/{id}/transactions`]: page([t(1)])
+    })
+    const { deps } = mcpDeps({}, { client: testClient(fetch, TOKEN), accessToken: async () => TOKEN })
     const runs: Array<[string, Record<string, unknown>]> = [
       ['list_my_orders', { include_shipping_address: true }],
       ['get_my_order', { order_id: 9001, include_shipping_address: true }],
@@ -1004,14 +1053,45 @@ describe('orders feature — MCP tools', () => {
     ]
     const texts: string[] = []
     for (const [name, args] of runs) {
-      const r = await callTool(ordersFeature, deps, name, args)
-      expect(r.isError, `${name}: ${r.text}`).toBe(false)
-      texts.push(r.text)
+      const res = await callTool(ordersFeature, deps, name, args)
+      expect(res.isError, `${name}: ${res.text}`).toBe(false)
+      // (a) every tool hands back some of Etsy's free text, exactly as Etsy wrote it.
+      expect(res.text, name).toContain(ETSY_TEXT)
+      texts.push(res.text)
     }
-    for (const t of ordersFeature.mcpTools!(deps)) texts.push(t.name, t.title, t.description, JSON.stringify(t.inputSchema))
-    for (const t of texts) {
-      expect(t).not.toMatch(/etsy/i)
-      expect(t).not.toMatch(/https?:\/\//)
+    // The token really was used (so not finding it below means something).
+    expect(fetch.calls.length).toBeGreaterThan(runs.length - 1)
+    expect(fetch.calls.every((c) => c.headers.authorization === `Bearer ${TOKEN}`)).toBe(true)
+
+    const order = (await callTool(ordersFeature, deps, 'get_my_order', { order_id: 9001 })).json
+    expect(order).toMatchObject({
+      city: ETSY_TEXT,
+      buyer_message: ETSY_TEXT,
+      seller_message: ETSY_TEXT,
+      gift_message: ETSY_TEXT,
+      gift_sender: ETSY_TEXT,
+      shipments: [{ carrier: ETSY_TEXT }],
+      refunds: [{ reason: ETSY_TEXT, note: ETSY_TEXT }]
+    })
+    expect(order.items[0]).toMatchObject({
+      title: ETSY_TEXT,
+      shipping_method: ETSY_TEXT,
+      shipping_upgrade: ETSY_TEXT,
+      variations: [{ name: ETSY_TEXT, value: ETSY_TEXT }]
+    })
+    const ledgerOut = (await callTool(ordersFeature, deps, 'list_my_ledger', { from: '2025-10-01', to: '2025-10-31' })).json
+    expect(ledgerOut.entries[0]).toMatchObject({ description: ETSY_TEXT, type: ETSY_TEXT })
+    expect(ledgerOut.totals[0].type).toBe(ETSY_TEXT)
+    const pays = (await callTool(ordersFeature, deps, 'get_my_payments', { order_id: 9001 })).json
+    expect(pays.payments[0].refunds[0].reason).toBe(ETSY_TEXT)
+
+    // (b) nothing a client gets — tool results or the tool listing — has a CDN URL, raw JSON or a credential.
+    for (const tool of ordersFeature.mcpTools!(deps)) texts.push(tool.name, tool.title ?? '', tool.description, JSON.stringify(tool.inputSchema))
+    for (const text of texts) {
+      expect(text).not.toMatch(/etsystatic\.com/i)
+      expect(text).not.toContain('raw_json')
+      expect(text).not.toContain(TOKEN)
+      expect(text).not.toContain('keystring:secret')
     }
   })
 })

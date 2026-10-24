@@ -50,6 +50,6 @@ export interface Feature {
   /** Short id: the first argument of `feature:call` and of `window.api.featureCall`. */
   id: string
   actions: Record<string, FeatureAction>
-  /** Neutral MCP tools (never name the marketplace — see mcpTools.ts). */
+  /** The feature's MCP tools (appended to the server's list — see mcpTools.ts). */
   mcpTools?: (deps: FeatureMcpDeps) => McpTool[]
 }

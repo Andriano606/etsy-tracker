@@ -179,6 +179,42 @@ label.check {
   border-radius: 6px;
   object-fit: cover;
 }
+/*
+ * A magnifier laid exactly over a small thumbnail inside a clickable row/link
+ * (a ZoomButton sibling of that button in a .ui-zoom-host): clicking the photo
+ * opens it full size, the rest still opens the listing. It shows on the photo's
+ * own hover/focus (not the whole row's). Each site sets its position/size.
+ */
+.ui-zoom-host > .ui-zoom-corner.thumb-zoom {
+  border-radius: 6px;
+  background: rgba(10, 11, 13, 0.5);
+}
+.ui-zoom-host:hover > .ui-zoom-corner.thumb-zoom,
+.ui-zoom-host:focus-within > .ui-zoom-corner.thumb-zoom {
+  opacity: 0;
+}
+.ui-zoom-host > .ui-zoom-corner.thumb-zoom:hover,
+.ui-zoom-host > .ui-zoom-corner.thumb-zoom:focus-visible {
+  opacity: 1;
+}
+/* A review's listing (ScanResults): the 64 px photo on top, centered in 84 px. */
+.review-listing-host {
+  display: flex;
+  flex-shrink: 0;
+  min-width: 0;
+}
+.review-listing-host > .ui-zoom-corner.thumb-zoom {
+  top: 0;
+  right: auto;
+  bottom: auto;
+  left: 50%;
+  width: 64px;
+  height: 64px;
+  transform: translateX(-50%);
+}
+.review-photo-zoom {
+  border-radius: 6px;
+}
 .review-listing-title {
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -265,10 +301,21 @@ label.check {
   border-radius: var(--r-md);
   background: var(--bg-3);
 }
-.listing-modal .gallery-main > img {
+/* The main photo is a ZoomImage (a button): click → the viewer, at full size. */
+.listing-modal .gallery-main > .lm-gallery-zoom {
+  width: 100%;
+  height: 100%;
+}
+.listing-modal .lm-gallery-zoom > img {
   width: 100%;
   height: 100%;
   object-fit: contain;
+}
+/* Magnifier top-right: the "2 / 7" counter sits bottom-right. */
+.listing-modal .lm-gallery-zoom > .ui-zoom-badge {
+  top: 8px;
+  right: 8px;
+  bottom: auto;
 }
 .listing-modal .lm-noimg {
   display: flex;

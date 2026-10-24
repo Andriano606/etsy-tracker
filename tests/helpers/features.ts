@@ -118,7 +118,7 @@ export async function runAction(feature: Feature, action: string, args: Record<s
 export async function callTool(feature: Feature, deps: FeatureMcpDeps, name: string, args: Record<string, unknown> = {}) {
   const tools = feature.mcpTools?.(deps) ?? []
   const res = await handleMcpMessage(
-    { info: { name: 'shop-catalog', title: 'Shop Catalog', version: '0.1.0', instructions: '' }, tools },
+    { info: { name: 'etsy-tracker', title: 'Etsy Tracker', version: '0.1.0', instructions: '' }, tools },
     { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }
   )
   if (!res || res.error) throw new Error(`rpc error: ${JSON.stringify(res)}`)

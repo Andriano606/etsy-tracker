@@ -25,6 +25,14 @@ import type { SortMode } from '@shared/listingFilter'
 export type { SortMode }
 
 /** How a confirm dialog reads (ConfirmModal): heading, the confirm button's verb, red or not (default: guessed). */
+/** One image of the full-size viewer: its biggest URL, plus words for it. */
+export interface ViewerImage {
+  src: string
+  /** Read by screen readers; also the caption when there is no `caption`. */
+  alt?: string
+  caption?: string
+}
+
 export interface ConfirmOptions {
   title?: string
   confirmLabel?: string
@@ -117,7 +125,12 @@ interface AppState {
   /** The shop whose "📊 Статистика" view is open. */
   statsShopId: number | null
   confirmRequest: (ConfirmOptions & { message: string; onResolve: (ok: boolean) => void }) | null
+  /** The full-size image viewer (ui/ImageViewer) over everything: null = closed. */
+  viewer: { images: ViewerImage[]; index: number } | null
 
+  /** Open the full-size viewer on one image or a gallery (starting at `index`). */
+  openImage: (images: ViewerImage | ViewerImage[], index?: number) => void
+  closeImage: () => void
   load: () => Promise<void>
   setShops: (shops: ShopSummary[]) => void
   selectShop: (id: number | null) => Promise<void>
@@ -205,6 +218,7 @@ export const useStore = create<AppState>((set, get) => ({
   historyChanges: [],
   statsShopId: null,
   confirmRequest: null,
+  viewer: null,
 
   load: async () => {
     const [keyStatus, shops, quota, minioStatus, buyerCountry, mcpStatus, etsyAuth] = await Promise.all([
@@ -420,6 +434,16 @@ export const useStore = create<AppState>((set, get) => ({
   },
   testMinio: (input) => window.api.testMinio(input),
 
+  openImage: (images, index = 0) => {
+    const all = Array.isArray(images) ? images : [images]
+    const list = all.filter((i) => !!i?.src)
+    if (!list.length) return
+    // The index counts in the given list: keep pointing at the same image after empty entries are dropped.
+    const i = Number.isFinite(index) ? Math.trunc(index) : 0
+    const at = list.indexOf(all[i])
+    set({ viewer: { images: list, index: at >= 0 ? at : Math.min(Math.max(0, i), list.length - 1) } })
+  },
+  closeImage: () => set({ viewer: null }),
   setShowSettings: (showSettings) => set({ showSettings }),
   setShowMcp: (showMcp) => set({ showMcp }),
   setShowMyShop: (showMyShop) => set({ showMyShop }),

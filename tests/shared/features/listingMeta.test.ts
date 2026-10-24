@@ -8,9 +8,14 @@ import {
   isTranslationLanguage,
   newQuestion,
   personalizationProblems,
+  propertyIssues,
   propertyProblems,
+  translationIssues,
   translationProblems
 } from '../../../src/shared/features/listingMeta'
+import { TRANSLATION_CODES, TRANSLATION_LANGUAGES as COMPETE_LANGUAGES } from '../../../src/shared/features/compete'
+import * as translations from '../../../src/shared/features/translations'
+import { tagProblems } from '../../../src/shared/myShop'
 
 const def = (over: Partial<CategoryProperty> = {}): CategoryProperty => ({
   id: 1,
@@ -122,10 +127,45 @@ describe('personalizationProblems', () => {
 })
 
 describe('translations', () => {
-  it('languages: the OAS examples (+ ru); others refused', () => {
-    expect(TRANSLATION_LANGUAGES.map((l) => l.code)).toEqual(['de', 'en', 'es', 'fr', 'it', 'ja', 'nl', 'pl', 'pt', 'ru'])
+  it('languages: the one shared list (English by region); others refused', () => {
+    expect(TRANSLATION_LANGUAGES).toBe(translations.TRANSLATION_LANGUAGES)
+    expect(TRANSLATION_LANGUAGES.map((l) => l.code)).toEqual(['de', 'en-GB', 'en-IN', 'en-US', 'es', 'fr', 'it', 'ja', 'nl', 'pl', 'pt', 'ru', 'sv'])
+    for (const l of TRANSLATION_LANGUAGES) expect(l.label).toMatch(/[а-яіїєґ]/i)
     expect(isTranslationLanguage('de')).toBe(true)
+    expect(isTranslationLanguage('en-US')).toBe(true)
+    expect(isTranslationLanguage('en')).toBe(false)
     expect(isTranslationLanguage('uk')).toBe(false)
+    expect(isTranslationLanguage(undefined)).toBe(false)
+  })
+
+  it('compete and listingMeta offer the same languages (same codes, same names)', () => {
+    expect(TRANSLATION_CODES).toEqual(TRANSLATION_LANGUAGES.map((l) => l.code))
+    expect(COMPETE_LANGUAGES).toEqual(TRANSLATION_LANGUAGES.map((l) => ({ code: l.code, name: l.label })))
+  })
+
+  it('translationIssues: an English twin of every Ukrainian problem', () => {
+    expect(translationIssues({ title: '', description: ' ', tags: [''] })).toEqual([
+      { uk: 'Назва не може бути порожньою.', en: 'title must not be empty.' },
+      { uk: 'Опис не може бути порожнім.', en: 'description must not be empty.' },
+      { uk: 'Тег не може бути порожнім.', en: 'A tag must not be empty.' }
+    ])
+    expect(translationIssues({ title: 'x'.repeat(141), description: 'd', tags: [] })).toEqual([
+      { uk: 'Назва довша за 140 символів (141).', en: 'title is longer than 140 characters (141).' }
+    ])
+    const many = Array.from({ length: 14 }, (_, i) => `t${i}`)
+    expect(translationIssues({ title: 't', description: 'd', tags: [...many.slice(0, 13), 'x'.repeat(21) + '!'] }).map((p) => p.en)).toEqual([
+      'At most 13 tags (got 14).',
+      `Tag "${'x'.repeat(21)}!" is longer than 20 characters.`,
+      `Tag "${'x'.repeat(21)}!" contains "!" — Etsy allows only letters, digits, spaces, -, ', ™, © and ® in tags.`
+    ])
+    for (const p of translationIssues({ title: '', description: '', tags: ['a,b', ''] })) expect(p.en).not.toMatch(/[а-яіїєґ]/i)
+  })
+
+  it('the tag problems of a translation read exactly like the listing editor’s (tagProblems)', () => {
+    const samples = [[], ['budget'], ['a,b'], ['x'.repeat(21)], ['Ünïcödé ok', "it's-fine™"], ['a!', 'b?', 'c#'], Array.from({ length: 14 }, (_, i) => `t${i}`)]
+    for (const tags of samples) {
+      expect(translationProblems({ title: 't', description: 'd', tags })).toEqual(tagProblems(tags))
+    }
   })
 
   it('translationProblems: title, description, tags', () => {
@@ -140,8 +180,36 @@ describe('translations', () => {
   })
 })
 
+describe('propertyIssues', () => {
+  it('an English twin of every Ukrainian problem; propertyProblems = the Ukrainian halves', () => {
+    const cases: Array<[Parameters<typeof propertyIssues>[0], CategoryProperty | undefined]> = [
+      [{ valueIds: [], values: [], scaleId: null }, undefined],
+      [{ valueIds: [1, 2], values: ['a'], scaleId: null }, undefined],
+      [{ valueIds: [0], values: [' '], scaleId: -1 }, undefined],
+      [{ valueIds: [1], values: ['Red (dark)'], scaleId: null }, undefined],
+      [{ valueIds: [1, 2], values: ['a', 'b'], scaleId: null }, def({ isMultivalued: false })],
+      [{ valueIds: [1, 2, 3], values: ['a', 'b', 'c'], scaleId: 9 }, def({ isMultivalued: true, maxValuesAllowed: 2, scales: [{ id: 5, name: 'EU', description: null }] })],
+      [{ valueIds: [1], values: ['a'], scaleId: null }, def({ scales: [{ id: 5, name: 'EU', description: null }] })]
+    ]
+    for (const [p, d] of cases) {
+      const issues = propertyIssues(p, d)
+      expect(issues.length).toBeGreaterThan(0)
+      expect(issues.map((x) => x.uk)).toEqual(propertyProblems(p, d))
+      for (const x of issues) {
+        expect(x.uk).toMatch(/[а-яіїєґ]/i)
+        // English apart from the attribute's own (Etsy) name
+        expect(x.en.replaceAll('Розмір', '')).not.toMatch(/[а-яіїєґ]/i)
+      }
+    }
+    expect(propertyIssues({ valueIds: [], values: [], scaleId: null })).toEqual([{ uk: 'Виберіть хоча б одне значення.', en: 'Give at least one value.' }])
+    expect(propertyIssues({ valueIds: [1, 2], values: ['a', 'b'], scaleId: null }, def({ isMultivalued: false }))[0].en).toBe(
+      '"Розмір" takes only one value.'
+    )
+  })
+})
+
 describe('LISTING_META_TOOL_SUMMARY', () => {
-  it('Ukrainian texts, writes flagged, no marketplace name', () => {
+  it('Ukrainian texts, writes flagged', () => {
     expect(LISTING_META_TOOL_SUMMARY.filter((t) => t.write).map((t) => t.name)).toEqual([
       'set_my_product_attribute',
       'remove_my_product_attribute',
@@ -150,6 +218,6 @@ describe('LISTING_META_TOOL_SUMMARY', () => {
       'set_my_product_translation',
       'delete_my_product'
     ])
-    expect(JSON.stringify(LISTING_META_TOOL_SUMMARY)).not.toMatch(/etsy/i)
+    for (const t of LISTING_META_TOOL_SUMMARY) expect(t.text).toMatch(/[а-яіїєґ]/i)
   })
 })

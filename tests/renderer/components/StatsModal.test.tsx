@@ -221,7 +221,7 @@ describe('📊 Статистика', () => {
     const views = within(dlg).getByTestId('top-views')
     expect(within(views).getByText('+800')).toBeInTheDocument()
     expect(views.querySelector('img')!.getAttribute('src')).toBe('etsyimg://img/70/75x75')
-    await act(async () => fireEvent.click(within(views).getByRole('button', { name: /Budget planner/ })))
+    await act(async () => fireEvent.click(within(views).getByTitle('Budget planner')))
     expect(api.getListing).toHaveBeenCalledWith(7)
     expect(useStore.getState().detailListing?.listingId).toBe(7)
     expect(screen.getByTestId('listing-description')).toBeInTheDocument()
@@ -311,10 +311,28 @@ describe('📊 Статистика', () => {
     expect(fav.querySelector('summary')).not.toHaveAttribute('title')
   })
 
+  it('a top row thumbnail opens the photo full size (over the statistics), not the listing', async () => {
+    const dlg = await openStats(many(3))
+    const views = within(dlg).getByTestId('top-views')
+    const zoom = within(views).getByRole('button', { name: 'Відкрити фото на весь розмір: Budget planner' })
+    expect(within(views).getByTitle('Budget planner').contains(zoom)).toBe(false)
+    // Only rows with a photo get one ("Meal planner" has none).
+    expect(within(views).queryByRole('button', { name: /на весь розмір: Meal planner/ })).toBeNull()
+    await act(async () => fireEvent.click(zoom))
+    expect(api.getListing).not.toHaveBeenCalled()
+    expect(useStore.getState().viewer?.images[0].src).toBe('etsyimg://img/70/fullxfull')
+    const viewer = screen.getByRole('dialog', { name: 'Перегляд зображення' })
+    expect(viewer.querySelector('img')).toHaveAttribute('src', 'etsyimg://img/70/fullxfull')
+    // Escape closes the viewer first; the statistics stay open.
+    escape()
+    expect(useStore.getState().viewer).toBeNull()
+    expect(useStore.getState().statsShopId).toBe(1)
+  })
+
   it('a top row for a listing we never stored is not a button', async () => {
     const dlg = await openStats(many(3))
     const reviews = within(dlg).getByTestId('top-reviews')
-    expect(within(reviews).getByRole('button', { name: /Chore chart/ })).toBeInTheDocument()
+    expect(within(reviews).getByTitle('Chore chart').tagName).toBe('BUTTON')
     expect(within(reviews).queryByRole('button', { name: /Товар #11/ })).toBeNull()
     expect(within(reviews).getByTitle(/Товар не збережено/)).toHaveTextContent('Товар #11')
   })

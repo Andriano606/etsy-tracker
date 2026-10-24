@@ -11,10 +11,11 @@ import {
   type PropertyInput,
   type PropertyValueOption,
   type TranslationInput,
+  type MetaProblem,
   isPersonalizationType,
   personalizationProblems,
-  propertyProblems,
-  translationProblems
+  propertyIssues,
+  translationIssues
 } from '../../../shared/features/listingMeta'
 import { priceValue } from '../../../shared/format'
 import { decodeHtmlEntities } from '../../../shared/html'
@@ -23,6 +24,19 @@ import { EtsyApiError, type EtsyClient, type Paged } from '../../etsyApi'
 import { FeatureError } from '../common'
 
 const A = '/v3/application'
+
+/** A refused attribute / translation: the Ukrainian message (IPC) + `en` for MCP clients. */
+export class MetaError extends FeatureError {
+  constructor(
+    uk: string,
+    public en: string
+  ) {
+    super(uk)
+  }
+}
+
+const metaError = (ps: MetaProblem[]): MetaError =>
+  new MetaError(ps.map((p) => p.uk).join(' '), ps.map((p) => p.en).join(' '))
 
 // ------------------------------------------------------------- Etsy shapes
 
@@ -235,8 +249,8 @@ export async function loadAttributes(
 }
 
 export function checkProperty(p: PropertyInput): PropertyInput {
-  const problems = propertyProblems(p)
-  if (problems.length) throw new FeatureError(problems.join(' '))
+  const problems = propertyIssues(p)
+  if (problems.length) throw metaError(problems)
   return { valueIds: p.valueIds, values: p.values.map((v) => v.trim()), scaleId: p.scaleId }
 }
 
@@ -353,7 +367,11 @@ export function parseQuestions(raw: unknown): PersonalizationQuestion[] {
 const translationPath = (shopId: number, listingId: number, language: string): string =>
   `${A}/shops/${shopId}/listings/${listingId}/translations/${encodeURIComponent(language)}`
 
-/** getListingTranslation (API key only); null = no translation in that language yet (404). */
+/**
+ * getListingTranslation (API key only); null = Etsy answered 404, which is
+ * generic: no translation in that language yet, or the listing is not (or no
+ * longer) in that shop.
+ */
 export async function loadTranslation(
   client: EtsyClient,
   shopId: number,
@@ -371,8 +389,8 @@ export async function loadTranslation(
 /** The trimmed input, or a FeatureError with every problem. */
 export function checkTranslation(input: TranslationInput): TranslationInput {
   const t = { title: input.title.trim(), description: input.description.trim(), tags: input.tags.map((x) => x.trim()) }
-  const problems = translationProblems(t)
-  if (problems.length) throw new FeatureError(problems.join(' '))
+  const problems = translationIssues(t)
+  if (problems.length) throw metaError(problems)
   return t
 }
 

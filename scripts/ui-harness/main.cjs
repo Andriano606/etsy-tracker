@@ -3,7 +3,7 @@
 // into .ui-harness/shots/<scene>@<w>x<h>.png. No real main process, no Etsy calls.
 //
 //   npm run build && npx electron scripts/ui-harness/main.cjs --no-sandbox --disable-gpu \
-//     [--scenes=a,b] [--sizes=900x560,1280x820] [--signed-out] [--out=out] [--shots=.ui-harness/shots]
+//     [--scenes=a,b|file] [--sizes=900x560,1280x820] [--signed-out] [--out=out] [--shots=.ui-harness/shots]
 //   A parallel build of your own: UIH_OUT=.ui-harness/build-x node_modules/.bin/electron-vite build
 //   then --out=.ui-harness/build-x --shots=.ui-harness/shots-x
 //
@@ -25,8 +25,9 @@ const scenes = fs
   .readdirSync(path.join(__dirname, 'scenes'))
   .filter((f) => f.endsWith('.cjs'))
   .sort()
-  .flatMap((f) => require(path.join(__dirname, 'scenes', f)))
-  .filter((s) => !only || only.split(',').includes(s.name))
+  .flatMap((f) => require(path.join(__dirname, 'scenes', f)).map((s) => ({ ...s, file: f.replace(/\.cjs$/, '') })))
+  // --scenes takes scene names and/or scene file names (--scenes=viewer = every scene of scenes/viewer.cjs).
+  .filter((s) => !only || only.split(',').includes(s.name) || only.split(',').includes(s.file))
 process.env.UIH_FIXTURES = path.join(OUT, 'fixtures.json')
 if (process.argv.includes('--signed-out')) process.env.UIH_SIGNED_OUT = '1'
 const fx = JSON.parse(fs.readFileSync(process.env.UIH_FIXTURES, 'utf8'))
@@ -38,10 +39,24 @@ app.disableHardwareAcceleration()
 app.commandLine.appendSwitch('force-device-scale-factor', '1')
 protocol.registerSchemesAsPrivileged([{ scheme: 'etsyimg', privileges: { standard: true, secure: true } }])
 
+// Review photos aren't in the fixtures: a review's photo is shown as its listing's first photo.
+const reviewListing = {}
+for (const [listingId, ex] of Object.entries(fx.listingExtras ?? {})) for (const r of ex.reviews?.reviews ?? []) reviewListing[r.id] = Number(listingId)
+const firstImageOf = (listingId) => {
+  for (const p of Object.values(fx.perShop)) for (const l of p.listings) if (l.listingId === listingId) return l.images[0]?.id
+  return undefined
+}
+
 async function image(req) {
   const u = new URL(req.url)
-  const m = u.pathname.match(/^\/(\d+)\/([\w]+)$/)
-  if (u.hostname !== 'img' || !m) return new Response(null, { status: 404 })
+  let m = u.pathname.match(/^\/(\d+)\/([\w]+)$/)
+  // etsyimg://draft/{id}: the harness drafts use fixture image ids as media ids (fake-api.cjs).
+  if (u.hostname === 'draft' && /^\/\d+$/.test(u.pathname)) m = [null, u.pathname.slice(1), 'fullxfull']
+  else if (u.hostname === 'review' && m) {
+    const img = firstImageOf(reviewListing[m[1]])
+    if (img == null) return new Response(null, { status: 404 })
+    m = [null, String(img), 'fullxfull']
+  } else if (u.hostname !== 'img' || !m) return new Response(null, { status: 404 })
   const url = fx.images[m[1]]?.[m[2]] ?? fx.images[m[1]]?.['570xN']
   if (!url) return new Response(null, { status: 404 })
   const cache = path.join(OUT, 'img-cache', `${m[1]}-${m[2]}`)
@@ -79,6 +94,9 @@ app.whenReady().then(async () => {
       await new Promise((r) => setTimeout(r, 900))
       try {
         await win.webContents.executeJavaScript(`${helpers}\n;(async () => { ${s.code} })()`)
+        // A scene may ask for a real mouse hover (CSS :hover can't be faked from the page): window.__hoverSel.
+        const at = await win.webContents.executeJavaScript(`(() => { const s = window.__hoverSel; const el = s && document.querySelector(s); if (!el) return null; const r = el.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 3) } })()`)
+        if (at) win.webContents.sendInputEvent({ type: 'mouseMove', x: at.x, y: at.y })
         await new Promise((r) => setTimeout(r, 700))
       } catch (e) {
         failures.push(`${s.name}@${w}x${h}: ${e.message}`)

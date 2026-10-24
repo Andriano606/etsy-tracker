@@ -53,9 +53,17 @@
   gap: var(--sp-3);
   min-width: 0;
 }
-.shop-head-row > .shop-icon {
+.shop-head-row > .shop-icon,
+.shop-head-row > .shop-icon-zoom {
   flex: none;
   border-radius: var(--r-md);
+}
+/* The header logo opens full size (ShopIcon zoomable): a smaller magnifier for a 40 px icon. */
+.shop-icon-zoom > .ui-zoom-badge {
+  width: 18px;
+  height: 18px;
+  right: 2px;
+  bottom: 2px;
 }
 .shop-name {
   display: flex;
@@ -423,6 +431,16 @@ details[open] > .group-summary .group-chevron {
   background: var(--bg-3);
   color: var(--text-faint);
 }
+/* The photo magnifier over the row's 40 px thumbnail (ChangeRows; li = .ui-zoom-host). */
+.change-rows .ui-zoom-host > .ui-zoom-corner.change-zoom {
+  top: 6px;
+  right: auto;
+  bottom: auto;
+  left: 6px;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--r-sm);
+}
 .change-text {
   flex: 1;
   min-width: 0;
@@ -499,6 +517,19 @@ details[open] > .group-summary .group-chevron {
   color: var(--text);
   font-size: var(--fs-sm);
   text-align: left;
+}
+/* The host of the link + its photo magnifier takes the link's place in the row. */
+.promotions .promo-item .review-listing-host {
+  flex: 1 1 240px;
+}
+.promotions .promo-item .review-listing-host > .ui-zoom-corner.thumb-zoom {
+  top: 50%;
+  right: auto;
+  bottom: auto;
+  left: 2px;
+  width: 40px;
+  height: 40px;
+  transform: translateY(-50%);
 }
 .promotions .promo-item .review-listing:hover {
   background: rgba(255, 255, 255, 0.04);
@@ -643,6 +674,21 @@ details[open] > .group-summary .group-chevron {
   transition:
     border-color var(--dur) var(--ease),
     background var(--dur) var(--ease);
+}
+/* The grid item: the card button + the photo's magnifier (a sibling, see ListingCard). */
+.listing-card-host {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.listing-card-host > .listing-card {
+  flex: 1;
+}
+/* Over the photo's top-right corner (the "Новий" badge is top-left). */
+.ui-zoom-host > .ui-zoom-corner.card-zoom {
+  top: 8px;
+  right: 8px;
+  bottom: auto;
 }
 .listing-card:hover {
   border-color: var(--border-hover);

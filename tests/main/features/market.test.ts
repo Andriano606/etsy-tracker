@@ -132,7 +132,8 @@ describe('market: search (findAllListingsActive)', () => {
           numFavorers: 11,
           views: 101,
           createdAt: 1_600_000_000,
-          imageUrl: 'https://i.etsystatic.com/1/il_570xN.11.jpg'
+          imageUrl: 'https://i.etsystatic.com/1/il_570xN.11.jpg',
+          imageFullUrl: 'https://i.etsystatic.com/1/il_fullxfull.11.jpg'
         },
         {
           listingId: 2,
@@ -146,7 +147,8 @@ describe('market: search (findAllListingsActive)', () => {
           numFavorers: null,
           views: 77,
           createdAt: 1_700_000_000,
-          imageUrl: null
+          imageUrl: null,
+          imageFullUrl: null
         }
       ]
     })
@@ -186,11 +188,27 @@ describe('market: search (findAllListingsActive)', () => {
     expect(fetch.calls).toHaveLength(1)
   })
 
+  it('the full-size photo is validated too: a non-CDN fullxfull falls back to the 570xN, no thumbnail = no full size', async () => {
+    const batch = {
+      count: 2,
+      results: [
+        mkEtsyListing(1, { images: [mkEtsyImage(1, 1, { url_fullxfull: 'https://evil.example/full.jpg' })] }),
+        mkEtsyListing(2, { images: [mkEtsyImage(2, 1, { url_570xN: 'file:///etc/passwd' })] })
+      ]
+    }
+    const { ctx } = featureCtx({ ...routes, 'GET /v3/application/listings/batch': { body: batch } })
+    const r = (await runAction(marketFeature, 'search', { keywords: 'mug' }, ctx)) as any
+    expect(r.listings.map((l: any) => [l.imageUrl, l.imageFullUrl])).toEqual([
+      ['https://i.etsystatic.com/1/il_570xN.11.jpg', 'https://i.etsystatic.com/1/il_570xN.11.jpg'],
+      [null, null]
+    ])
+  })
+
   it('a failing photo batch only costs the photos', async () => {
     const { ctx } = featureCtx({ ...routes, 'GET /v3/application/listings/batch': { status: 500, body: { error: 'boom' } } })
     const r = (await runAction(marketFeature, 'search', { keywords: 'mug' }, ctx)) as any
     expect(r.listings).toHaveLength(2)
-    expect(r.listings.every((l: any) => l.imageUrl === null)).toBe(true)
+    expect(r.listings.every((l: any) => l.imageUrl === null && l.imageFullUrl === null)).toBe(true)
     expect(r.imagesError).toMatch(/^Фото не завантажилися: Сервер Etsy повернув помилку \(HTTP 500\)/)
   })
 
@@ -399,9 +417,11 @@ describe('market MCP tools', () => {
           tags: ['mug & cup', 'gift'],
           favorites: 11,
           views: 101,
-          created_at: '2020-09-13T12:26:40.000Z'
+          created_at: '2020-09-13T12:26:40.000Z',
+          url: 'https://www.etsy.com/listing/1/item'
         },
-        expect.objectContaining({ id: 2, store_id: 7002, favorites: null, views: null, created_at: '2023-11-14T22:13:20.000Z' })
+        // a non-etsy.com url is never passed on
+        expect.objectContaining({ id: 2, store_id: 7002, favorites: null, views: null, created_at: '2023-11-14T22:13:20.000Z', url: null })
       ]
     })
   })
@@ -426,6 +446,27 @@ describe('market MCP tools', () => {
     expect(t.description).toContain('the currency the range is compared in is not documented')
   })
 
+  it('descriptions say what the tools really do: all of Etsy, live, API key only', () => {
+    const tools = marketFeature.mcpTools!(mcpDeps(routes).deps)
+    const d = Object.fromEntries(tools.map((t) => [t.name, t.description]))
+    expect(d.search_market).toContain('all of Etsy')
+    expect(d.search_market).toContain('findAllListingsActive')
+    expect(d.search_market).toContain('not only the shops the user tracks')
+    expect(d.search_market).toMatch(/live call \(1 API request, API key only, no sign-in\)/)
+    expect(d.search_market).toContain('default 25')
+    expect(d.search_market).toContain('url')
+    expect(d.list_market_categories).toContain('once per app run')
+    expect(d.get_market_category_properties).toMatch(/live Etsy API call/)
+    for (const t of tools) expect(`${t.title} ${t.description}`).not.toMatch(/marketplace/i)
+    // Etsy's own relevance search decides what matches — no claim that results contain the keywords
+    expect(d.search_market).not.toMatch(/must contain/)
+    expect(d.search_market).toContain("Etsy's own search decides which listings match — it is not an exact-text filter")
+    const kw = tools.find((t) => t.name === 'search_market')!.inputSchema.properties!.keywords
+    expect(kw.description).toBe("Search term or phrase, matched by Etsy's own search.")
+    // every market tool reaches Etsy (list_market_categories at least on its first call per run)
+    for (const t of tools) expect({ tool: t.name, openWorld: t.openWorld }).toEqual({ tool: t.name, openWorld: true })
+  })
+
   it.each([
     [{}, 'Give at least one of'],
     [{ keywords: '  ' }, 'Give at least one of'],
@@ -444,7 +485,7 @@ describe('market MCP tools', () => {
     expect(fetch.calls).toHaveLength(0)
   })
 
-  it('list_market_categories: matches with neutral paths; defaults to the top level', async () => {
+  it('list_market_categories: matches with their paths; defaults to the top level', async () => {
     const { deps, fetch } = mcpDeps(routes)
     const r = await callTool(marketFeature, deps, 'list_market_categories', { query: 'kitchen', limit: 1 })
     expect(r.json).toEqual({ total: 2, categories: [{ id: 11, path: 'Home & Living › Kitchen', level: 1 }] })
@@ -454,7 +495,7 @@ describe('market MCP tools', () => {
     expect((await callTool(marketFeature, deps, 'list_market_categories', { limit: 0 })).isError).toBe(true)
   })
 
-  it('get_market_category_properties: neutral property list; 404 → neutral error', async () => {
+  it('get_market_category_properties: the property list as Etsy sent it; 404 → an Etsy error with its detail', async () => {
     const { deps, fetch } = mcpDeps(routes)
     const r = await callTool(marketFeature, deps, 'get_market_category_properties', { category_id: 111 })
     expect(fetch.calls[0].url.pathname).toBe('/v3/application/buyer-taxonomy/nodes/111/properties')
@@ -471,7 +512,7 @@ describe('market MCP tools', () => {
           scales: [{ id: 5, name: 'Inches', description: 'Length & width' }],
           values: [
             { id: 1, name: 'Red', scale_id: null },
-            { id: null, name: 'marketplace blue', scale_id: 5 }
+            { id: null, name: 'Etsy blue', scale_id: 5 }
           ]
         }
       ]
@@ -480,7 +521,7 @@ describe('market MCP tools', () => {
     const nf = mcpDeps({ 'GET /v3/application/buyer-taxonomy/nodes/{id}/properties': { status: 404, body: { error: 'No etsy taxonomy https://www.etsy.com/x' } } })
     const e = await callTool(marketFeature, nf.deps, 'get_market_category_properties', { category_id: 9 })
     expect(e.isError).toBe(true)
-    expect(e.text).toBe('Not found (HTTP 404): No marketplace taxonomy [link].')
+    expect(e.text).toBe('Not found on Etsy (HTTP 404): No etsy taxonomy https://www.etsy.com/x.')
   })
 
   it('public reads: work signed out and with changes switched off; no client → "Not available"', async () => {
@@ -500,29 +541,38 @@ describe('market MCP tools', () => {
     }
   })
 
-  it('server errors are neutral', async () => {
+  it('server errors say it was Etsy', async () => {
     const { deps } = mcpDeps({ 'GET /v3/application/listings/active': { status: 500, body: { error: 'Etsy is down' } } })
     const r = await callTool(marketFeature, deps, 'search_market', { keywords: 'mug' })
     expect(r.isError).toBe(true)
-    expect(r.text).not.toMatch(/etsy/i)
+    expect(r.text).toContain('Etsy')
+    expect(r.text).toContain('HTTP 500')
   })
 
-  it('neutrality sweep: no marketplace name or URL anywhere a client gets', async () => {
+  it('honesty sweep: text from Etsy reaches the client unchanged; no CDN URL, raw JSON or key anywhere', async () => {
+    const title = 'Etsy best seller — see https://www.etsy.com/shop/X'
     const leaky = {
       ...routes,
       'GET /v3/application/listings/active': {
         body: {
           count: 1,
-          results: [pageItem(3, { title: 'Etsy best seller — see https://www.etsy.com/shop/X', tags: ['etsy gift', 'etsy.me/abc'] })]
+          results: [pageItem(3, { title, tags: ['etsy gift', 'etsy.me/abc'], images: [mkEtsyImage(3, 1)] })]
         }
       },
       'GET /v3/application/buyer-taxonomy/nodes': {
         body: { count: 1, results: [{ id: 5, level: 0, name: 'Etsy picks', parent_id: null, children: [] }] }
+      },
+      'GET /v3/application/buyer-taxonomy/nodes/{id}/properties': {
+        body: {
+          count: 1,
+          results: [{ ...PROPS.results[0], display_name: 'Etsy color (https://www.etsy.com/c)', possible_values: [{ value_id: 1, name: 'Etsy orange', scale_id: null }] }]
+        }
       }
     }
     const { deps } = mcpDeps(leaky)
     const tools = marketFeature.mcpTools!(deps)
     const texts: string[] = tools.flatMap((t) => [t.name, t.title, t.description, JSON.stringify(t.inputSchema)])
+    const results: Record<string, any> = {}
     for (const [name, args] of [
       ['search_market', { keywords: 'gift' }],
       ['search_market', {}],
@@ -531,13 +581,30 @@ describe('market MCP tools', () => {
       ['get_market_category_properties', { category_id: 5 }]
     ] as const) {
       const r = await callTool(marketFeature, deps, name, args)
+      results[name] ??= r.json
       texts.push(...r.result.content.map((c) => (c.type === 'text' ? c.text : '')))
     }
     texts.push((await callTool(marketFeature, mcpDeps(routes, { client: null }).deps, 'search_market', { keywords: 'a' })).text)
-    expect(texts.join('\n')).toContain('marketplace best seller')
+
+    // (a) unchanged
+    expect(results.search_market.products[0]).toMatchObject({
+      title,
+      tags: ['etsy gift', 'etsy.me/abc'],
+      url: 'https://www.etsy.com/listing/3/item'
+    })
+    expect(results.list_market_categories.categories).toEqual([{ id: 5, path: 'Etsy picks', level: 0 }])
+    expect(results.get_market_category_properties.properties[0]).toMatchObject({
+      display_name: 'Etsy color (https://www.etsy.com/c)',
+      values: [{ id: 1, name: 'Etsy orange', scale_id: null }]
+    })
+    // (b) nothing that must stay inside the app
     for (const t of texts) {
-      expect(t).not.toMatch(/etsy/i)
-      expect(t).not.toMatch(/https?:\/\//)
+      expect(t).not.toMatch(/etsystatic\.com/i)
+      expect(t).not.toContain('raw_json')
+      expect(t).not.toContain('keystring')
+      expect(t).not.toContain('secret')
+      expect(t).not.toContain('"tok"')
+      expect(t).not.toMatch(/Bearer/)
     }
   })
 })

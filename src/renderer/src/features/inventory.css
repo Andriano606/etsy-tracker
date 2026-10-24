@@ -507,3 +507,25 @@
     padding-left: 0;
   }
 }
+
+/* Photos open at full size: the overview thumbnail is a ZoomImage; a variation
+   photo radio gets a magnifier beside it (ZoomButton in a .ui-zoom-host). */
+.inv-title-cell > .inv-ov-zoom {
+  flex-shrink: 0;
+  border-radius: var(--r-xs);
+}
+.inv-ov-zoom .ui-zoom-badge {
+  width: 18px;
+  height: 18px;
+  right: 2px;
+  bottom: 2px;
+}
+.inv-thumb-host {
+  display: inline-flex;
+}
+.inv-thumb-host > .ui-zoom-corner.inv-thumb-zoom {
+  width: 20px;
+  height: 20px;
+  right: 4px;
+  bottom: 4px;
+}

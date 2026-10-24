@@ -350,17 +350,23 @@ export function localDate(ms: number): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
 }
 
-/** The MCP tools of this feature, in Ukrainian for the MCP modal. */
+/** The MCP tools of this feature, in Ukrainian for the MCP modal (all read Etsy live, with the sign-in). */
 export const ORDERS_TOOL_SUMMARY: ReadonlyArray<{ name: string; text: string; write?: boolean }> = [
-  { name: 'list_my_orders', text: 'мої замовлення з фільтрами (оплачені, відправлені, дати) — без адрес і email' },
-  { name: 'get_my_order', text: 'одне моє замовлення: товари, суми, доставка, повідомлення (адреса — лише на прохання)' },
-  { name: 'mark_my_order_shipped', text: 'позначити замовлення відправленим із трекінгом (покупець отримає лист)', write: true },
-  { name: 'update_my_order', text: 'змінити позначки «оплачено» / «відправлено» замовлення', write: true },
-  { name: 'list_my_sales', text: 'мої продажі за період (без скасованих і повернутих замовлень), згруповані за товарами: кількість, виручка' },
-  { name: 'get_my_product_sales', text: 'продажі одного мого товару: кількість, виручка, останні продажі' },
-  { name: 'get_my_sale', text: 'один мій продаж (рядок замовлення)' },
-  { name: 'browse_my_sales', text: 'усі мої продажі (рядки замовлень) посторінково' },
-  { name: 'list_my_ledger', text: 'рух коштів мого магазину за період і підсумки за типами' },
-  { name: 'get_my_ledger_entry', text: 'один запис руху коштів і його платежі' },
-  { name: 'get_my_payments', text: 'платежі: за замовленням, номерами платежів або записами руху коштів' }
+  {
+    name: 'list_my_orders',
+    text: 'мої замовлення з Etsy (сторінка) з фільтрами: дати, оплачені, відправлені, доставлені, скасовані; email і адреса покупця — лише на прохання'
+  },
+  { name: 'get_my_order', text: 'одне моє замовлення з Etsy: товари, суми, відправлення з трек-номером, повернення, повідомлення (адреса — лише на прохання)' },
+  { name: 'mark_my_order_shipped', text: 'додати трек-номер і позначити замовлення відправленим (Etsy одразу надішле покупцю лист)', write: true },
+  { name: 'update_my_order', text: 'змінити позначки «оплачено» / «відправлено» замовлення на Etsy (без трек-номера)', write: true },
+  {
+    name: 'list_my_sales',
+    text: 'мої продажі за період, згруповані за товарами: кількість, виручка (без скасованих і повністю повернутих замовлень; до 2000 найновіших замовлень)'
+  },
+  { name: 'get_my_product_sales', text: 'продажі одного мого товару за всю історію (зі скасованими теж): кількість, виручка, останні продажі' },
+  { name: 'get_my_sale', text: 'один мій продаж (рядок замовлення) з Etsy' },
+  { name: 'browse_my_sales', text: 'сторінка моїх продажів (рядків замовлень) у порядку Etsy' },
+  { name: 'list_my_ledger', text: 'рух коштів платіжного рахунку Etsy за період (до 2000 записів) і підсумки за типами' },
+  { name: 'get_my_ledger_entry', text: 'один запис руху коштів на Etsy і його платежі' },
+  { name: 'get_my_payments', text: 'платежі Etsy Payments (сума, комісії, чиста сума, повернення): за замовленням, номерами платежів або записами руху коштів' }
 ]

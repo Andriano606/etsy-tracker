@@ -136,12 +136,12 @@ export function formatBytes(n: number | null): string {
 
 /** The MCP tools of this feature, in Ukrainian for the MCP modal (same order as the tools). */
 export const MEDIA_TOOL_SUMMARY: ReadonlyArray<{ name: string; text: string; write?: boolean }> = [
-  { name: 'list_my_product_media', text: 'фото, відео й файли мого товару (порядок, розміри, опис фото, кольори)' },
-  { name: 'delete_my_product_photo', text: 'видалити фото мого товару', write: true },
-  { name: 'replace_my_product_photo', text: 'замінити фото на позиції в моєму товарі', write: true },
-  { name: 'set_my_photo_alt_text', text: 'змінити опис фото (для незрячих і пошуку) мого товару', write: true },
-  { name: 'upload_my_product_video', text: 'завантажити або замінити відео мого товару', write: true },
+  { name: 'list_my_product_media', text: 'фото, відео й цифрові файли мого товару напряму з Etsy (порядок, розміри, опис фото, колір)' },
+  { name: 'delete_my_product_photo', text: 'видалити фото мого товару на Etsy', write: true },
+  { name: 'replace_my_product_photo', text: 'замінити фото на позиції в моєму товарі новим файлом', write: true },
+  { name: 'set_my_photo_alt_text', text: 'змінити опис фото (alt-текст для програм читання з екрана) мого товару', write: true },
+  { name: 'upload_my_product_video', text: 'завантажити або замінити відео мого товару (одне на товар)', write: true },
   { name: 'delete_my_product_video', text: 'видалити відео мого товару', write: true },
-  { name: 'delete_my_product_file', text: 'видалити файл для покупця з мого товару', write: true },
-  { name: 'replace_my_product_file', text: 'замінити файл для покупця в моєму товарі', write: true }
+  { name: 'delete_my_product_file', text: 'видалити цифровий файл з мого товару (без останнього файлу товар стане фізичним)', write: true },
+  { name: 'replace_my_product_file', text: 'замінити цифровий файл у моєму товарі', write: true }
 ]

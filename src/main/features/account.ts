@@ -9,7 +9,6 @@ import { decodeHtmlEntities } from '../../shared/html'
 import { missingScopes, SCOPE_LABEL } from '../../shared/myShop'
 import { EtsyApiError, type EtsyClient, type EtsyShop, type Paged } from '../etsyApi'
 import { textResult } from '../mcpProtocol'
-import { neutralText } from '../neutral'
 import { mcpFail, mcpOwnShop, ownShop } from './common'
 import type { Feature, FeatureCtx } from './types'
 
@@ -130,9 +129,10 @@ export const accountFeature: Feature = {
   mcpTools: (deps) => [
     {
       name: 'get_my_account',
-      title: 'My account',
+      title: 'My Etsy account',
+      openWorld: true,
       description:
-        "The user's own account in the connected store: name, email, saved addresses, the permissions the app's sign-in has, and their store id/name. Only for questions about the user themselves.",
+        "The user's own Etsy account (the one signed in via \"✏️ Мій магазин\"), read live from the Etsy API (up to 4 requests): first/last name and email (scope email_r), saved addresses (address_r: id, name, line1, line2, city, state, zip, country ISO code, default_shipping), permissions = the OAuth scopes Etsy says the token has (null if that check failed), and their Etsy shop (store_id, store_name). A part that couldn't be read is null and explained in notes (Ukrainian) — except store_id/store_name, which then keep the values saved at sign-in. Needs the sign-in; only for questions about the user themselves.",
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
       run: async () => {
         try {
@@ -140,24 +140,24 @@ export const accountFeature: Feature = {
           const a = await accountSummary(deps.client!, deps.authStatus, deps.accessToken)
           return textResult({
             user_id: a.userId,
-            first_name: neutralText(a.firstName),
-            last_name: neutralText(a.lastName),
+            first_name: a.firstName,
+            last_name: a.lastName,
             email: a.email,
             addresses: a.addresses?.map((x) => ({
               id: x.id,
-              name: neutralText(x.name),
-              line1: neutralText(x.firstLine),
-              line2: neutralText(x.secondLine),
-              city: neutralText(x.city),
-              state: neutralText(x.state),
+              name: x.name,
+              line1: x.firstLine,
+              line2: x.secondLine,
+              city: x.city,
+              state: x.state,
               zip: x.zip,
               country: x.countryIso,
               default_shipping: x.isDefaultShipping
             })) ?? null,
             permissions: a.grantedScopes,
             store_id: a.shopId,
-            store_name: neutralText(a.shopName),
-            notes: a.notes.map((n) => neutralText(n))
+            store_name: a.shopName,
+            notes: a.notes
           })
         } catch (e) {
           return mcpFail(e)

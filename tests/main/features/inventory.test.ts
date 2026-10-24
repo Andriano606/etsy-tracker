@@ -10,7 +10,7 @@ import {
   type ListingInventory,
   type VariationImagesData
 } from '../../../src/shared/features/inventory'
-import { OWN_SHOP, callTool, featureCtx, mcpDeps, runAction, signedIn, signedOut } from '../../helpers/features'
+import { OWN_SHOP, callTool, featureCtx, mcpDeps, routedFetch, runAction, signedIn, signedOut, testClient } from '../../helpers/features'
 
 // ------------------------------------------------ Etsy-shaped fixtures (OAS)
 const money = (amount: number, currency = 'USD') => ({ amount, divisor: 100, currency_code: currency })
@@ -61,7 +61,7 @@ const image = (id: number, rank: number, url = `https://i.etsystatic.com/1/il_17
   url_75x75: url,
   url_170x135: url,
   url_570xN: url,
-  url_fullxfull: url,
+  url_fullxfull: url.replace('170x135', 'fullxfull'),
   full_height: 100,
   full_width: 100,
   alt_text: `Photo &amp; ${id}`
@@ -342,6 +342,7 @@ describe('inventory actions', () => {
       listingId: 1001,
       title: 'Sized planner',
       imageUrl: 'https://i.etsystatic.com/1/il_170x135.10011.jpg',
+      imageFullUrl: 'https://i.etsystatic.com/1/il_fullxfull.10011.jpg',
       priceMin: { amount: 1000, divisor: 100, currency: 'USD' },
       priceMax: { amount: 1400, divisor: 100, currency: 'USD' },
       totalQuantity: 15,
@@ -410,9 +411,10 @@ describe('inventory actions', () => {
       { propertyId: 513, name: 'Size', values: [{ valueId: 901, value: 'S' }, { valueId: 902, value: 'M' }, { valueId: 903, value: 'L' }] }
     ])
     expect(d.photos).toEqual([
-      { imageId: 5001, url: 'https://i.etsystatic.com/1/il_170x135.5001.jpg', rank: 1, alt: 'Photo & 5001' },
-      { imageId: 5002, url: 'https://i.etsystatic.com/1/il_170x135.5002.jpg', rank: 2, alt: 'Photo & 5002' },
-      { imageId: 5003, url: null, rank: 3, alt: 'Photo & 5003' }
+      { imageId: 5001, url: 'https://i.etsystatic.com/1/il_170x135.5001.jpg', urlFull: 'https://i.etsystatic.com/1/il_fullxfull.5001.jpg', rank: 1, alt: 'Photo & 5001' },
+      { imageId: 5002, url: 'https://i.etsystatic.com/1/il_170x135.5002.jpg', urlFull: 'https://i.etsystatic.com/1/il_fullxfull.5002.jpg', rank: 2, alt: 'Photo & 5002' },
+      // a non-CDN URL is dropped at every size
+      { imageId: 5003, url: null, urlFull: null, rank: 3, alt: 'Photo & 5003' }
     ])
     expect(d.assigned).toEqual([{ propertyId: 513, valueId: 901, value: 'S', imageId: 5002 }])
   })
@@ -603,14 +605,14 @@ describe('inventory MCP tools', () => {
     const empty = { products: [], price_on_property: [], quantity_on_property: [], sku_on_property: [], readiness_state_on_property: [] }
     const bare = mcpDeps({ ...routes, 'GET /v3/application/listings/{id}/inventory': { body: empty } })
     const noRecord = await callTool(inventoryFeature, bare.deps, 'update_my_product_price', { product_id: 1003, price: 3 })
-    expect(noRecord).toMatchObject({ isError: true, text: expect.stringContaining('no variant data yet') })
+    expect(noRecord).toMatchObject({ isError: true, text: expect.stringContaining('Etsy has no inventory record for this listing yet') })
     expect(put(bare.fetch)).toHaveLength(0)
     const badQty = await callTool(inventoryFeature, deps, 'update_my_product_price', { product_id: 1002, quantity: 1000 })
     expect(badQty.text).toBe('Argument "quantity" must be ≤ 999.')
     expect(put(fetch)).toHaveLength(1)
   })
 
-  it('update_my_product_inventory: neutral variants → the full inventory (ids looked up, processing kept, varies-by defaults)', async () => {
+  it('update_my_product_inventory: the MCP variants list → the full inventory (ids looked up, processing kept, varies-by defaults)', async () => {
     const { deps, fetch } = mcpDeps(routes)
     const r = await callTool(inventoryFeature, deps, 'update_my_product_inventory', {
       product_id: 1001,
@@ -715,7 +717,7 @@ describe('inventory MCP tools', () => {
     expect(fetch.calls.filter((c) => c.method === 'POST')).toHaveLength(1)
   })
 
-  it('every tool: not signed in → the sign-in note; a sign-in lacking the scope → a neutral note', async () => {
+  it('every tool: not signed in → the sign-in note; a sign-in lacking the scope → a note naming the OAuth scope', async () => {
     for (const name of TOOL_NAMES) {
       const { deps, fetch } = mcpDeps(routes, { status: signedOut })
       const r = await callTool(inventoryFeature, deps, name, ARGS[name])
@@ -724,7 +726,7 @@ describe('inventory MCP tools', () => {
       expect(fetch.calls).toHaveLength(0)
       const none = mcpDeps(routes, { status: signedIn({ scopes: [] }) })
       const s = await callTool(inventoryFeature, none.deps, name, ARGS[name])
-      expect(s.text, name).toContain('lacks a permission')
+      expect(s.text, name).toMatch(/Etsy sign-in lacks .*\(listings_[rw](, listings_[rw])?\)/)
       expect(none.fetch.calls).toHaveLength(0)
     }
   })
@@ -740,7 +742,7 @@ describe('inventory MCP tools', () => {
     }
   })
 
-  it('store errors are neutral (403, 400 with a detail naming the marketplace, 5xx)', async () => {
+  it('Etsy errors reach the client with what Etsy said (403, 400 with a detail and a link, 5xx)', async () => {
     const failing = {
       ...routes,
       'GET /v3/application/listings/{id}/inventory': { status: 403, body: { error: 'Not your Etsy listing https://www.etsy.com/x' } },
@@ -749,20 +751,30 @@ describe('inventory MCP tools', () => {
     }
     const { deps } = mcpDeps(failing)
     const g = await callTool(inventoryFeature, deps, 'get_my_product_inventory', { product_id: 1001 })
-    expect(g.text).toBe('The store refused this action (HTTP 403): Not your marketplace listing [link].')
+    expect(g.text).toBe('Etsy refused this action (HTTP 403): Not your Etsy listing https://www.etsy.com/x.')
     const okGet = mcpDeps({ ...failing, 'GET /v3/application/listings/{id}/inventory': routes['GET /v3/application/listings/{id}/inventory'] })
     const u = await callTool(inventoryFeature, okGet.deps, 'update_my_product_price', { product_id: 1002, price: 3 })
-    expect(u.text).toBe('The store rejected the request as invalid (HTTP 400): marketplace says: bad product.')
+    expect(u.text).toBe('Etsy rejected the request as invalid (HTTP 400): Etsy says: bad product.')
     const s = await callTool(inventoryFeature, okGet.deps, 'set_my_variation_photos', ARGS.set_my_variation_photos)
     expect(s.isError).toBe(true)
     expect(okGet.fetch.calls.filter((c) => c.method === 'POST')).toHaveLength(1)
   })
 
-  it('neutrality: nothing a client gets names the marketplace or carries a URL', async () => {
+  it('tool texts name Etsy, its calls and OAuth scopes; writes say they change the live Etsy shop', () => {
+    const tools = inventoryFeature.mcpTools!(mcpDeps(routes).deps)
+    for (const t of tools) {
+      expect(t.description, t.name).toContain('Etsy')
+      expect(t.description, t.name).toMatch(/listings_[rw]/)
+      if (t.readOnly === false) expect(t.description, t.name).toContain("changes the user's live Etsy shop")
+      else expect(t.description, t.name).toMatch(/^Live from the Etsy API/)
+    }
+  })
+
+  it('honesty: shop text reaches the client unchanged; no CDN URL, no raw_json, no token or key in anything a client gets', async () => {
     const etsyish = {
       ...routes,
       'GET /v3/application/listings/batch/inventory': {
-        body: { count: 1, results: [listing(1001, 'Best Etsy planner https://www.etsy.com/listing/1', SIZED)] }
+        body: { count: 1, results: [{ ...listing(1001, 'Best Etsy planner https://www.etsy.com/listing/1', SIZED), raw_json: '{"secret":1}' }] }
       },
       [`GET /v3/application/shops/${OWN_SHOP}/listings`]: { body: { count: 1, results: [listing(1001, 'Etsy planner etsy.me/abc', undefined)] } },
       'GET /v3/application/listings/{id}/inventory': (url: URL) => ({
@@ -779,20 +791,24 @@ describe('inventory MCP tools', () => {
               ]
             }
           : {
-          ...SIZED,
-          products: SIZED.products.map((p) => ({
-            ...p,
-            sku: 'ETSY-https://etsy.com/x',
-            property_values: p.property_values.map((v) => ({ ...v, property_name: 'Etsy size', scale_name: 'Etsy scale', values: [`${v.values[0]} etsy.com/x`] }))
-          }))
-        }
+              ...SIZED,
+              products: SIZED.products.map((p) => ({
+                ...p,
+                sku: 'ETSY-https://etsy.com/x',
+                property_values: p.property_values.map((v) => ({ ...v, property_name: 'Etsy size', scale_name: 'Etsy scale', values: [`${v.values[0]} etsy.com/x`] }))
+              }))
+            }
       }),
-      'GET /v3/application/listings/{id}/images': { body: { count: 1, results: [{ ...image(5001, 1), alt_text: 'Etsy photo https://i.etsystatic.com/x' }] } },
+      'GET /v3/application/listings/{id}/images': {
+        body: { count: 1, results: [{ ...image(5001, 1), alt_text: 'Etsy photo, see https://www.etsy.com/listing/1' }] }
+      },
       [`POST /v3/application/shops/${OWN_SHOP}/listings/{id}/variation-images`]: {
         body: { count: 1, results: [{ property_id: 513, value_id: 901, value: 'Etsy S', image_id: 5001 }] }
       }
     }
-    const { deps } = mcpDeps(etsyish)
+    const TOKEN = 'oauth-access-token-XYZ123'
+    const withToken = (over: Parameters<typeof mcpDeps>[1] = {}) => mcpDeps(etsyish, { ...over, client: testClient(routedFetch(etsyish), TOKEN) })
+    const { deps } = withToken()
     const texts: string[] = [JSON.stringify(inventoryFeature.mcpTools!(deps).map(({ run: _run, ...t }) => t))]
     const calls: Array<[string, Record<string, unknown>]> = [
       ...TOOL_NAMES.map((n): [string, Record<string, unknown>] => [n, ARGS[n]]),
@@ -801,7 +817,7 @@ describe('inventory MCP tools', () => {
       ['get_my_inventory_overview', { product_ids: [1001] }],
       ['update_my_product_price', { product_id: 1001, price: 2 }],
       ['update_my_product_inventory', { product_id: 1001, variants: [{ price: 0, quantity: 1 }] }],
-      // refusals that quote the store's own option names and values
+      // refusals that quote the shop's own option names and values
       ['update_my_product_price', { product_id: 1003, price: 1.234 }],
       [
         'update_my_product_inventory',
@@ -819,21 +835,35 @@ describe('inventory MCP tools', () => {
         }
       ]
     ]
+    const results: Record<string, string[]> = {}
     for (const [name, args] of calls) {
       const r = await callTool(inventoryFeature, deps, name, args)
+      ;(results[name] ??= []).push(r.text)
       texts.push(r.text)
     }
     for (const name of TOOL_NAMES) {
-      texts.push((await callTool(inventoryFeature, mcpDeps(routes, { status: signedOut }).deps, name, ARGS[name])).text)
-      texts.push((await callTool(inventoryFeature, mcpDeps(routes, { writes: false }).deps, name, ARGS[name])).text)
+      texts.push((await callTool(inventoryFeature, withToken({ status: signedOut }).deps, name, ARGS[name])).text)
+      texts.push((await callTool(inventoryFeature, withToken({ writes: false }).deps, name, ARGS[name])).text)
     }
-    expect(texts.join('\n')).toContain('marketplace planner [link]')
-    expect(texts.join('\n')).toContain('Variant "marketplace red ([link])": the price must be')
-    expect(texts.join('\n')).toContain('The value "marketplace red ([link])" contains parentheses')
-    expect(texts.join('\n')).toContain('The price must be the same for variants with the same marketplace size')
+    const all = texts.join('\n')
+    // (a) the shop's own text, exactly as Etsy holds it
+    expect(results.get_my_inventory_overview.join('\n')).toContain('"title":"Etsy planner etsy.me/abc"')
+    expect(results.get_my_inventory_overview.join('\n')).toContain('"title":"Best Etsy planner https://www.etsy.com/listing/1"')
+    const inv = JSON.parse(results.get_my_product_inventory[0])
+    expect(inv.variants[0]).toMatchObject({ sku: 'ETSY-https://etsy.com/x', options: [{ option_name: 'Etsy size', value: 'S etsy.com/x', scale: 'Etsy scale' }] })
+    expect(inv.options[0]).toMatchObject({ name: 'Etsy size', values: [{ value: 'S etsy.com/x' }, { value: 'M etsy.com/x' }, { value: 'L etsy.com/x' }] })
+    const photos = JSON.parse(results.get_my_variation_photos[0])
+    expect(photos.photos).toEqual([{ photo_id: 5001, position: 1, alt_text: 'Etsy photo, see https://www.etsy.com/listing/1' }])
+    expect(JSON.parse(results.set_my_variation_photos[0]).links[0].value).toBe('Etsy S')
+    expect(all).toContain('Variant "Etsy red (https://etsy.com/x)": the price must be')
+    expect(all).toContain('The value "Etsy red (https://etsy.com/x)" contains parentheses')
+    expect(all).toContain('The price must be the same for variants with the same Etsy size')
+    // (b) never a CDN URL (the fixtures' photos all have one), raw API data, the token or the API key
     for (const t of texts) {
-      expect(t).not.toMatch(/etsy/i)
-      expect(t).not.toMatch(/https?:\/\//)
+      expect(t).not.toMatch(/etsystatic\.com/i)
+      expect(t).not.toContain('raw_json')
+      expect(t).not.toContain(TOKEN)
+      expect(t).not.toContain('keystring')
     }
   })
 })

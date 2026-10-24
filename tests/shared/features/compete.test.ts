@@ -11,11 +11,12 @@ describe('shared compete', () => {
     expect(LIVE_PARTS).toEqual(['properties', 'photos', 'videos', 'personalization', 'variation_photos', 'shipping', 'reviews'])
   })
 
-  it('the tool summary: unique names, Ukrainian texts, read-only', () => {
+  it('the tool summary: unique names, Ukrainian texts naming Etsy, read-only', () => {
     const names = COMPETE_TOOL_SUMMARY.map((t) => t.name)
     expect(new Set(names).size).toBe(names.length)
     for (const t of COMPETE_TOOL_SUMMARY) {
       expect(t.text).toMatch(/[а-яіїєґ]/i)
+      expect(t.text).toContain('Etsy')
       expect(t.write).toBeUndefined()
     }
   })

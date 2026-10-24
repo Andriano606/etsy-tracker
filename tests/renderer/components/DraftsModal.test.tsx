@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
-import { DraftsModal } from '../../../src/renderer/src/components/DraftsModal'
+import { DOWNLOAD_NOTE_MS, DraftsModal } from '../../../src/renderer/src/components/DraftsModal'
+import { ImageViewer } from '../../../src/renderer/src/ui'
+import { etsyListingEditUrl, etsyListingUrl } from '../../../src/shared/myShop'
 import { ConfirmModal } from '../../../src/renderer/src/components/ConfirmModal'
 import { ShopView } from '../../../src/renderer/src/components/ShopView'
 import { useStore } from '../../../src/renderer/src/store'
-import type { CreateListingProgress } from '../../../src/shared/types'
+import type { CreateListingProgress, DraftMedia } from '../../../src/shared/types'
 import { GLOSSARY } from '../../../src/shared/glossary'
 import { etsyIn, etsyOut, mkDraft, mkScan, mkShop, setupRenderer, withKey, type Api } from '../helpers'
 
@@ -42,6 +44,7 @@ const renderModal = () =>
     <>
       <DraftsModal />
       <ConfirmModal />
+      <ImageViewer />
     </>
   )
 
@@ -389,5 +392,175 @@ describe('editing and sending a draft', () => {
     await openList()
     act(() => useStore.getState().setDrafts([mkDraft(5, { source: 'mcp' })]))
     expect(screen.getByText('Planner 5')).toBeInTheDocument()
+  })
+})
+
+const photo = (id: number, position: number, name: string): DraftMedia => ({ id, kind: 'photo', position, name, mime: 'image/jpeg', size: 1000 })
+const file = (id: number, position: number, name: string): DraftMedia => ({ id, kind: 'file', position, name, mime: 'application/pdf', size: 3000 })
+const viewer = () => screen.getByRole('dialog', { name: 'Перегляд зображення' })
+const viewerImg = () => viewer().querySelector('img.ui-viewer-img')
+
+describe('pictures open in the full-size viewer', () => {
+  it('editor: a photo opens the draft\'s photos as a gallery at that photo; the editor stays as it was', async () => {
+    api.pickListingFiles.mockResolvedValue([{ token: 't9', name: 'new.png', size: 500 }])
+    useStore.setState({ drafts: [mkDraft(7, { photos: [photo(31, 1, 'a.jpg'), photo(32, 2, 'b.jpg')] })], draftsView: { draftId: 7 } })
+    renderModal()
+    // A freshly picked photo has no preview yet: nothing to open, and it is not in the gallery.
+    await click(screen.getByRole('button', { name: 'Додати фото' }))
+    expect(within(screen.getByText('new.png').closest('li')!).queryByRole('button', { name: /Відкрити на весь розмір/ })).toBeNull()
+    await click(screen.getByRole('button', { name: 'Відкрити на весь розмір: b.jpg' }))
+    expect(useStore.getState().viewer).toEqual({
+      images: [
+        { src: 'etsyimg://draft/31', alt: 'a.jpg', caption: 'a.jpg' },
+        { src: 'etsyimg://draft/32', alt: 'b.jpg', caption: 'b.jpg' }
+      ],
+      index: 1
+    })
+    expect(viewerImg()).toHaveAttribute('src', 'etsyimg://draft/32')
+    expect(viewer()).toHaveTextContent('2 / 2')
+    // Escape closes only the viewer — the draft (with its unsaved photo) stays open, nothing was removed/moved.
+    await act(async () => {
+      fireEvent.keyDown(document, { key: 'Escape' })
+    })
+    expect(screen.queryByRole('dialog', { name: 'Перегляд зображення' })).toBeNull()
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(screen.getByTestId('draft-form')).toBeInTheDocument()
+    expect(screen.getByText('a.jpg').closest('li')).toHaveTextContent('головне')
+    expect(useStore.getState().draftsView).toEqual({ draftId: 7 })
+  })
+
+  it('the list: a row\'s first photo opens all its photos; the draft itself does not open', async () => {
+    useStore.setState({
+      drafts: [mkDraft(3, { photos: [photo(41, 1, 'cover.jpg'), photo(42, 2, 'inside.jpg')] }), mkDraft(4)]
+    })
+    await openList()
+    const row = screen.getByText('Planner 3').closest('li') as HTMLElement
+    expect(within(screen.getByText('Planner 4').closest('li') as HTMLElement).queryByRole('button', { name: /Відкрити на весь розмір/ })).toBeNull()
+    await click(within(row).getByRole('button', { name: 'Відкрити на весь розмір: Planner 3' }))
+    const v = useStore.getState().viewer!
+    expect(v.index).toBe(0)
+    expect(v.images.map((i) => i.src)).toEqual(['etsyimg://draft/41', 'etsyimg://draft/42'])
+    expect(viewerImg()).toHaveAttribute('src', 'etsyimg://draft/41')
+    expect(useStore.getState().draftsView).toBe('list')
+    expect(screen.getByTestId('draft-list')).toBeInTheDocument()
+  })
+
+  it('a sent draft: its photos open too', async () => {
+    useStore.setState({
+      drafts: [mkDraft(4, { status: 'sent', sentListingId: 77, sentPublished: true, photos: [photo(51, 1, 'x.jpg'), photo(52, 2, 'y.jpg')] })],
+      draftsView: { draftId: 4 }
+    })
+    renderModal()
+    await click(within(screen.getByTestId('draft-sent')).getByRole('button', { name: 'Відкрити на весь розмір: x.jpg' }))
+    expect(useStore.getState().viewer).toMatchObject({ index: 0, images: [{ src: 'etsyimg://draft/51' }, { src: 'etsyimg://draft/52' }] })
+    expect(viewerImg()).toHaveAttribute('src', 'etsyimg://draft/51')
+    expect(api.openExternal).not.toHaveBeenCalled()
+  })
+})
+
+describe('the buyer\'s files can be downloaded', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('editor: a stored file has a download button (a freshly picked one has none); the saved path is said, then goes away', async () => {
+    api.pickListingFiles.mockResolvedValue([{ token: 'f2', name: 'Fresh.xlsx', size: 100 }])
+    api.saveDraftMedia.mockResolvedValue({ ok: true, value: { path: '/home/me/Downloads/Plan.pdf' } })
+    useStore.setState({ drafts: [mkDraft(9, { files: [file(61, 1, 'Plan.pdf')] })], draftsView: { draftId: 9 } })
+    renderModal()
+    await click(screen.getByRole('button', { name: 'Додати файли' }))
+    expect(within(screen.getByText('Fresh.xlsx').closest('li')!).queryByRole('button', { name: /Завантажити/ })).toBeNull()
+    vi.useFakeTimers()
+    await click(screen.getByRole('button', { name: 'Завантажити файл «Plan.pdf»' }))
+    expect(api.saveDraftMedia).toHaveBeenCalledWith(61)
+    expect(screen.getByRole('status')).toHaveTextContent('Збережено: /home/me/Downloads/Plan.pdf')
+    // Downloading changes nothing in the draft.
+    expect(screen.getByText('Є незбережені зміни.')).toBeInTheDocument() // (the picked file — not the download)
+    expect(screen.getByText('Plan.pdf')).toBeInTheDocument()
+    await act(async () => {
+      vi.advanceTimersByTime(DOWNLOAD_NOTE_MS)
+    })
+    expect(screen.queryByText(/Збережено: /)).toBeNull()
+    expect(api.saveDraft).not.toHaveBeenCalled()
+  })
+
+  it('a cancelled save says nothing; a failed one says why', async () => {
+    useStore.setState({ drafts: [mkDraft(9, { files: [file(61, 1, 'Plan.pdf')] })], draftsView: { draftId: 9 } })
+    renderModal()
+    api.saveDraftMedia.mockResolvedValueOnce({ ok: true, value: null })
+    await click(screen.getByRole('button', { name: 'Завантажити файл «Plan.pdf»' }))
+    expect(api.saveDraftMedia).toHaveBeenCalledWith(61)
+    expect(screen.queryByText(/Збережено/)).toBeNull()
+    expect(screen.queryByRole('alert')).toBeNull()
+    api.saveDraftMedia.mockResolvedValueOnce({ ok: false, error: 'Немає доступу до папки.' })
+    await click(screen.getByRole('button', { name: 'Завантажити файл «Plan.pdf»' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('Не вдалося зберегти файл: Немає доступу до папки.')
+  })
+
+  it('a sent draft lists its files with the same download buttons (read-only: no remove)', async () => {
+    useStore.setState({
+      drafts: [mkDraft(4, { status: 'sent', sentListingId: 77, sentPublished: false, files: [file(61, 1, 'Plan.pdf'), file(62, 2, 'Guide.pdf')] })],
+      draftsView: { draftId: 4 }
+    })
+    renderModal()
+    const sent = screen.getByTestId('draft-sent')
+    expect(within(sent).getByText('Файли для покупця')).toBeInTheDocument()
+    expect(within(sent).queryByRole('button', { name: /Прибрати:/ })).toBeNull()
+    await click(within(sent).getByRole('button', { name: 'Завантажити файл «Guide.pdf»' }))
+    expect(api.saveDraftMedia).toHaveBeenCalledWith(62)
+    expect(within(sent).getByText('Збережено: /tmp/file').closest('[role="status"]')).toHaveClass('draft-dl-note')
+  })
+})
+
+describe('after a send: links to the listing on Etsy', () => {
+  it('published: "Відкрити на Etsy" (the public page) and "Редагувати на Etsy" (the editor)', async () => {
+    useStore.setState({ drafts: [mkDraft(4, { status: 'sent', sentListingId: 77, sentPublished: true })], draftsView: { draftId: 4 } })
+    renderModal()
+    const links = screen.getByTestId('draft-etsy-links')
+    expect(links).toHaveTextContent('якщо на etsy.com ви увійшли як власник цього магазину')
+    await click(within(links).getByRole('button', { name: 'Відкрити на Etsy' }))
+    expect(api.openExternal).toHaveBeenLastCalledWith(etsyListingUrl(77))
+    await click(within(links).getByRole('button', { name: 'Редагувати на Etsy' }))
+    expect(api.openExternal).toHaveBeenLastCalledWith(etsyListingEditUrl(77))
+  })
+
+  it('sent as an Etsy draft: only the editor (there is no public page yet)', async () => {
+    useStore.setState({ drafts: [mkDraft(4, { status: 'sent', sentListingId: 77, sentPublished: false })], draftsView: { draftId: 4 } })
+    renderModal()
+    expect(screen.queryByRole('button', { name: 'Відкрити на Etsy' })).toBeNull()
+    await click(screen.getByRole('button', { name: 'Редагувати на Etsy' }))
+    expect(api.openExternal).toHaveBeenCalledWith('https://www.etsy.com/your/shops/me/listing-editor/edit/77')
+  })
+
+  it('a partial failure with a listing id: the editor link is there to finish it', async () => {
+    useStore.setState({
+      drafts: [mkDraft(4, { status: 'error', sentListingId: 88, sentPublished: false, lastError: 'Чернетку створено (#88), але фото не завантажилось.' })],
+      draftsView: { draftId: 4 }
+    })
+    renderModal()
+    expect(screen.getByTestId('draft-sent')).toHaveTextContent('Надіслано з проблемою')
+    expect(screen.queryByRole('button', { name: 'Відкрити на Etsy' })).toBeNull()
+    await click(screen.getByRole('button', { name: 'Редагувати на Etsy' }))
+    expect(api.openExternal).toHaveBeenCalledWith(etsyListingEditUrl(88))
+  })
+
+  it('right after publishing, the links are the next step', async () => {
+    api.listDrafts.mockResolvedValue([mkDraft(501, { status: 'sent', sentListingId: 4242, sentPublished: true })])
+    await newDraft()
+    await fillValid()
+    expect(screen.queryByTestId('draft-etsy-links')).toBeNull()
+    await click(screen.getByRole('button', { name: 'Надіслати на Etsy як чернетку' }))
+    await confirm()
+    await click(within(screen.getByTestId('draft-etsy-links')).getByRole('button', { name: 'Відкрити на Etsy' }))
+    expect(api.openExternal).toHaveBeenCalledWith('https://www.etsy.com/listing/4242')
+  })
+
+  it('a draft that was never sent has no Etsy links', async () => {
+    useStore.setState({ drafts: [mkDraft(9)], draftsView: { draftId: 9 } })
+    await act(async () => {
+      renderModal()
+    })
+    expect(screen.queryByTestId('draft-etsy-links')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Редагувати на Etsy' })).toBeNull()
   })
 })

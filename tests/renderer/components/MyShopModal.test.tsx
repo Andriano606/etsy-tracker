@@ -6,6 +6,7 @@ import { ConfirmModal } from '../../../src/renderer/src/components/ConfirmModal'
 import { Sidebar } from '../../../src/renderer/src/components/Sidebar'
 import { useStore } from '../../../src/renderer/src/store'
 import { GLOSSARY } from '../../../src/shared/glossary'
+import { ImageViewer } from '../../../src/renderer/src/ui'
 import { etsyIn, etsyOut, mkMyListing, mkMyShop, mkShop, setupRenderer, withKey, type Api } from '../helpers'
 
 let api: Api
@@ -561,5 +562,66 @@ describe('Мій магазин: shop profile', () => {
     await open(etsyIn())
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(screen.queryByRole('dialog')).toBeNull()
+  })
+})
+
+describe('Мій магазин: фото товару на весь розмір', () => {
+  const full = (id: number) => `https://i.etsystatic.com/1/il_fullxfull.${id}.jpg`
+  const page = () => ({
+    ok: true as const,
+    value: { state: 'active' as const, total: 2, offset: 0, listings: [mkMyListing(1, { imageFullUrl: full(1) }), mkMyListing(2, { imageUrl: null, imageFullUrl: null })] }
+  })
+
+  it('a row thumbnail opens the main photo at full size; the editor does not open; Escape closes only the viewer', async () => {
+    api.getMyListings.mockResolvedValue(page())
+    await open(etsyIn())
+    render(<ImageViewer />)
+    const list = screen.getByTestId('my-listings')
+    const row = within(list).getByText('Budget Planner 1').closest('li') as HTMLElement
+    // a listing without a photo has a placeholder, nothing to open
+    expect(within(within(list).getByText('Budget Planner 2').closest('li') as HTMLElement).queryByRole('button', { name: /на весь розмір/ })).toBeNull()
+    await act(async () => {
+      fireEvent.click(within(row).getByRole('button', { name: 'Відкрити на весь розмір: Головне фото: Budget Planner 1' }))
+    })
+    const dialog = screen.getByRole('dialog', { name: 'Перегляд зображення' })
+    expect(within(dialog).getByRole('img')).toHaveAttribute('src', full(1))
+    expect(screen.queryByTestId('listing-editor')).toBeNull()
+    await act(async () => {
+      fireEvent.keyDown(document, { key: 'Escape' })
+    })
+    expect(screen.queryByRole('dialog', { name: 'Перегляд зображення' })).toBeNull()
+    expect(useStore.getState().showMyShop).toBe(true)
+    expect(screen.getByTestId('my-listings')).toBeInTheDocument()
+  })
+
+  it('an older listing object without the full-size URL opens the thumbnail it has', async () => {
+    api.getMyListings.mockResolvedValue({ ok: true, value: { state: 'active', total: 1, offset: 0, listings: [mkMyListing(3)] } })
+    await open(etsyIn())
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Відкрити на весь розмір: Головне фото: Budget Planner 3' }))
+    })
+    expect(useStore.getState().viewer!.images[0].src).toBe('https://i.etsystatic.com/1/il_170x135.3.jpg')
+  })
+
+  it('the editor head thumbnail opens it too, and keeps the full-size URL after a save (Etsy answers without images)', async () => {
+    api.getMyListings.mockResolvedValue(page())
+    await open(etsyIn())
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole('button', { name: 'Редагувати' })[0])
+    })
+    const editor = screen.getByTestId('listing-editor')
+    fireEvent.change(screen.getByLabelText('Опис'), { target: { value: 'New text' } })
+    await act(async () => {
+      fireEvent.click(within(editor).getByRole('button', { name: 'Зберегти на Etsy' }))
+    })
+    expect(api.saveMyListing).toHaveBeenCalled()
+    await act(async () => {
+      fireEvent.click(within(editor).getByRole('button', { name: /^Відкрити на весь розмір: Головне фото/ }))
+    })
+    expect(useStore.getState().viewer).toEqual({
+      images: [{ src: full(1), alt: 'Головне фото: Budget Planner 1', caption: 'Budget Planner 1' }],
+      index: 0
+    })
+    expect(screen.getByTestId('listing-editor')).toBeInTheDocument()
   })
 })

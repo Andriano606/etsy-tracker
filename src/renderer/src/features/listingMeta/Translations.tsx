@@ -26,7 +26,7 @@ const formOf = (t: ListingTranslation | null): Form => ({
 })
 
 export function TranslationsSection({ listing }: { listing: MyListing; onChanged: (l?: MyListing) => void }): JSX.Element {
-  const [language, setLanguage] = useState<TranslationLanguage>('en')
+  const [language, setLanguage] = useState<TranslationLanguage>('en-US')
   /** undefined = loading; null = none in that language yet. */
   const [tr, setTr] = useState<ListingTranslation | null | undefined>(undefined)
   const [form, setForm] = useState<Form>(formOf(null))

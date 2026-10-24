@@ -41,6 +41,11 @@ export interface McpTool {
   readOnly?: boolean
   /** Changes are hard to undo (publishing, deactivating). Only meaningful when not read-only. */
   destructive?: boolean
+  /**
+   * Reaches outside the app (the Etsy API or Etsy's image CDN) — MCP
+   * `openWorldHint`. Default: false (the app's own database only).
+   */
+  openWorld?: boolean
   /** Arguments already checked against `inputSchema`. */
   run(args: Record<string, unknown>): McpToolResult | Promise<McpToolResult>
 }
@@ -205,7 +210,7 @@ export async function handleMcpMessage(opts: McpHandlerOptions, msg: unknown): P
             readOnlyHint: t.readOnly !== false,
             destructiveHint: t.readOnly === false && !!t.destructive,
             idempotentHint: t.readOnly !== false,
-            openWorldHint: t.readOnly === false
+            openWorldHint: !!t.openWorld
           }
         }))
       })

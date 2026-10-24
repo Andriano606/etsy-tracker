@@ -21,8 +21,8 @@ import { formatCount, formatEtsyDate, formatPrice, ratingStars } from '@shared/f
 import { missingScopes } from '@shared/myShop'
 import type { Listing } from '@shared/types'
 import { imageSrc } from '../../imageUrl'
-import { useStore } from '../../store'
-import { Badge, Button, Callout, GLOSSARY, Icon, InfoTip, Loading, Select, Term } from '../../ui'
+import { useStore, type ViewerImage } from '../../store'
+import { Badge, Button, Callout, GLOSSARY, Icon, InfoTip, Loading, Select, Term, ZoomImage } from '../../ui'
 import { featureCall } from '../call'
 import { EmptyNote, ErrorNote, LoadedView, money, useCompete, useReveal, YesNo } from './common'
 import { deadlineText } from './shopPanels'
@@ -181,6 +181,20 @@ function VideoDetails({ listingId, videoId, onClose }: { listingId: number; vide
   )
 }
 
+/** The listing's live photos as one viewer gallery, biggest URL first. */
+function photoGallery(list: LiveImage[]): ViewerImage[] {
+  return list
+    .filter((i) => i.url570)
+    .map((i) => ({ src: i.urlFull || i.url570, alt: i.altText || `Фото ${i.rank ?? ''}`.trim(), caption: `Фото ${i.rank ?? '—'}${i.altText ? ` — ${i.altText}` : ''}` }))
+}
+
+/** Where a photo sits in `photoGallery(list)`. */
+const galleryIndex = (list: LiveImage[], id: number): number =>
+  Math.max(
+    0,
+    list.filter((i) => i.url570).findIndex((i) => i.id === id)
+  )
+
 function MediaPanel({ listing }: PanelProps): JSX.Element {
   const images = useCompete<LiveImage[]>('images', { listingId: listing.listingId })
   const videos = useCompete<LiveVideo[]>('videos', { listingId: listing.listingId })
@@ -203,7 +217,18 @@ function MediaPanel({ listing }: PanelProps): JSX.Element {
                 <Fragment key={i.id}>
                 <li className={'compete-media-item' + (isOpen('image', i.id) ? ' is-open' : '')} data-testid="compete-photo">
                   <div className="compete-media-thumb">
-                    {i.url570 ? <img src={i.url570} alt={i.altText ?? ''} loading="lazy" /> : <Icon name="image" size={22} />}
+                    {i.url570 ? (
+                      <ZoomImage
+                        className="compete-zoom"
+                        src={i.url570}
+                        alt={i.altText || `Фото ${i.rank ?? ''}`.trim()}
+                        gallery={photoGallery(list)}
+                        index={galleryIndex(list, i.id)}
+                        loading="lazy"
+                      />
+                    ) : (
+                      <Icon name="image" size={22} />
+                    )}
                   </div>
                   <div className="compete-media-text">
                     <div className="compete-media-title">
@@ -250,7 +275,11 @@ function MediaPanel({ listing }: PanelProps): JSX.Element {
                 <Fragment key={v.id}>
                 <li className={'compete-media-item' + (isOpen('video', v.id) ? ' is-open' : '')}>
                   <div className="compete-media-thumb">
-                    {v.thumbnailUrl ? <img src={v.thumbnailUrl} alt="" loading="lazy" /> : <Icon name="video" size={22} />}
+                    {v.thumbnailUrl ? (
+                      <ZoomImage className="compete-zoom" src={v.thumbnailUrl} alt="Кадр відео" caption="Кадр відео (Etsy дає лише цей кадр)" loading="lazy" />
+                    ) : (
+                      <Icon name="video" size={22} />
+                    )}
                   </div>
                   <div className="compete-media-text">
                     <div className="compete-media-title">Відео</div>
@@ -453,6 +482,13 @@ function variationThumb(listing: Listing, live: LiveImage[] | null, imageId: num
   return live?.find((i) => i.id === imageId)?.url570 ?? ''
 }
 
+/** The same photo at full size (the viewer opens it): our stored original, else the live fullxfull, else ''. */
+function variationFull(listing: Listing, live: LiveImage[] | null, imageId: number): string {
+  if (listing.images.some((i) => i.id === imageId)) return imageSrc({ id: imageId }, 'fullxfull')
+  const l = live?.find((i) => i.id === imageId)
+  return l?.urlFull || l?.url570 || ''
+}
+
 function VariationImagesPanel({ listing }: PanelProps): JSX.Element {
   const state = useCompete<VariationImageInfo[]>('variationImages', { shopId: listing.shopId, listingId: listing.listingId })
   const live = useCompete<LiveImage[]>('images', { listingId: listing.listingId })
@@ -465,12 +501,24 @@ function VariationImagesPanel({ listing }: PanelProps): JSX.Element {
           </EmptyNote>
         ) : (
           <ul className="compete-variation-grid" data-testid="compete-variation-images">
-            {rows.map((v) => {
+            {rows.map((v, n) => {
               const src = variationThumb(listing, live.data, v.imageId)
               const label = v.value ?? `Значення #${v.valueId}`
+              const shown = rows.filter((r) => variationThumb(listing, live.data, r.imageId))
+              const gallery: ViewerImage[] = shown.map((r) => ({
+                src: variationFull(listing, live.data, r.imageId),
+                alt: r.value ?? `Значення #${r.valueId}`,
+                caption: `Варіант: ${r.value ?? `значення #${r.valueId}`}`
+              }))
               return (
                 <li key={`${v.propertyId}-${v.valueId}`} className="compete-variation" data-testid="compete-variation">
-                  <div className="compete-media-thumb">{src ? <img src={src} alt={v.value ?? ''} loading="lazy" /> : <Icon name="image" size={22} />}</div>
+                  <div className="compete-media-thumb">
+                    {src ? (
+                      <ZoomImage className="compete-zoom" src={src} alt={label} gallery={gallery} index={Math.max(0, shown.indexOf(rows[n]))} loading="lazy" />
+                    ) : (
+                      <Icon name="image" size={22} />
+                    )}
+                  </div>
                   <div className="compete-variation-label truncate" title={label}>
                     {label}
                   </div>
@@ -771,6 +819,9 @@ export function languageName(code: string): string {
   }
 }
 
+/** The viewer's caption for a buyer's photo: who rated how and when. */
+const reviewCaption = (r: LiveReview): string => `Фото покупця · оцінка ${r.rating ?? '—'} з 5 · ${formatEtsyDate(r.createdAt)}`
+
 function ReviewItem({ r }: { r: LiveReview }): JSX.Element {
   return (
     <li className="compete-review">
@@ -784,7 +835,7 @@ function ReviewItem({ r }: { r: LiveReview }): JSX.Element {
         </span>
       </div>
       {r.text ? <div className="feat-pre compete-review-text">{r.text}</div> : <div className="dim">Без тексту — лише оцінка.</div>}
-      {r.imageUrl && <img className="compete-review-photo" src={r.imageUrl} alt="Фото покупця" loading="lazy" />}
+      {r.imageUrl && <ZoomImage className="compete-review-zoom" imgClassName="compete-review-photo" src={r.imageUrl} alt="Фото покупця" caption={reviewCaption(r)} loading="lazy" />}
     </li>
   )
 }

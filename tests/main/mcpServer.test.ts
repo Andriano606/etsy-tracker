@@ -18,7 +18,7 @@ const echo: McpTool = {
 }
 
 const handler = (onInitialize?: (c: string | null) => void) => (body: unknown) =>
-  handleMcpBody({ info: { name: 'shop-catalog', title: 'Shop Catalog', version: '0.1.0', instructions: 'Hi.' }, tools: [echo], onInitialize }, body)
+  handleMcpBody({ info: { name: 'etsy-tracker', title: 'Etsy Tracker', version: '0.1.0', instructions: 'Hi.' }, tools: [echo], onInitialize }, body)
 
 interface Raw {
   status: number
@@ -183,7 +183,7 @@ describe('the official MCP SDK client', () => {
     const client = new Client({ name: 'sdk-test-client', version: '1.0.0' })
     await client.connect(transport)
     try {
-      expect(client.getServerVersion()).toMatchObject({ name: 'shop-catalog', version: '0.1.0' })
+      expect(client.getServerVersion()).toMatchObject({ name: 'etsy-tracker', title: 'Etsy Tracker', version: '0.1.0' })
       expect(client.getInstructions()).toBe('Hi.')
       expect(clientName).toBe('sdk-test-client')
       const { tools } = await client.listTools()

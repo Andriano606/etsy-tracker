@@ -256,3 +256,23 @@
   color: var(--text);
   font-size: var(--fs-sm);
 }
+
+/* Photos and the video frame open at full size (ZoomImage). */
+.media-photo-img > .media-photo-zoom {
+  width: 100%;
+}
+.media-photo-pos {
+  pointer-events: none;
+}
+.media-video > .media-video-zoom {
+  width: clamp(140px, 30%, 240px);
+  flex-shrink: 0;
+  border-radius: var(--r-sm);
+}
+.media-video > .media-video-zoom > img {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: var(--r-sm);
+  background: var(--bg-3);
+}

@@ -1,5 +1,8 @@
-// The MCP tools of feature "listingMeta" — neutral (see mcpTools.ts): "store",
-// "product", "category", "attribute"; never the marketplace's name or links.
+// The MCP tools of feature "listingMeta": attributes (category properties),
+// personalization questions and translations of the user's own Etsy listings,
+// and deleting a listing. Every tool calls the Etsy API live; "store" = the
+// user's Etsy shop, "product" = an Etsy listing, "category" = an Etsy seller
+// taxonomy node. Etsy's texts are passed through as they are.
 
 import {
   type CategoryProperty,
@@ -9,15 +12,16 @@ import {
   PERSONALIZATION_TYPES,
   type PersonalizationQuestion,
   type PropertyInput,
-  TRANSLATION_LANGUAGES,
   isPersonalizationType
 } from '../../../shared/features/listingMeta'
+import { TRANSLATION_CODES } from '../../../shared/features/translations'
 import { MAX_TAGS, TAG_MAX, TITLE_MAX } from '../../../shared/myShop'
-import { type JsonSchema, type McpTool, ToolInputError, textResult } from '../../mcpProtocol'
-import { neutralText } from '../../neutral'
+import { type JsonSchema, type McpTool, type McpToolResult, ToolInputError, textResult } from '../../mcpProtocol'
+import { TRANSLATION_NOT_FOUND } from '../compete/mcp'
 import { mcpFail, mcpOwnShop, mcpWritable } from '../common'
 import type { FeatureMcpDeps } from '../types'
 import {
+  MetaError,
   categoryProperties,
   checkTranslation,
   deleteListing,
@@ -33,38 +37,41 @@ import {
   saveTranslation
 } from './api'
 
-const WRITE_NOTE = "Changes the user's live store — only when the user asked for this change."
-const PRODUCT_ID: JsonSchema = { type: 'integer', minimum: 1, description: 'A product of the user’s own store.' }
-const ATTRIBUTE_ID: JsonSchema = { type: 'integer', minimum: 1, description: 'From get_category_attributes.' }
+const WRITE_NOTE =
+  "Changes the user's live Etsy shop — only when the user asked for this change. Needs the app's \"allow changes\" switch."
+const SIGNED_IN = "requires the user's Etsy sign-in in the app"
+const PRODUCT_ID: JsonSchema = { type: 'integer', minimum: 1, description: "Etsy listing id of a listing in the user's own shop (list_my_products)." }
+const ATTRIBUTE_ID: JsonSchema = { type: 'integer', minimum: 1, description: 'Etsy property id (attribute_id from get_category_attributes).' }
 const LANGUAGE: JsonSchema = {
   type: 'string',
-  enum: TRANSLATION_LANGUAGES.map((l) => l.code),
-  description: 'Language code of the translation.'
+  enum: [...TRANSLATION_CODES],
+  description: 'Language code of the Etsy listing translation (English is split by region: en-GB, en-IN, en-US).'
 }
 
-const n = (s: string | null): string | null => neutralText(s)
+/** An attribute/translation rule violation in English (the app shows the Ukrainian text). */
+const fail = (e: unknown): McpToolResult => (e instanceof MetaError ? mcpFail(new ToolInputError(e.en)) : mcpFail(e))
 
 function attributeOut(p: ListingProperty) {
   return {
     attribute_id: p.propertyId,
-    name: n(p.name),
+    name: p.name,
     scale_id: p.scaleId,
-    scale: n(p.scaleName),
+    scale: p.scaleName,
     value_ids: p.valueIds,
-    values: p.values.map((v) => neutralText(v))
+    values: p.values
   }
 }
 
 function definitionOut(d: CategoryProperty) {
-  const value = (v: CategoryProperty['possibleValues'][number]) => ({ value_id: v.id, name: neutralText(v.name), scale_id: v.scaleId })
+  const value = (v: CategoryProperty['possibleValues'][number]) => ({ value_id: v.id, name: v.name, scale_id: v.scaleId })
   return {
     attribute_id: d.id,
-    name: neutralText(d.displayName),
+    name: d.displayName,
     required: d.isRequired,
     multiple_values: d.isMultivalued,
     max_values: d.maxValuesAllowed,
     also_for_variations: d.supportsVariations,
-    scales: d.scales.map((s) => ({ scale_id: s.id, name: neutralText(s.name), description: n(s.description) })),
+    scales: d.scales.map((s) => ({ scale_id: s.id, name: s.name, description: s.description })),
     allowed_values: d.possibleValues.map(value),
     always_selected: d.selectedValues.map(value)
   }
@@ -73,13 +80,13 @@ function definitionOut(d: CategoryProperty) {
 function questionOut(q: PersonalizationQuestion) {
   return {
     question_id: q.id,
-    text: neutralText(q.text),
+    text: q.text,
     type: q.unsupportedType ?? q.type,
     required: q.required,
-    instructions: n(q.instructions),
+    instructions: q.instructions,
     max_characters: q.maxChars,
     max_files: q.maxFiles,
-    options: q.options.map((o) => ({ option_id: o.id, label: neutralText(o.label) })),
+    options: q.options.map((o) => ({ option_id: o.id, label: o.label })),
     add_on_price: q.addOnPrice,
     currency: q.addOnCurrency
   }
@@ -90,9 +97,10 @@ function translationOut(productId: number, language: string, t: ListingTranslati
     product_id: productId,
     language,
     exists: t != null,
-    title: n(t?.title ?? null),
-    description: n(t?.description ?? null),
-    tags: (t?.tags ?? []).map((x) => neutralText(x))
+    title: t?.title ?? null,
+    description: t?.description ?? null,
+    tags: t?.tags ?? [],
+    ...(t ? {} : { note: TRANSLATION_NOT_FOUND })
   }
 }
 
@@ -112,11 +120,11 @@ function strings(v: unknown, name: string): string[] {
   return v
 }
 
-/** Attribute value names: non-empty, no parentheses (refused by the store) or commas (they would split the value). */
+/** Attribute value names: non-empty, no parentheses (refused by Etsy) or commas (they would split the value). */
 function valueNames(v: unknown): string[] {
   const names = strings(v, 'values').map((x) => x.trim())
   const bad = names.find((x) => !x || /[(),]/.test(x))
-  if (bad != null) throw new ToolInputError(`values: "${neutralText(bad)}" is empty or contains parentheses or a comma.`)
+  if (bad != null) throw new ToolInputError(`values: "${bad}" is empty or contains parentheses or a comma.`)
   return names
 }
 
@@ -127,7 +135,7 @@ function valueNames(v: unknown): string[] {
  */
 export function completeValues(def: CategoryProperty, p: PropertyInput): PropertyInput {
   const allowed = def.possibleValues.filter((v) => v.id != null && (p.scaleId == null || v.scaleId == null || v.scaleId === p.scaleId))
-  const name = neutralText(def.displayName)
+  const name = def.displayName
   if (!allowed.length) {
     throw new ToolInputError(`Attribute "${name}" has no allowed values${p.scaleId == null ? '' : ' for this scale'} to choose from, so it can't be set.`)
   }
@@ -143,7 +151,7 @@ export function completeValues(def: CategoryProperty, p: PropertyInput): Propert
   }
   const hit = (s: string) => allowed.find((v) => v.name.toLowerCase() === s.toLowerCase())
   const unknown = p.values.filter((s) => !hit(s))
-  if (unknown.length) fail(unknown.map((s) => `"${neutralText(s)}"`))
+  if (unknown.length) fail(unknown.map((s) => `"${s}"`))
   const hits = p.values.map((s) => hit(s)!)
   return { ...p, valueIds: hits.map((v) => v.id!), values: hits.map((v) => v.name) }
 }
@@ -227,18 +235,19 @@ export function listingMetaTools(deps: FeatureMcpDeps): McpTool[] {
   return [
     {
       name: 'get_category_attributes',
-      title: 'Attributes of a category',
+      title: 'Attributes of an Etsy category',
+      openWorld: true,
       description:
-        'The attributes a product category supports (for describing a product): attribute_id, name, whether it is required, whether several values are allowed (and how many), measurement scales, the allowed values with their value_id, and the values always selected. Use find_categories for category_id.',
+        'Live Etsy API (getPropertiesByTaxonomyId; API key only, works without the sign-in): the attributes (listing properties) an Etsy seller category supports as listing attributes — attribute_id, name, required, multiple_values + max_values, also_for_variations, measurement scales, allowed_values (value_id, name, scale_id) and the always_selected values.',
       inputSchema: {
         type: 'object',
-        properties: { category_id: { type: 'integer', minimum: 1 } },
+        properties: { category_id: { type: 'integer', minimum: 1, description: 'Etsy seller taxonomy id (find_categories).' } },
         required: ['category_id'],
         additionalProperties: false
       },
       run: async (a) => {
         try {
-          if (!deps.client) throw new ToolInputError('Not available: the app is not connected to the store service.')
+          if (!deps.client) throw new ToolInputError('Not available: the app has no Etsy API client (no Etsy API key configured).')
           const defs = await categoryProperties(deps.client, a.category_id as number)
           return textResult({ category_id: a.category_id, attributes: defs.map(definitionOut) })
         } catch (e) {
@@ -248,9 +257,9 @@ export function listingMetaTools(deps: FeatureMcpDeps): McpTool[] {
     },
     {
       name: 'get_my_product_attributes',
-      title: 'Attributes of my product',
-      description:
-        "The attributes set on a product of the user's own store (attribute_id, name, scale, value_ids, values), its category_id, and the category's required attributes still missing. With attribute_id: only that attribute (null when not set).",
+      title: 'Attributes of my Etsy listing',
+      openWorld: true,
+      description: `Live Etsy API (API key; ${SIGNED_IN}): the attributes set on a listing of the user's own Etsy shop (attribute_id, name, scale_id, scale, value_ids, values), its category_id + category path, and the category's required attributes still missing. Etsy's public listing read doesn't show drafts/inactive listings: then category_id and missing_required_attributes are null (see note). With attribute_id: only that attribute (null = not set).`,
       inputSchema: {
         type: 'object',
         properties: { product_id: PRODUCT_ID, attribute_id: ATTRIBUTE_ID },
@@ -269,13 +278,13 @@ export function listingMetaTools(deps: FeatureMcpDeps): McpTool[] {
           return textResult({
             product_id: productId,
             category_id: r.taxonomyId,
-            category: n(r.categoryPath),
+            category: r.categoryPath,
             attributes: r.properties.map(attributeOut),
             missing_required_attributes:
               r.definitions
                 ?.filter((d) => d.isRequired && !r.properties.some((p) => p.propertyId === d.id))
-                .map((d) => ({ attribute_id: d.id, name: neutralText(d.displayName) })) ?? null,
-            note: r.taxonomyId == null ? 'The category of this product could not be read (it may be a draft).' : null
+                .map((d) => ({ attribute_id: d.id, name: d.displayName })) ?? null,
+            note: r.taxonomyId == null ? "Etsy's public listing read didn't show this listing's category (it may be a draft or inactive)." : null
           })
         } catch (e) {
           return mcpFail(e)
@@ -284,10 +293,11 @@ export function listingMetaTools(deps: FeatureMcpDeps): McpTool[] {
     },
     {
       name: 'set_my_product_attribute',
-      title: 'Set an attribute of my product',
+      title: 'Set an attribute of my Etsy listing',
+      openWorld: true,
       readOnly: false,
       destructive: true,
-      description: `${WRITE_NOTE} Sets (replaces) one attribute of a product of the user's own store. Every value is stored with both its value_id and its name, so values must be among the attribute's allowed values (get_category_attributes): give value_ids and/or values (one name per value_id, same order); a missing half is filled from the allowed values, and anything not allowed is refused. scale_id when the attribute has scales.`,
+      description: `${WRITE_NOTE} Sets (replaces) one attribute of a listing in the user's own Etsy shop (Etsy updateListingProperty, OAuth scope listings_w). Etsy stores every value with both its value_id and its name: give value_ids and/or values (one name per value_id, same order). Both given = sent as is; only one = the other half is looked up in the listing's category (2 extra reads; refused when not among the allowed values of get_category_attributes, or when the category can't be read — a draft/inactive listing: then give both). No parentheses or commas in names. scale_id when the attribute has scales. Returns the attribute as Etsy saved it.`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -318,26 +328,27 @@ export function listingMetaTools(deps: FeatureMcpDeps): McpTool[] {
             const tax = await listingTaxonomyId(client(), productId)
             if (tax == null) {
               throw new ToolInputError(
-                'The category of this product could not be read (it may be a draft) — give both value_ids and values (one name per value_id, same order) from get_category_attributes.'
+                'The category of this listing could not be read from Etsy (it may be a draft or inactive) — give both value_ids and values (one name per value_id, same order) from get_category_attributes.'
               )
             }
             const def = (await categoryProperties(client(), tax)).find((d) => d.id === attributeId)
-            if (!def) throw new ToolInputError(`Attribute ${attributeId} is not an attribute of this product's category (${tax}) — see get_category_attributes.`)
+            if (!def) throw new ToolInputError(`Attribute ${attributeId} is not an attribute of this listing's category (${tax}) — see get_category_attributes.`)
             input = completeValues(def, input)
           }
           const p = await saveProperty(client(), shopId, productId, attributeId, input)
           return textResult({ product_id: productId, attribute: attributeOut(p) })
         } catch (e) {
-          return mcpFail(e)
+          return fail(e)
         }
       }
     },
     {
       name: 'remove_my_product_attribute',
-      title: 'Remove an attribute of my product',
+      title: 'Remove an attribute of my Etsy listing',
+      openWorld: true,
       readOnly: false,
       destructive: true,
-      description: `${WRITE_NOTE} Removes one attribute (all its values) from a product of the user's own store.`,
+      description: `${WRITE_NOTE} Removes one attribute (all its values) from a listing in the user's own Etsy shop (Etsy deleteListingProperty, OAuth scope listings_w).`,
       inputSchema: {
         type: 'object',
         properties: { product_id: PRODUCT_ID, attribute_id: ATTRIBUTE_ID },
@@ -356,9 +367,9 @@ export function listingMetaTools(deps: FeatureMcpDeps): McpTool[] {
     },
     {
       name: 'get_my_product_personalization',
-      title: 'Personalization of my product',
-      description:
-        "The personalization questions buyers answer when ordering a product of the user's own store: text, type (text_input | dropdown | unlabeled_upload | labeled_upload), required, instructions, max characters/files, options, add-on price. An empty list = no personalization.",
+      title: 'Personalization of my Etsy listing',
+      openWorld: true,
+      description: `Live Etsy API (getListingPersonalization; API key; ${SIGNED_IN}): the personalization questions buyers answer when ordering a listing of the user's own Etsy shop — question_id, text, type (text_input | dropdown | unlabeled_upload | labeled_upload; another Etsy type is shown as is), required, instructions, max_characters, max_files, options (option_id, label), add_on_price + currency. An empty list = no personalization.`,
       inputSchema: { type: 'object', properties: { product_id: PRODUCT_ID }, required: ['product_id'], additionalProperties: false },
       run: async (a) => {
         try {
@@ -372,10 +383,11 @@ export function listingMetaTools(deps: FeatureMcpDeps): McpTool[] {
     },
     {
       name: 'set_my_product_personalization',
-      title: 'Set the personalization of my product',
+      title: 'Set the personalization of my Etsy listing',
+      openWorld: true,
       readOnly: false,
       destructive: true,
-      description: `${WRITE_NOTE} Replaces ALL personalization questions of a product of the user's own store with the given 1–${MAX_QUESTIONS} questions (keep question_id/option_id from get_my_product_personalization to edit existing ones; questions left out are deleted). Text 1–45 chars; instructions not for "dropdown"; max_characters for "text_input"; max_files for uploads; options for "dropdown" (≤ 20 chars) and "labeled_upload" (≤ 45 chars, as many as max_files); add_on_price only for optional "text_input".`,
+      description: `${WRITE_NOTE} Replaces ALL personalization questions of a listing in the user's own Etsy shop with the given 1–${MAX_QUESTIONS} questions (Etsy updateListingPersonalization, OAuth scope listings_w). Keep question_id/option_id from get_my_product_personalization to edit existing ones; questions left out are deleted. Text 1–45 chars; instructions not for "dropdown"; max_characters for "text_input"; max_files for uploads; options for "dropdown" (≤ 20 chars) and "labeled_upload" (≤ 45 chars, as many as max_files); add_on_price (shop currency) only for optional "text_input". Rule violations are reported (in Ukrainian) before anything is sent. Returns the questions as Etsy saved them.`,
       inputSchema: {
         type: 'object',
         properties: { product_id: PRODUCT_ID, questions: { type: 'array', items: QUESTION_ITEM } },
@@ -394,10 +406,11 @@ export function listingMetaTools(deps: FeatureMcpDeps): McpTool[] {
     },
     {
       name: 'remove_my_product_personalization',
-      title: 'Remove the personalization of my product',
+      title: 'Remove the personalization of my Etsy listing',
+      openWorld: true,
       readOnly: false,
       destructive: true,
-      description: `${WRITE_NOTE} Deletes every personalization question of a product of the user's own store (buyers are no longer asked anything).`,
+      description: `${WRITE_NOTE} Deletes every personalization question of a listing in the user's own Etsy shop (Etsy deleteListingPersonalization, OAuth scope listings_w); buyers are no longer asked anything.`,
       inputSchema: { type: 'object', properties: { product_id: PRODUCT_ID }, required: ['product_id'], additionalProperties: false },
       run: async (a) => {
         try {
@@ -411,9 +424,9 @@ export function listingMetaTools(deps: FeatureMcpDeps): McpTool[] {
     },
     {
       name: 'get_my_product_translation',
-      title: 'Translation of my product',
-      description:
-        "The title, description and tags of a product of the user's own store in another language. exists=false = no translation in that language yet.",
+      title: 'Translation of my Etsy listing',
+      openWorld: true,
+      description: `Live Etsy API (getListingTranslation; API key; ${SIGNED_IN}): the title, description and tags of a listing of the user's own Etsy shop in one of the given languages. exists=false (+ note) = Etsy found nothing: either there is no translation in that language yet, or the listing is not (or no longer) in the user's shop — Etsy's 404 doesn't say which.`,
       inputSchema: {
         type: 'object',
         properties: { product_id: PRODUCT_ID, language: LANGUAGE },
@@ -432,10 +445,11 @@ export function listingMetaTools(deps: FeatureMcpDeps): McpTool[] {
     },
     {
       name: 'set_my_product_translation',
-      title: 'Set the translation of my product',
+      title: 'Set the translation of my Etsy listing',
+      openWorld: true,
       readOnly: false,
       destructive: true,
-      description: `${WRITE_NOTE} Creates the translation of a product of the user's own store in a language, or replaces the existing one: title (≤ ${TITLE_MAX} chars), description, tags (≤ ${MAX_TAGS}, each ≤ ${TAG_MAX} chars; omitted = left as is — existing tags can be replaced but not cleared).`,
+      description: `${WRITE_NOTE} Creates (Etsy createListingTranslation) or replaces (updateListingTranslation) the translation of a listing in the user's own Etsy shop in a language — it reads the current translation first to choose (OAuth scope listings_w). title (≤ ${TITLE_MAX} chars), description, tags (≤ ${MAX_TAGS}, each ≤ ${TAG_MAX} chars; omitted = not sent, existing tags stay — they can be replaced but not cleared). Returns the translation and result: created | updated.`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -462,16 +476,17 @@ export function listingMetaTools(deps: FeatureMcpDeps): McpTool[] {
           const t = await saveTranslation(client(), shopId, productId, language, input, existed)
           return textResult({ ...translationOut(productId, language, t), result: existed ? 'updated' : 'created' })
         } catch (e) {
-          return mcpFail(e)
+          return fail(e)
         }
       }
     },
     {
       name: 'delete_my_product',
-      title: 'Delete my product',
+      title: 'Delete my Etsy listing',
+      openWorld: true,
       readOnly: false,
       destructive: true,
-      description: `${WRITE_NOTE} PERMANENTLY deletes a product of the user's own store (it can't be restored). Only when the user explicitly asked to delete this product — confirm the product with them first.`,
+      description: `${WRITE_NOTE} PERMANENTLY deletes a listing of the user's own Etsy shop (Etsy deleteListing, OAuth scope listings_d) — it can't be restored. Only when the user explicitly asked to delete this listing — confirm it with them first.`,
       inputSchema: { type: 'object', properties: { product_id: PRODUCT_ID }, required: ['product_id'], additionalProperties: false },
       run: async (a) => {
         try {

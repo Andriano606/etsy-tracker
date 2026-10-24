@@ -382,7 +382,7 @@ export async function deleteVideo(client: EtsyClient, shopId: number, listingId:
 }
 
 const VIDEO_QUOTA = 'Etsy дозволяє не більше 10 завантажень відео на товар за добу — спробуйте завтра.'
-const VIDEO_QUOTA_EN = 'At most 10 video uploads per product per day — try again tomorrow'
+const VIDEO_QUOTA_EN = 'Etsy allows at most 10 video uploads per listing per day — try again tomorrow'
 const isStatus = (e: unknown, status: number): boolean => e instanceof EtsyApiError && e.status === status
 const isQuota = (e: unknown): boolean => isStatus(e, 429)
 

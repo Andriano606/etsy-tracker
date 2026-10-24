@@ -16,7 +16,7 @@ import {
 import { formatPrice } from '@shared/format'
 import { parsePrice } from '@shared/myShop'
 import { useStore } from '../../store'
-import { Badge, Button, Callout, EmptyState, Field, InfoTip, Loading, Term } from '../../ui'
+import { Badge, Button, Callout, EmptyState, Field, InfoTip, Loading, Term, ZoomImage } from '../../ui'
 import { featureCall } from '../call'
 import { priceInput, variantsText } from './InventorySection'
 
@@ -195,7 +195,11 @@ export function PricesTab(): JSX.Element {
                     <tr data-testid={`prices-row-${r.listingId}`} className={editing === r.listingId ? 'is-editing' : undefined}>
                       <td className="inv-ov-title">
                         <div className="inv-title-cell">
-                          {r.imageUrl ? <img src={r.imageUrl} alt="" /> : <span className="inv-thumb-empty" />}
+                          {r.imageUrl ? (
+                            <ZoomImage className="inv-ov-zoom" src={r.imageUrl} full={r.imageFullUrl ?? r.imageUrl} alt={`Головне фото: ${title}`} caption={title} />
+                          ) : (
+                            <span className="inv-thumb-empty" />
+                          )}
                           <span className="clamp-2" title={title}>
                             {title}
                           </span>

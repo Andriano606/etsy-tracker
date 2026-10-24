@@ -1,6 +1,9 @@
-// The neutral MCP tools of the "orders" feature: the user's own orders, sales,
-// payments and money movements. Never names the marketplace, sends no URLs;
-// free text goes through neutralText. Buyer email and street address only
+// The MCP tools of the "orders" feature: the user's own Etsy orders (receipts),
+// sales (transactions), Etsy Payments payments and payment-account ledger
+// entries — every tool is a live Etsy API call with the user's OAuth sign-in
+// (transactions_r to read, transactions_w to write), nothing comes from the
+// local database. Etsy's free text is passed through unchanged; no raw API
+// objects, tokens or CDN URLs are sent. Buyer email and street address only
 // with include_shipping_address.
 
 import type {
@@ -13,7 +16,6 @@ import type {
 } from '../../../shared/features/orders'
 import { ETSY_EPOCH_MIN, moneyValue } from '../../../shared/features/orders'
 import { type JsonSchema, type McpTool, ToolInputError, textResult } from '../../mcpProtocol'
-import { neutralText } from '../../neutral'
 import { mcpFail, mcpOwnShop, mcpWritable } from '../common'
 import type { FeatureMcpDeps } from '../types'
 import {
@@ -68,21 +70,21 @@ function orderSummary(o: Order, withAddress: boolean): Record<string, unknown> {
       discount: money(o.totals.discount),
       gift_wrap: money(o.totals.giftWrap)
     },
-    buyer_name: neutralText(o.buyerName),
-    city: neutralText(a.city),
+    buyer_name: o.buyerName,
+    city: a.city,
     country: a.countryIso,
     ...(withAddress
       ? {
           buyer_email: o.buyerEmail,
           shipping_address: {
-            name: neutralText(a.name),
-            line1: neutralText(a.firstLine),
-            line2: neutralText(a.secondLine),
-            city: neutralText(a.city),
-            state: neutralText(a.state),
+            name: a.name,
+            line1: a.firstLine,
+            line2: a.secondLine,
+            city: a.city,
+            state: a.state,
             zip: a.zip,
             country: a.countryIso,
-            formatted: neutralText(a.formatted)
+            formatted: a.formatted
           }
         }
       : {})
@@ -94,19 +96,19 @@ function saleOut(t: OrderItem): Record<string, unknown> {
     sale_id: t.transactionId,
     order_id: t.receiptId,
     product_id: t.listingId,
-    title: neutralText(t.title),
+    title: t.title,
     quantity: t.quantity,
     unit_price: money(t.price),
     shipping_cost: money(t.shippingCost),
-    variations: t.variations.map((v) => ({ name: neutralText(v.name), value: neutralText(v.value) })),
-    sku: neutralText(t.sku),
+    variations: t.variations.map((v) => ({ name: v.name, value: v.value })),
+    sku: t.sku,
     digital: t.isDigital,
     created_at: iso(t.createdAt),
     paid_at: iso(t.paidAt),
     shipped_at: iso(t.shippedAt),
     expected_ship_date: iso(t.expectedShipDate),
-    shipping_method: neutralText(t.shippingMethod),
-    shipping_upgrade: neutralText(t.shippingUpgrade)
+    shipping_method: t.shippingMethod,
+    shipping_upgrade: t.shippingUpgrade
   }
 }
 
@@ -114,21 +116,21 @@ function orderDetail(o: Order, withAddress: boolean): Record<string, unknown> {
   return {
     ...orderSummary(o, withAddress),
     payment_method: o.paymentMethod,
-    buyer_message: neutralText(o.messageFromBuyer),
-    seller_message: neutralText(o.messageFromSeller),
-    gift_message: neutralText(o.giftMessage),
-    gift_sender: neutralText(o.giftSender),
+    buyer_message: o.messageFromBuyer,
+    seller_message: o.messageFromSeller,
+    gift_message: o.giftMessage,
+    gift_sender: o.giftSender,
     items: o.items.map(saleOut),
     shipments: o.shipments.map((s) => ({
-      carrier: neutralText(s.carrier),
+      carrier: s.carrier,
       tracking_code: s.trackingCode,
       buyer_notified_at: iso(s.notifiedAt)
     })),
     refunds: o.refunds.map((r) => ({
       amount: money(r.amount),
       created_at: iso(r.createdAt),
-      reason: neutralText(r.reason),
-      note: neutralText(r.note),
+      reason: r.reason,
+      note: r.note,
       status: r.status
     }))
   }
@@ -138,14 +140,14 @@ const refundOut = (a: PaymentAdjustment): Record<string, unknown> => ({
   id: a.id,
   status: a.status,
   success: a.isSuccess,
-  reason: neutralText(a.reason),
+  reason: a.reason,
   amount: money(a.amount),
   store_currency_amount: money(a.shopAmount),
   buyer_currency_amount: money(a.buyerAmount),
   fee_amount: money(a.feeAmount),
   created_at: iso(a.createdAt),
   items: a.items.map((i) => ({
-    type: neutralText(i.type),
+    type: i.type,
     amount: money(i.amount),
     store_currency_amount: money(i.shopAmount),
     sale_id: i.transactionId
@@ -180,11 +182,11 @@ function entryOut(e: LedgerEntry): Record<string, unknown> {
   return {
     entry_id: e.entryId,
     created_at: iso(e.createdAt),
-    description: neutralText(e.description),
-    type: neutralText(e.type),
+    description: e.description,
+    type: e.type,
     amount: money(e.amount),
     balance_after: money(e.balance),
-    reference_type: neutralText(e.referenceType),
+    reference_type: e.referenceType,
     reference_id: e.referenceId,
     related_entry_id: e.parentEntryId,
     refunds: e.adjustments.map(refundOut)
@@ -239,6 +241,10 @@ const obj = (properties: Record<string, JsonSchema>, required: string[] = []): J
 })
 
 const MONEY_NOTE = 'Money is {value, currency} with value a decimal number; currencies are never converted.'
+/** Where the data comes from: every orders tool calls the Etsy API live. */
+const LIVE_READ = 'Live Etsy API call (costs API quota; needs the OAuth scope transactions_r). '
+const LIVE_WRITE =
+  'Live Etsy API call (needs the OAuth scope transactions_w and the app\'s "allow changes" switch); it changes the user\'s real Etsy shop — only when the user asked. '
 
 // ------------------------------------------------------------------- tools
 
@@ -250,9 +256,12 @@ export function orderTools(deps: FeatureMcpDeps): McpTool[] {
   return [
     {
       name: 'list_my_orders',
-      title: 'My orders',
+      title: 'My Etsy orders',
+      openWorld: true,
       description:
-        "Orders placed in the user's own store, newest first by default: id, times, status flags (paid, shipped, canceled), totals, item count, buyer name, city and country. No buyer email or street address unless include_shipping_address is true. Filters: creation / last-change time ranges, paid, shipped, delivered, canceled. " +
+        "One page of the orders (Etsy receipts) of the user's own Etsy shop, newest first by default. " +
+        LIVE_READ +
+        "Each order: id, created/updated time, Etsy's status (e.g. paid, completed, canceled, fully refunded), paid / shipped / canceled / gift flags, totals, item_count (units), buyer name, city and country. No buyer email or street address unless include_shipping_address is true. Filters: placed / last-changed time ranges, paid, shipped, delivered, canceled. Returns total (all matching orders), offset, count, orders. " +
         MONEY_NOTE,
       inputSchema: obj({
         created_from: DATE('Placed at or after'),
@@ -302,11 +311,14 @@ export function orderTools(deps: FeatureMcpDeps): McpTool[] {
     },
     {
       name: 'get_my_order',
-      title: 'One of my orders',
+      title: 'One of my Etsy orders',
+      openWorld: true,
       description:
-        "One order of the user's own store: status, totals (subtotal, shipping, tax, discount, grand total), items (title, quantity, unit price, chosen variations), shipments with tracking, refunds, the buyer's message and gift details. Buyer email and street address only with include_shipping_address. " +
+        "One order (Etsy receipt) of the user's own Etsy shop, with its items read from Etsy when the receipt doesn't list them. " +
+        LIVE_READ +
+        "Returns everything list_my_orders gives plus the payment method, the buyer's and the seller's messages, gift message and sender, items (sales: listing id, title, quantity, unit price, shipping cost, chosen variations, SKU, times, shipping method), shipments (carrier, tracking code, when Etsy notified the buyer) and refunds. Buyer email and street address only with include_shipping_address. " +
         MONEY_NOTE,
-      inputSchema: obj({ order_id: ID('The order id.'), include_shipping_address: ADDRESS }, ['order_id']),
+      inputSchema: obj({ order_id: ID('The order (Etsy receipt) id.'), include_shipping_address: ADDRESS }, ['order_id']),
       run: async (args) => {
         try {
           const o = await getOrder(client(), read(), args.order_id as number)
@@ -318,16 +330,19 @@ export function orderTools(deps: FeatureMcpDeps): McpTool[] {
     },
     {
       name: 'mark_my_order_shipped',
-      title: 'Mark my order shipped',
+      title: 'Mark my Etsy order shipped (with tracking)',
+      openWorld: true,
       description:
-        "Records a shipment with a carrier and tracking code for an order of the user's own store and marks it shipped. The store immediately emails the buyer a shipping notice (with note_to_buyer if given) — this changes the user's live store and cannot be taken back; only when the user asked. Use carrier \"other\" for a carrier the store doesn't know. Returns the updated order.",
+        "Submits a carrier and tracking code for an order of the user's own Etsy shop (Etsy createReceiptShipment) and so marks it shipped. " +
+        LIVE_WRITE +
+        "Etsy immediately emails the buyer a shipping notice (with note_to_buyer if given) — this cannot be taken back, and the request is never retried. Etsy may refuse it with HTTP 403 where only approved fulfillment-partner apps may submit tracking. Returns the shipped order (without the buyer's email/address).",
       inputSchema: obj(
         {
-          order_id: ID('The order id.'),
-          carrier: { type: 'string', minLength: 1, maxLength: CARRIER_MAX, description: 'Carrier name, e.g. "usps", "ukrposhta" or "other".' },
+          order_id: ID('The order (Etsy receipt) id.'),
+          carrier: { type: 'string', minLength: 1, maxLength: CARRIER_MAX, description: 'Carrier name as Etsy knows it, e.g. "usps", "ukrposhta", or "other".' },
           tracking_code: { type: 'string', minLength: 1, maxLength: TRACKING_MAX, description: 'The tracking code.' },
-          note_to_buyer: { type: 'string', maxLength: NOTE_MAX, description: 'A message included in the notice to the buyer.' },
-          send_copy_to_me: { type: 'boolean', description: 'Also send the notice to the seller.' }
+          note_to_buyer: { type: 'string', maxLength: NOTE_MAX, description: "A message included in Etsy's shipping notice to the buyer." },
+          send_copy_to_me: { type: 'boolean', description: 'Also send a copy of the notice to the seller.' }
         },
         ['order_id', 'carrier', 'tracking_code']
       ),
@@ -348,13 +363,13 @@ export function orderTools(deps: FeatureMcpDeps): McpTool[] {
           return textResult({ shipped: true, order: orderDetail(o, false) })
         } catch (e) {
           if (isConflict(e)) {
-            return mcpFail(new ToolInputError(`The store refused to record this shipment (HTTP 409)${e.detail ? `: ${neutralText(e.detail)}` : ''}.`))
+            return mcpFail(new ToolInputError(`Etsy refused to record this shipment (HTTP 409)${e.detail ? `: ${e.detail}` : ''}.`))
           }
           if (isPartnerOnly(e)) {
             return mcpFail(
               new ToolInputError(
-                'The store refused to record this shipment (HTTP 403): in some regions only approved fulfillment-partner apps may submit shipments, so signing in again will not help. ' +
-                  "The user can add the tracking in the store's own seller tools, or the order can be marked shipped without tracking with update_my_order (shipped: true)."
+                'Etsy refused to record this shipment (HTTP 403): where Etsy enforces its Preferred Partner Program only approved fulfillment-partner apps may submit tracking, so signing in again will not help. ' +
+                  'The user can add the tracking on Etsy (Shop Manager → Orders & Shipping), or the order can be marked shipped without tracking with update_my_order (shipped: true).'
               )
             )
           }
@@ -364,12 +379,15 @@ export function orderTools(deps: FeatureMcpDeps): McpTool[] {
     },
     {
       name: 'update_my_order',
-      title: 'Update my order flags',
+      title: 'Set paid / shipped on my Etsy order',
+      openWorld: true,
       description:
-        "Sets the paid and/or shipped flag of an order in the user's own store (without tracking — use mark_my_order_shipped to send tracking). The buyer may see the change; this changes the user's live store — only when the user asked. Returns the updated order.",
+        "Sets the paid and/or shipped flag of an order of the user's own Etsy shop (Etsy updateShopReceipt; no tracking — use mark_my_order_shipped for that). " +
+        LIVE_WRITE +
+        'The buyer may see the change. Returns the updated order in the list_my_orders form (no items).',
       inputSchema: obj(
         {
-          order_id: ID('The order id.'),
+          order_id: ID('The order (Etsy receipt) id.'),
           paid: { type: 'boolean', description: 'Mark the order paid (true) or not paid (false).' },
           shipped: { type: 'boolean', description: 'Mark the order shipped (true) or not shipped (false).' }
         },
@@ -393,14 +411,17 @@ export function orderTools(deps: FeatureMcpDeps): McpTool[] {
     },
     {
       name: 'list_my_sales',
-      title: 'My sales by product',
+      title: 'My Etsy sales by listing',
+      openWorld: true,
       description:
-        "Sales of the user's own store in a period, grouped per product: number of sales, units sold, revenue (unit price × quantity, before discounts, without shipping and tax) per currency, last sale time; plus the totals. Built from the orders placed in the period, newest first: canceled and fully refunded orders are left out (`excluded_orders` counts the refunded ones read), partially refunded orders count in full. At most the newest 2000 orders are read — `partial: true` means older orders of the period are missing (`orders_read` of `orders_total`). " +
+        "Sales of the user's own Etsy shop in a period, grouped per listing (product): number of sales (order lines), units sold, revenue per currency (unit price × quantity as recorded on each sale — no shipping, tax or order-level discounts), last sale time; plus the totals. " +
+        LIVE_READ +
+        "Built from the orders placed in the period, read newest first (up to 20 requests of 100 orders, plus one per order that lists no items): canceled orders are not requested, fully refunded ones are left out (`excluded_orders` counts those read), partially refunded orders count in full. At most the newest 2000 orders are read — `partial: true` means older orders of the period are missing (`orders_read` of `orders_total`). " +
         MONEY_NOTE,
       inputSchema: obj({
-        from: DATE('Sales at or after'),
-        to: DATE('Sales at or before'),
-        product_id: ID('Only this product.'),
+        from: DATE('Orders placed at or after'),
+        to: DATE('Orders placed at or before'),
+        product_id: ID('Only this listing (product) id — the same orders are read, only its lines are counted.'),
         limit: { type: 'integer', minimum: 1, maximum: 200, description: 'Products returned, most units first. Default 50.' }
       }),
       run: async (args) => {
@@ -421,7 +442,7 @@ export function orderTools(deps: FeatureMcpDeps): McpTool[] {
             revenue: moneys(s.revenue),
             products: s.products.slice(0, (args.limit as number | undefined) ?? 50).map((p) => ({
               product_id: p.listingId,
-              title: neutralText(p.title),
+              title: p.title,
               sales: p.sales,
               units: p.quantity,
               revenue: moneys(p.revenue),
@@ -435,13 +456,16 @@ export function orderTools(deps: FeatureMcpDeps): McpTool[] {
     },
     {
       name: 'get_my_product_sales',
-      title: 'Sales of my product',
+      title: 'Sales of my Etsy listing',
+      openWorld: true,
       description:
-        "Sales of one product of the user's own store over its whole history: total number of sales, units, revenue (unit price × quantity) per currency, last sale time, and the newest sales (time, quantity, unit price, variations, order id). Includes sales of canceled and refunded orders (a sale carries no order status — use list_my_sales with product_id for sales without them). At most 2000 sales are read, in an unspecified order: with `partial: true` the totals cover only `sales_read` of `total_sales` and the newest sales may be missing. " +
+        "Sales (Etsy transactions) of one listing (product) of the user's own Etsy shop over its whole history: total number of sales, units, revenue (unit price × quantity) per currency, last sale time, and the newest sales (time, quantity, unit price, variations, order id). " +
+        LIVE_READ +
+        "Up to 20 requests of 100 sales. Includes sales of canceled and refunded orders (a sale carries no order status — use list_my_sales with product_id for sales without them). At most 2000 sales are read, in an order Etsy doesn't document: with `partial: true` the totals cover only `sales_read` of `total_sales` and the newest sales may be missing. " +
         MONEY_NOTE,
       inputSchema: obj(
         {
-          product_id: ID('The product id.'),
+          product_id: ID('The listing (product) id.'),
           recent: { type: 'integer', minimum: 1, maximum: 100, description: 'How many recent sales to list. Default 20.' }
         },
         ['product_id']
@@ -466,9 +490,13 @@ export function orderTools(deps: FeatureMcpDeps): McpTool[] {
     },
     {
       name: 'get_my_sale',
-      title: 'One sale',
-      description: "One sale (one product line of an order) of the user's own store: product, quantity, unit price, variations, times, shipping method. " + MONEY_NOTE,
-      inputSchema: obj({ sale_id: ID('The sale id (from get_my_order items or get_my_product_sales).') }, ['sale_id']),
+      title: 'One Etsy sale',
+      openWorld: true,
+      description:
+        "One sale (an Etsy transaction = one listing line of an order) of the user's own Etsy shop: order and listing ids, title, quantity, unit price, shipping cost, variations, SKU, digital flag, created / paid / shipped times, expected ship date, shipping method and upgrade. " +
+        LIVE_READ +
+        MONEY_NOTE,
+      inputSchema: obj({ sale_id: ID('The sale (Etsy transaction) id — from get_my_order items, get_my_product_sales or browse_my_sales.') }, ['sale_id']),
       run: async (args) => {
         try {
           return textResult(saleOut(await saleById(client(), read(), args.sale_id as number)))
@@ -479,9 +507,11 @@ export function orderTools(deps: FeatureMcpDeps): McpTool[] {
     },
     {
       name: 'browse_my_sales',
-      title: 'Browse my sales',
+      title: 'Browse my Etsy sales',
+      openWorld: true,
       description:
-        "One page of the individual sales (one product line of an order each) of the user's own store, in the order the store returns them (not guaranteed to be by time — for a period use list_my_sales). Includes sales of canceled and refunded orders. " +
+        "One page of the individual sales (Etsy transactions — one listing line of an order each) of the user's own Etsy shop, in the order Etsy returns them (not documented to be by time — for a period use list_my_sales). Includes sales of canceled and refunded orders. Returns total, offset, count, sales. " +
+        LIVE_READ +
         MONEY_NOTE,
       inputSchema: obj({
         limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Default 25.' },
@@ -498,15 +528,18 @@ export function orderTools(deps: FeatureMcpDeps): McpTool[] {
     },
     {
       name: 'list_my_ledger',
-      title: 'My money movements',
+      title: 'My Etsy payment account ledger',
+      openWorld: true,
       description:
-        "Money movements of the user's own store account in a period (both ends required): each entry's time, description, type, amount (+ credit, − debit), balance after it; plus the totals per type and currency over the whole period (at most 2000 entries read — `partial` says when more exist). " +
+        "Money movements (ledger entries) of the user's Etsy Payments account in a period (both ends required): each entry's time, description, type, amount (+ credit, − debit), balance after it, what it refers to, related entry and refunds; plus the totals per type and currency. " +
+        LIVE_READ +
+        "Up to 20 requests of 100 entries: at most 2000 entries are read — `partial: true` says the period has more (`total`) and the totals then cover only the entries read. " +
         MONEY_NOTE,
       inputSchema: obj(
         {
           from: DATE('Entries at or after'),
           to: DATE('Entries at or before'),
-          limit: { type: 'integer', minimum: 0, maximum: 500, description: 'Entries listed, newest first (totals always cover all). Default 100.' }
+          limit: { type: 'integer', minimum: 0, maximum: 500, description: 'Entries listed, newest first (0 = totals only; the totals cover every entry read). Default 100.' }
         },
         ['from', 'to']
       ),
@@ -520,7 +553,7 @@ export function orderTools(deps: FeatureMcpDeps): McpTool[] {
             to: iso(page.maxCreated),
             total: page.total,
             partial: page.truncated,
-            totals: page.totals.map((t) => ({ type: neutralText(t.type), count: t.count, sum: money(t.sum) })),
+            totals: page.totals.map((t) => ({ type: t.type, count: t.count, sum: money(t.sum) })),
             entries: page.entries.slice(0, (args.limit as number | undefined) ?? 100).map(entryOut)
           })
         } catch (e) {
@@ -530,8 +563,12 @@ export function orderTools(deps: FeatureMcpDeps): McpTool[] {
     },
     {
       name: 'get_my_ledger_entry',
-      title: 'One money movement',
-      description: "One money movement of the user's store account and the payments it belongs to (if any). " + MONEY_NOTE,
+      title: 'One Etsy ledger entry',
+      openWorld: true,
+      description:
+        "One money movement (ledger entry) of the user's Etsy Payments account and the payments behind it (if any; a second request, skipped with include_payments: false). " +
+        LIVE_READ +
+        MONEY_NOTE,
       inputSchema: obj(
         {
           entry_id: ID('The entry id (from list_my_ledger).'),
@@ -553,14 +590,16 @@ export function orderTools(deps: FeatureMcpDeps): McpTool[] {
     },
     {
       name: 'get_my_payments',
-      title: 'My payments',
+      title: 'My Etsy Payments payments',
+      openWorld: true,
       description:
-        "Payments received by the user's own store — give exactly one of: order_id (the order's payment), payment_ids, or ledger_entry_ids (the payments behind money movements). Each: gross, fees, net, the amounts once posted and after refunds, status, refunds. " +
+        "Etsy Payments payments received by the user's own Etsy shop — give exactly one of: order_id (the order's payment), payment_ids, or ledger_entry_ids (the payments behind ledger entries). Each: payment and order ids, status, currencies, gross, fees, net, the amounts once posted and after adjustments, times, refunds (payment adjustments). " +
+        LIVE_READ +
         MONEY_NOTE,
       inputSchema: obj({
-        order_id: ID('The order id.'),
+        order_id: ID('The order (Etsy receipt) id.'),
         payment_ids: { type: 'array', items: { type: 'integer', minimum: 1 }, description: 'Up to 100 payment ids.' },
-        ledger_entry_ids: { type: 'array', items: { type: 'integer', minimum: 1 }, description: 'Up to 100 money-movement entry ids.' }
+        ledger_entry_ids: { type: 'array', items: { type: 'integer', minimum: 1 }, description: 'Up to 100 ledger entry ids (from list_my_ledger).' }
       }),
       run: async (args) => {
         try {

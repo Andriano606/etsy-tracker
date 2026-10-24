@@ -194,8 +194,8 @@ const DELIVERY_FIELDS: FieldSpec[] = [
 ]
 
 const COST_FIELDS = (required: boolean): FieldSpec[] => [
-  { name: 'primary_cost', label: 'вартість доставки', about: "Shipping cost for one item, in the store's currency.", kind: 'money', required },
-  { name: 'secondary_cost', label: 'вартість за кожен наступний товар', about: "Cost for each additional item, in the store's currency.", kind: 'money', required }
+  { name: 'primary_cost', label: 'вартість доставки', about: "Shipping cost for one item, in the shop's currency.", kind: 'money', required },
+  { name: 'secondary_cost', label: 'вартість за кожен наступний товар', about: "Cost for each additional item, in the shop's currency.", kind: 'money', required }
 ]
 
 const TARGET_FIELDS: FieldSpec[] = [
@@ -256,7 +256,7 @@ export const DESTINATION_FIELDS: FieldSpec[] = [...COST_FIELDS(true), ...TARGET_
 export const UPGRADE_FIELDS: FieldSpec[] = [
   { name: 'type', label: 'тип', about: '0 = domestic, 1 = international.', kind: 'enum', values: [0, 1], required: true },
   { name: 'upgrade_name', label: 'назва', about: 'Name shown to buyers at checkout, e.g. "Express".', kind: 'text', required: true },
-  { name: 'price', label: 'доплата', about: "Extra cost of the upgrade, in the store's currency.", kind: 'money', required: true },
+  { name: 'price', label: 'доплата', about: "Extra cost of the upgrade, in the shop's currency.", kind: 'money', required: true },
   { name: 'secondary_price', label: 'доплата за кожен наступний товар', about: 'Extra cost for each additional item.', kind: 'money', required: true },
   ...DELIVERY_FIELDS
 ]
@@ -515,12 +515,12 @@ export function daysText(min: number | null, max: number | null, unit = 'дн.')
 
 /** The MCP tools of this feature, in Ukrainian for the MCP modal (same names, same order as main). */
 export const SHOP_CONFIG_TOOL_SUMMARY: ReadonlyArray<{ name: string; text: string; write?: boolean }> = [
-  { name: 'list_my_sections', text: 'розділи мого магазину з кількістю товарів' },
+  { name: 'list_my_sections', text: 'розділи мого магазину на Etsy з кількістю активних товарів' },
   { name: 'create_my_section', text: 'створити розділ магазину', write: true },
   { name: 'update_my_section', text: 'перейменувати розділ магазину', write: true },
   { name: 'delete_my_section', text: 'видалити розділ магазину', write: true },
-  { name: 'set_my_product_section', text: 'перенести товар у розділ', write: true },
-  { name: 'list_my_shipping_profiles', text: 'профілі доставки з напрямками й апгрейдами' },
+  { name: 'set_my_product_section', text: 'перенести мій товар у розділ (або прибрати з розділу)', write: true },
+  { name: 'list_my_shipping_profiles', text: 'профілі доставки мого магазину з напрямками й апгрейдами' },
   { name: 'get_my_shipping_profile', text: 'один профіль доставки' },
   { name: 'create_my_shipping_profile', text: 'створити профіль доставки', write: true },
   { name: 'update_my_shipping_profile', text: 'змінити профіль доставки', write: true },
@@ -533,7 +533,7 @@ export const SHOP_CONFIG_TOOL_SUMMARY: ReadonlyArray<{ name: string; text: strin
   { name: 'create_my_shipping_upgrade', text: 'додати апгрейд доставки', write: true },
   { name: 'update_my_shipping_upgrade', text: 'змінити апгрейд доставки', write: true },
   { name: 'delete_my_shipping_upgrade', text: 'видалити апгрейд доставки', write: true },
-  { name: 'list_my_processing_profiles', text: 'профілі обробки (строки виготовлення)' },
+  { name: 'list_my_processing_profiles', text: 'профілі обробки: готовий / на замовлення і строк обробки в днях' },
   { name: 'create_my_processing_profile', text: 'створити профіль обробки', write: true },
   { name: 'update_my_processing_profile', text: 'змінити профіль обробки', write: true },
   { name: 'delete_my_processing_profile', text: 'видалити профіль обробки', write: true },
@@ -542,8 +542,8 @@ export const SHOP_CONFIG_TOOL_SUMMARY: ReadonlyArray<{ name: string; text: strin
   { name: 'update_my_return_policy', text: 'змінити політику повернення', write: true },
   { name: 'delete_my_return_policy', text: 'видалити політику повернення', write: true },
   { name: 'consolidate_my_return_policies', text: 'перенести товари з однієї політики в іншу й видалити першу', write: true },
-  { name: 'list_products_by_return_policy', text: 'товари з цією політикою повернення' },
-  { name: 'get_my_holidays', text: 'свята: чи магазин працює в ці дні' },
-  { name: 'set_my_holiday', text: 'працювати чи ні у свято', write: true },
-  { name: 'list_my_production_partners', text: 'виробничі партнери магазину' }
+  { name: 'list_products_by_return_policy', text: 'мої товари з цією політикою повернення' },
+  { name: 'get_my_holidays', text: 'державні свята країни магазину: чи магазин обробляє замовлення в ці дні' },
+  { name: 'set_my_holiday', text: 'обробляти замовлення у свято чи ні', write: true },
+  { name: 'list_my_production_partners', text: 'виробничі партнери, вказані в магазині' }
 ]

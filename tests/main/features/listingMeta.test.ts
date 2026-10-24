@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { listingMetaFeature } from '../../../src/main/features/listingMeta'
+import { MetaError, checkProperty, checkTranslation } from '../../../src/main/features/listingMeta/api'
+import { TRANSLATION_NOT_FOUND } from '../../../src/main/features/compete/mcp'
+import { FeatureError } from '../../../src/main/features/common'
 import { EtsyApiError } from '../../../src/main/etsyApi'
+import { NOT_SIGNED_IN, WRITES_OFF } from '../../../src/main/mcpStoreTools'
 import { LISTING_META_TOOL_SUMMARY } from '../../../src/shared/features/listingMeta'
 import {
   ALL_SCOPES,
@@ -522,9 +526,47 @@ describe('listingMeta MCP tools', () => {
       const write = !!LISTING_META_TOOL_SUMMARY.find((s) => s.name === t.name)!.write
       expect(t.readOnly === false).toBe(write)
       expect(!!t.destructive).toBe(write)
-      if (write) expect(t.description).toContain("Changes the user's live store")
+      if (write) expect(t.description).toContain("Changes the user's live Etsy shop")
       expect(t.inputSchema.additionalProperties).toBe(false)
+      // every tool here calls the Etsy API
+      expect({ tool: t.name, openWorld: t.openWorld }).toEqual({ tool: t.name, openWorld: true })
     }
+  })
+
+  it('the language enum is the shared translation list (English by region, no bare "en")', () => {
+    const tools = listingMetaFeature.mcpTools!(mcpDeps(routes()).deps)
+    for (const name of ['get_my_product_translation', 'set_my_product_translation']) {
+      const lang = tools.find((t) => t.name === name)!.inputSchema.properties!.language
+      expect(lang.enum).toEqual(['de', 'en-GB', 'en-IN', 'en-US', 'es', 'fr', 'it', 'ja', 'nl', 'pl', 'pt', 'ru', 'sv'])
+    }
+  })
+
+  it('attribute and translation rule violations: Ukrainian for the app, an English twin for MCP', () => {
+    const p = (() => {
+      try {
+        checkProperty({ valueIds: [1, 2], values: ['Red (dark)'], scaleId: null })
+      } catch (e) {
+        return e
+      }
+    })() as MetaError
+    expect(p).toBeInstanceOf(MetaError)
+    expect(p).toBeInstanceOf(FeatureError)
+    expect(p.message).toBe(
+      'Кожне значення потребує і ідентифікатора, і назви зі списку дозволених. Значення «Red (dark)» містить недозволений символ (дужки або кому).'
+    )
+    expect(p.en).toBe(
+      'Every value needs both its value_id and its name from the allowed values (one name per value_id, same order). Value "Red (dark)" contains a parenthesis or a comma, which is not allowed.'
+    )
+    const t = (() => {
+      try {
+        checkTranslation({ title: ' ', description: 'D', tags: ['a!'] })
+      } catch (e) {
+        return e
+      }
+    })() as MetaError
+    expect(t).toBeInstanceOf(MetaError)
+    expect(t.message).toBe('Назва не може бути порожньою. Тег «a!» містить недозволений символ «!».')
+    expect(t.en).toBe('title must not be empty. Tag "a!" contains "!" — Etsy allows only letters, digits, spaces, -, \', ™, © and ® in tags.')
   })
 
   it('get_category_attributes: public read (API key only); no client → not available', async () => {
@@ -573,10 +615,10 @@ describe('listingMeta MCP tools', () => {
     })
     const draft = await tool(mcpDeps(routes({ [`GET ${A}/listings/{id}`]: notFound })).deps, 'get_my_product_attributes', { product_id: LISTING })
     expect(draft.json).toMatchObject({ category_id: null, missing_required_attributes: null })
-    expect(draft.json.note).toContain('could not be read')
+    expect(draft.json.note).toContain("didn't show this listing's category (it may be a draft or inactive)")
   })
 
-  it('own-store reads: signed out → the neutral sign-in note, nothing requested', async () => {
+  it('own-store reads: signed out → the Etsy sign-in note, nothing requested', async () => {
     for (const [name, args] of [
       ['get_my_product_attributes', { product_id: LISTING }],
       ['get_my_product_personalization', { product_id: LISTING }],
@@ -585,7 +627,7 @@ describe('listingMeta MCP tools', () => {
       const { deps, fetch } = mcpDeps(routes(), { status: signedOut })
       const r = await tool(deps, name, args)
       expect(r.isError).toBe(true)
-      expect(r.text).toContain('has not connected their own store')
+      expect(r.text).toBe(NOT_SIGNED_IN)
       expect(fetch.calls).toHaveLength(0)
     }
   })
@@ -601,9 +643,9 @@ describe('listingMeta MCP tools', () => {
     ]
     for (const [name, args, scope] of writes) {
       const off = mcpDeps(routes(), { writes: false })
-      expect((await tool(off.deps, name, args)).text).toContain('Changes to the store are switched off')
+      expect((await tool(off.deps, name, args)).text).toBe(WRITES_OFF)
       const out = mcpDeps(routes(), { status: signedOut })
-      expect((await tool(out.deps, name, args)).text).toContain('has not connected their own store')
+      expect((await tool(out.deps, name, args)).text).toBe(NOT_SIGNED_IN)
       const lacking = mcpDeps(routes(), { status: signedIn({ scopes: ALL_SCOPES.filter((s) => s !== scope) }) })
       const r = await tool(lacking.deps, name, args)
       expect(r.isError).toBe(true)
@@ -649,10 +691,10 @@ describe('listingMeta MCP tools', () => {
       [{}, { attribute_id: 200, value_ids: [99] }, 'Not among the allowed values of "Primary color": 99.'],
       [{}, { attribute_id: 47626759834, value_ids: [10], scale_id: 6 }, 'has no allowed values for this scale'],
       // the category can't be read (a draft: the public read answers 404)
-      [{ [`GET ${A}/listings/{id}`]: notFound }, { attribute_id: 200, values: ['Black'] }, 'could not be read (it may be a draft)'],
+      [{ [`GET ${A}/listings/{id}`]: notFound }, { attribute_id: 200, values: ['Black'] }, 'could not be read from Etsy (it may be a draft or inactive)'],
       [{ [`GET ${A}/listings/{id}`]: notFound }, { attribute_id: 200, value_ids: [1] }, 'give both value_ids and values'],
       // not an attribute of the category; one without allowed values
-      [{}, { attribute_id: 777, values: ['Black'] }, 'Attribute 777 is not an attribute of this product\'s category'],
+      [{}, { attribute_id: 777, values: ['Black'] }, 'Attribute 777 is not an attribute of this listing\'s category'],
       [
         { [`GET ${A}/seller-taxonomy/nodes/{id}/properties`]: { body: { count: 1, results: [{ ...CATEGORY_PROPS.results[0], possible_values: [] }] } } },
         { attribute_id: 200, values: ['Hand made'] },
@@ -688,14 +730,13 @@ describe('listingMeta MCP tools', () => {
     }
   })
 
-  it('set_my_product_attribute: an Etsy 400 → a neutral error', async () => {
+  it("set_my_product_attribute: an Etsy 400 → Etsy's error with its detail as is", async () => {
     const { deps } = mcpDeps(
       routes({ [`PUT ${A}/shops/{s}/listings/{l}/properties/{p}`]: { status: 400, body: { error: 'Etsy: see https://www.etsy.com/help' } } })
     )
     const r = await tool(deps, 'set_my_product_attribute', { product_id: LISTING, attribute_id: 200, value_ids: [1], values: ['Black'] })
     expect(r.isError).toBe(true)
-    expect(r.text).toContain('rejected the request as invalid (HTTP 400)')
-    expect(r.text).not.toMatch(/etsy|https?:\/\//i)
+    expect(r.text).toBe('Etsy rejected the request as invalid (HTTP 400): Etsy: see https://www.etsy.com/help.')
   })
 
   it('remove_my_product_attribute: DELETE with OAuth', async () => {
@@ -786,15 +827,28 @@ describe('listingMeta MCP tools', () => {
       description: 'Ein Planer',
       tags: ['budget', 'planer']
     })
+    // Etsy's 404 is generic: no translation yet, or the listing isn't (any more) in the shop — the note says both
     const none = mcpDeps(routes({ [`GET ${A}/shops/{s}/listings/{l}/translations/{lang}`]: notFound }))
-    expect((await tool(none.deps, 'get_my_product_translation', { product_id: LISTING, language: 'ja' })).json).toMatchObject({
+    expect((await tool(none.deps, 'get_my_product_translation', { product_id: LISTING, language: 'ja' })).json).toEqual({
+      product_id: LISTING,
+      language: 'ja',
       exists: false,
       title: null,
-      tags: []
+      description: null,
+      tags: [],
+      note: TRANSLATION_NOT_FOUND
     })
-    const bad = await tool(deps, 'get_my_product_translation', { product_id: LISTING, language: 'uk' })
-    expect(bad.isError).toBe(true)
-    expect(bad.text).toContain('must be one of')
+    const gb = mcpDeps(routes())
+    expect((await tool(gb.deps, 'get_my_product_translation', { product_id: LISTING, language: 'en-GB' })).json.exists).toBe(true)
+    expect(gb.fetch.calls[0].url.pathname).toBe(`${SHOP_PATH}/translations/en-GB`)
+    for (const language of ['uk', 'en']) {
+      const bad = await tool(deps, 'get_my_product_translation', { product_id: LISTING, language })
+      expect(bad.isError).toBe(true)
+      expect(bad.text).toContain('must be one of')
+    }
+    const description = listingMetaFeature.mcpTools!(deps).find((t) => t.name === 'get_my_product_translation')!.description
+    expect(description).toContain("the listing is not (or no longer) in the user's shop")
+    expect(description).not.toContain('= no translation in that language yet.')
   })
 
   it('set_my_product_translation: creates (POST) when missing, updates (PUT) when present', async () => {
@@ -820,6 +874,13 @@ describe('listingMeta MCP tools', () => {
     const bad = mcpDeps(routes())
     const b = await tool(bad.deps, 'set_my_product_translation', { product_id: LISTING, language: 'de', title: 'T', description: 'D', tags: ['a!'] })
     expect(b.isError).toBe(true)
+    expect(b.text).toContain('Tag "a!" contains "!" — Etsy allows only letters, digits, spaces')
+    expect(b.text).not.toMatch(/[а-яіїєґ]/i)
+    expect(bad.fetch.calls).toHaveLength(0)
+    const blank = await tool(bad.deps, 'set_my_product_translation', { product_id: LISTING, language: 'de', title: ' ', description: ' ' })
+    expect(blank.isError).toBe(true)
+    expect(blank.text).toContain('title must not be empty. description must not be empty.')
+    expect(blank.text).not.toMatch(/[а-яіїєґ]/i)
     expect(bad.fetch.calls).toHaveLength(0)
   })
 
@@ -838,7 +899,7 @@ describe('listingMeta MCP tools', () => {
     expect(form(none.fetch.calls[1].body)).toEqual({ title: 'T', description: 'D' })
   })
 
-  it('delete_my_product: DELETE with OAuth; a 409 → a neutral error', async () => {
+  it("delete_my_product: DELETE with OAuth; a 409 → an error with Etsy's detail", async () => {
     const { deps, fetch } = mcpDeps(routes())
     expect((await tool(deps, 'delete_my_product', { product_id: LISTING })).json).toEqual({ product_id: LISTING, deleted: true })
     expect(fetch.calls[0].method).toBe('DELETE')
@@ -847,10 +908,12 @@ describe('listingMeta MCP tools', () => {
     const conflict = mcpDeps(routes({ [`DELETE ${A}/listings/{l}`]: { status: 409, body: { error: 'Etsy cannot delete' } } }))
     const r = await tool(conflict.deps, 'delete_my_product', { product_id: LISTING })
     expect(r.isError).toBe(true)
-    expect(r.text).not.toMatch(/etsy/i)
+    expect(r.text).toContain('HTTP 409')
+    expect(r.text).toContain('Etsy cannot delete')
   })
 
-  it('neutrality sweep: no marketplace name and no links in any tool definition or output', async () => {
+  it('honesty sweep: Etsy texts reach the client unchanged; no CDN URL, raw JSON or token in any definition or output', async () => {
+    const LINK = 'https://www.etsy.com/listing/1/planner'
     const leaky = routes({
       [`GET ${A}/seller-taxonomy/nodes/{id}/properties`]: {
         body: {
@@ -859,7 +922,7 @@ describe('listingMeta MCP tools', () => {
             {
               ...CATEGORY_PROPS.results[0],
               display_name: 'Etsy colour',
-              scales: [{ scale_id: 5, display_name: 'Etsy scale', description: 'see https://www.etsy.com/x' }],
+              scales: [{ scale_id: 5, display_name: 'Etsy scale', description: `see ${LINK}` }],
               possible_values: [{ value_id: 1, name: 'Etsy black', scale_id: null, equal_to: [] }],
               selected_values: [{ value_id: 1, name: 'etsy.me/abc', scale_id: null, equal_to: [] }]
             }
@@ -867,7 +930,7 @@ describe('listingMeta MCP tools', () => {
         }
       },
       [`GET ${A}/shops/{s}/listings/{l}/properties`]: {
-        body: { count: 1, results: [{ property_id: 9, property_name: 'Etsy prop', scale_name: 'Etsy', value_ids: [1], values: ['https://i.etsystatic.com/a.jpg'] }] }
+        body: { count: 1, results: [{ property_id: 9, property_name: 'Etsy prop', scale_name: 'Etsy', value_ids: [1], values: [`Etsy ${LINK}`] }] }
       },
       [`GET ${A}/listings/{l}/personalization`]: {
         body: {
@@ -879,7 +942,7 @@ describe('listingMeta MCP tools', () => {
       },
       [`POST ${A}/shops/{s}/listings/{l}/personalization`]: { status: 201, body: { personalization_questions: [{ question_text: 'ETSY', question_type: 'text_input', required: true }] } },
       [`GET ${A}/shops/{s}/listings/{l}/translations/{lang}`]: {
-        body: { listing_id: LISTING, language: 'de', title: 'Etsy Planer', description: 'Mehr auf https://www.etsy.com/de/listing/1', tags: ['etsy'] }
+        body: { listing_id: LISTING, language: 'de', title: 'Etsy Planer', description: `Mehr auf ${LINK}`, tags: ['etsy'] }
       },
       [`PUT ${A}/shops/{s}/listings/{l}/translations/{lang}`]: {
         body: { listing_id: LISTING, language: 'de', title: 'Etsy', description: 'http://etsy.com', tags: ['Etsy'] }
@@ -911,9 +974,30 @@ describe('listingMeta MCP tools', () => {
     texts.push((await tool(failing.deps, 'get_my_product_personalization', { product_id: LISTING })).text)
     texts.push((await tool(failing.deps, 'delete_my_product', { product_id: LISTING })).text)
     for (const t of texts) {
-      expect(t).not.toMatch(/etsy/i)
-      expect(t).not.toMatch(/https?:\/\//)
+      expect(t).not.toMatch(/etsystatic\.com/i)
+      expect(t).not.toContain('raw_json')
+      expect(t).not.toContain('keystring')
+      expect(t).not.toMatch(/\btok\b/)
     }
-    expect(texts.join(' ')).toContain('marketplace')
+    // Etsy's texts, as Etsy sent them (entities decoded only).
+    const out = (k: number) => JSON.parse(texts[1 + k]) // texts[0] = the definitions, then one per call
+    const attrs = out(0)
+    expect(attrs.attributes[0]).toMatchObject({
+      name: 'Etsy colour',
+      scales: [{ scale_id: 5, name: 'Etsy scale', description: `see ${LINK}` }],
+      allowed_values: [{ value_id: 1, name: 'Etsy black', scale_id: null }],
+      always_selected: [{ value_id: 1, name: 'etsy.me/abc', scale_id: null }]
+    })
+    expect(out(2).attribute).toMatchObject({ name: 'Etsy prop', scale: 'Etsy', values: [`Etsy ${LINK}`] })
+    const qs = out(5).questions
+    expect(qs[0]).toMatchObject({ text: 'Etsy?', options: [{ option_id: 1, label: 'www.etsy.com/shop/x' }] })
+    expect(qs[1].instructions).toBe('Read https://help.etsy.com first')
+    expect(out(6).questions[0].text).toBe('ETSY')
+    expect(out(8)).toMatchObject({ title: 'Etsy Planer', description: `Mehr auf ${LINK}`, tags: ['etsy'] })
+    expect(out(9)).toMatchObject({ title: 'Etsy', description: 'http://etsy.com', tags: ['Etsy'] })
+    expect(texts.at(-2)).toBe('Not found on Etsy (HTTP 404): Etsy listing https://www.etsy.com/listing/1 not found.')
+    expect(texts.at(-1)).toContain('Etsy down')
+    // The tool definitions say what they are: Etsy, live.
+    expect(texts[0]).toContain('Live Etsy API')
   })
 })

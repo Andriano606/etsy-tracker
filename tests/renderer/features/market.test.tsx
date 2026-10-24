@@ -6,6 +6,7 @@ import type { MarketListing, MarketSearchResult } from '../../../src/shared/feat
 import { formatPrice as fmt } from '../../../src/shared/format'
 import { GLOSSARY } from '../../../src/shared/glossary'
 import { useStore } from '../../../src/renderer/src/store'
+import { ImageViewer } from '../../../src/renderer/src/ui'
 import { mkShop, mockFeature, setupRenderer, type Api } from '../helpers'
 
 let api: Api
@@ -29,6 +30,7 @@ const mk = (id: number, over: Partial<MarketListing> = {}): MarketListing => ({
   views: 30 + id,
   createdAt: 1_700_000_000,
   imageUrl: `https://i.etsystatic.com/1/il_570xN.${id}.jpg`,
+  imageFullUrl: `https://i.etsystatic.com/1/il_fullxfull.${id}.jpg`,
   ...over
 })
 
@@ -345,6 +347,38 @@ describe('Пошук по всьому Etsy', () => {
     fireEvent.click(within(a).getByRole('button', { name: 'Відкрити на Etsy' }))
     expect(api.openExternal).toHaveBeenCalledWith('https://www.etsy.com/listing/1/x')
     expect(within(b).getByRole('button', { name: 'Відкрити на Etsy' })).toBeDisabled()
+  })
+
+  it('a result photo opens at full size in the viewer; nothing else happens', async () => {
+    mockFeature({ 'market.search': page([mk(1), mk(2, { imageFullUrl: null }), mk(3, { imageUrl: null, imageFullUrl: null })]) })
+    render(
+      <>
+        <MarketSearch />
+        <ImageViewer />
+      </>
+    )
+    typeIn('Ключові слова', 'mug')
+    await search()
+    const [a, b, c] = screen.getAllByTestId('market-result')
+    expect(within(c).queryByRole('button', { name: /на весь розмір/ })).toBeNull()
+    expect(c).toHaveTextContent('Без фото')
+    await act(async () => {
+      fireEvent.click(within(a).getByRole('button', { name: 'Відкрити на весь розмір: Planner 1' }))
+    })
+    const dialog = screen.getByRole('dialog', { name: 'Перегляд зображення' })
+    expect(within(dialog).getByRole('img')).toHaveAttribute('src', 'https://i.etsystatic.com/1/il_fullxfull.1.jpg')
+    expect(dialog).toHaveTextContent('Planner 1')
+    expect(api.openExternal).not.toHaveBeenCalled()
+    expect(api.addShop).not.toHaveBeenCalled()
+    await act(async () => {
+      fireEvent.keyDown(document, { key: 'Escape' })
+    })
+    expect(screen.queryByRole('dialog', { name: 'Перегляд зображення' })).toBeNull()
+    // no full size from main → the 570xN it has
+    await act(async () => {
+      fireEvent.click(within(b).getByRole('button', { name: 'Відкрити на весь розмір: Planner 2' }))
+    })
+    expect(useStore.getState().viewer!.images[0].src).toBe('https://i.etsystatic.com/1/il_570xN.2.jpg')
   })
 
   it('"Стежити за магазином": shop name → addShop → the result is shown on that shop\'s cards', async () => {

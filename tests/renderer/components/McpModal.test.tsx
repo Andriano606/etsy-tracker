@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { McpModal, MCP_POLL_MS } from '../../../src/renderer/src/components/McpModal'
+import { McpModal, MCP_DRAFT_TOOLS, MCP_LOCAL_TOOLS, MCP_POLL_MS } from '../../../src/renderer/src/components/McpModal'
 import { ConfirmModal } from '../../../src/renderer/src/components/ConfirmModal'
 import { Sidebar } from '../../../src/renderer/src/components/Sidebar'
 import { useStore } from '../../../src/renderer/src/store'
 import {
+  MCP_OLD_SERVER_NAMES,
   MCP_TOOL_SUMMARY,
   claudeCodeCommand,
   claudeCodeReplaceCommand,
@@ -64,22 +65,84 @@ describe('MCP modal', () => {
     expect(screen.getByText(/Увімкніть сервер — тут з’являться готові команди/)).toBeInTheDocument()
   })
 
-  it('explains that the client sees neutral data and lists every tool', async () => {
+  it('says honestly that Claude gets Etsy data from this app, and lists every tool', async () => {
     await open()
-    expect(screen.getByText(/без назви майданчика/)).toBeInTheDocument()
+    const intro = document.querySelector('.mcp-intro')!
+    expect(intro).toHaveTextContent(/Claude знає, що це дані з Etsy, зібрані цією програмою/)
+    expect(intro).toHaveTextContent(/такими, як вони є на Etsy/)
+    expect(intro).toHaveTextContent(/Сирих відповідей API, ключів і токенів він не отримує/)
+    expect(intro).not.toHaveTextContent(/майданчик|каталог «магазинів»/)
     // No "only reads" promise next to the write switch: reading is the default, changes need a permission,
     // and the live tools spend the daily request limit (explained by the glossary).
-    expect(screen.getByText(/Без окремого дозволу Claude/)).toHaveTextContent(/свіжі дані з Etsy.*денний ліміт запитів/)
+    expect(screen.getByText(/Без окремого дозволу Claude/)).toHaveTextContent(
+      /нічого не змінює на Etsy.*стан на останнє сканування.*свіжі дані з Etsy.*денний ліміт запитів.*чернетки товарів у програмі/
+    )
     expect(screen.getByText(/лише якщо ви це дозволите нижче/)).toBeInTheDocument()
     expect(screen.getByText('денний ліміт запитів')).toHaveAccessibleDescription(GLOSSARY.quota.short)
-    expect(screen.getByText(/витрачають денний ліміт запитів/, { selector: '.mcp-tools-note' })).toBeInTheDocument()
+    expect(screen.getByText(/витрачає денний ліміт запитів/, { selector: '.mcp-tools-note' })).toBeInTheDocument()
     // The example questions are plain text, not buttons.
     const examples = screen.getByRole('list', { name: 'Приклади запитань' })
     expect(within(examples).getAllByRole('listitem')[0]).toHaveTextContent('«Які нові товари з’явилися в магазинах?»')
     expect(within(examples).queryByRole('button')).toBeNull()
-    for (const t of MCP_TOOL_SUMMARY) expect(screen.getByText(t.name)).toBeInTheDocument()
+    for (const t of MCP_TOOL_SUMMARY) expect(screen.getByText(t.name, { selector: '.mcp-tool-name' })).toBeInTheDocument()
     // Grouped and folded: the user opens a group when curious.
     for (const d of document.querySelectorAll('.mcp-tools')) expect(d.closest('details')).not.toHaveAttribute('open')
+  })
+
+  it('splits the read tools by where they read: the app’s database, live Etsy, drafts in the app', async () => {
+    await open()
+    for (const name of [...MCP_LOCAL_TOOLS, ...MCP_DRAFT_TOOLS]) {
+      expect(MCP_TOOL_SUMMARY.find((t) => t.name === name && !t.write)).toBeTruthy()
+    }
+    const local = screen.getByTestId('mcp-local-tools')
+    const live = screen.getByTestId('mcp-live-tools')
+    const drafts = screen.getByTestId('mcp-draft-tools')
+    const names = (el: HTMLElement) => [...el.querySelectorAll('.mcp-tool-name')].map((c) => c.textContent)
+    expect(names(local)).toEqual(MCP_TOOL_SUMMARY.filter((t) => MCP_LOCAL_TOOLS.has(t.name)).map((t) => t.name))
+    expect(names(drafts)).toEqual(['prepare_product', 'list_prepared_products', 'delete_prepared_product'])
+    // Everything else that only reads goes to Etsy live: the store's live listings, market search, compete, own-shop reads.
+    expect(names(live)).toEqual(
+      MCP_TOOL_SUMMARY.filter((t) => !t.write && !MCP_LOCAL_TOOLS.has(t.name) && !MCP_DRAFT_TOOLS.has(t.name)).map((t) => t.name)
+    )
+    for (const n of ['list_my_products', 'search_market', 'get_store_sections']) expect(names(live)).toContain(n)
+    for (const n of ['get_product', 'list_reviews', 'get_product_image']) expect(names(local)).toContain(n)
+    expect(local.closest('details')).toHaveTextContent(/Читати дані програми.*стан на останнє сканування; до Etsy API не звертаються/)
+    expect(live.closest('details')).toHaveTextContent(/Читати наживо з Etsy.*Кожен виклик витрачає денний ліміт запитів/)
+    // …except the category trees: read once per app run, then searched without requests.
+    expect(live.closest('details')).toHaveTextContent(
+      /Виняток — пошук категорій \(find_categories, list_market_categories\): дерево категорій програма завантажує з Etsy один раз, поки відкрита, і далі шукає в ньому сама, без запитів/
+    )
+    for (const n of ['find_categories', 'list_market_categories']) expect(names(live)).toContain(n)
+    expect(drafts.closest('details')).toHaveTextContent(/Чернетки в програмі.*дозвіл на зміни для них не потрібен/)
+    // The drafts button as the shop header labels it (no emoji).
+    expect(drafts.closest('details')).toHaveTextContent(/кнопка «Чернетки» у шапці вашого магазину/)
+    expect(names(local).length + names(live).length + names(drafts).length).toBe(MCP_TOOL_SUMMARY.filter((t) => !t.write).length)
+  })
+
+  it('the client picker’s ⓘ names all three choices', async () => {
+    await open(mcpOn())
+    const tip = screen.getByRole('button', { name: 'Що таке «Програма Claude»?' })
+    expect(tip).toHaveAccessibleDescription(GLOSSARY['settings.claudeApp'].short)
+    const radios = within(screen.getByRole('radiogroup', { name: 'Програма Claude' })).getAllByRole('radio')
+    expect(radios).toHaveLength(3)
+    for (const label of ['Claude Code', 'Claude Desktop', 'Інший клієнт']) {
+      expect(screen.getByRole('radio', { name: label })).toBeInTheDocument()
+      expect(GLOSSARY['settings.claudeApp'].short).toContain(`«${label}»`)
+    }
+  })
+
+  it('the replace command says it also removes the server registered under the old name', async () => {
+    expect(MCP_OLD_SERVER_NAMES).toContain('shop-catalog')
+    await open(mcpOn())
+    expect(screen.getByTestId('mcp-replace-note')).toHaveTextContent(
+      /спершу видаляє вже доданий сервер.*Попередні версії програми називали сервер «shop-catalog» — команда прибирає і цей запис/
+    )
+    expect(screen.getByTestId('copy-claude-code-replace')).toHaveTextContent('claude mcp remove --scope user shop-catalog')
+    expect(screen.getByTestId('copy-claude-code-replace')).toHaveTextContent(/Замінити вже доданий «etsy-tracker»/)
+    pickClient('Claude Desktop')
+    expect(screen.getByTestId('mcp-connect')).toHaveTextContent(/блок «shop-catalog» від попередньої версії програми, якщо він є, видаліть/)
+    pickClient('Інший клієнт')
+    expect(screen.getByTestId('mcp-connect')).toHaveTextContent(/запис «shop-catalog» від попередньої версії програми/)
   })
 
   it('enabling: the switch applies at once, then shows the running server and the command for Claude Code', async () => {
@@ -304,7 +367,8 @@ describe('MCP modal: changes to the own store', () => {
     expect(within(writes).queryByText('list_my_products')).toBeNull()
     expect(writes.closest('details')).toHaveTextContent(/Змінювати мій магазин — лише з дозволом/)
     // Descriptions read as sentences.
-    expect(screen.getByText('Список магазинів з головними цифрами й останнім скануванням')).toBeInTheDocument()
+    const first = MCP_TOOL_SUMMARY[0].text
+    expect(screen.getByText(first.charAt(0).toUpperCase() + first.slice(1))).toBeInTheDocument()
   })
 
   it('turning "allow changes" on asks first and saves only that; off needs no confirm', async () => {
@@ -317,6 +381,9 @@ describe('MCP modal: changes to the own store', () => {
       fireEvent.click(box)
     })
     expect(screen.getByText(/Дозволити Claude змінювати ваш магазин на Etsy\?/)).toBeInTheDocument()
+    expect(screen.getByRole('alertdialog', { name: 'Зміни у вашому магазині' })).toHaveTextContent(
+      /публікація коштує \$0,20.*видаляти.*ціни й залишки.*позначати замовлення відправленими.*за замовчуванням питає дозволу/
+    )
     // A risky grant: its own heading, a verb on the red button, and the focus on "Скасувати".
     const dialog = screen.getByRole('alertdialog', { name: 'Зміни у вашому магазині' })
     expect(within(dialog).getByRole('button', { name: 'Дозволити зміни' })).toHaveClass('stop') // danger-solid

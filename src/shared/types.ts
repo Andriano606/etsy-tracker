@@ -846,6 +846,8 @@ export interface MyListing {
   url: string | null
   /** First image, 170x135 on the Etsy CDN (CSP allows i.etsystatic.com); null when none / not a CDN URL. */
   imageUrl: string | null
+  /** The same image at full size (fullxfull, validated CDN URL) — for the image viewer; null like imageUrl. */
+  imageFullUrl: string | null
   /** Etsy epoch seconds. */
   updatedAt: number | null
   endingAt: number | null

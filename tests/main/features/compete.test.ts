@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { competeFeature } from '../../../src/main/features/compete'
 import { upsertListing } from '../../../src/main/db'
 import { PROPERTY_NOT_IMPLEMENTED } from '../../../src/main/features/compete/api'
-import { NOT_AVAILABLE, SECTION_PRODUCTS_MAX, TRANSLATION_NOT_FOUND } from '../../../src/main/features/compete/mcp'
+import { NOT_AVAILABLE, SECTION_PRODUCTS_MAX, SHIPPING_NOT_SHARED, TRANSLATION_NOT_FOUND } from '../../../src/main/features/compete/mcp'
+import { NOT_SIGNED_IN } from '../../../src/main/mcpStoreTools'
 import { COMPETE_TOOL_SUMMARY } from '../../../src/shared/features/compete'
 import { callTool, featureCtx, mcpDeps, runAction, signedIn, signedOut } from '../../helpers/features'
 import { mkInput, seedShop } from '../../helpers/db'
@@ -520,7 +521,9 @@ describe('compete feature — actions', () => {
 
 // ------------------------------------------------------------------- MCP
 
-const NOT_NEUTRAL = [/etsy/i, /https?:\/\//]
+/** Never in anything a client gets: CDN image URLs, raw API objects, the API key or the OAuth token. */
+const LIVE_ALL = ['properties', 'photos', 'videos', 'personalization', 'variation_photos', 'shipping', 'reviews'] as const
+const NEVER_SENT = [/etsystatic\.com/i, /raw_json/, /keystring|secret/, /\btok\b/, /Bearer/]
 const texts: string[] = []
 async function tool(name: string, args: Record<string, unknown>, r: Record<string, unknown> = routes, over: Parameters<typeof mcpDeps>[1] = {}) {
   const { deps, fetch } = mcpDeps(r as typeof routes, over)
@@ -530,14 +533,18 @@ async function tool(name: string, args: Record<string, unknown>, r: Record<strin
 }
 
 describe('compete feature — MCP tools', () => {
-  it('the tool list equals COMPETE_TOOL_SUMMARY (names, order), all read-only, closed schemas, neutral', () => {
+  it('the tool list equals COMPETE_TOOL_SUMMARY (names, order), all read-only, closed schemas, honest about Etsy', () => {
     const tools = competeFeature.mcpTools!(mcpDeps(routes).deps)
     expect(tools.map((t) => t.name)).toEqual(COMPETE_TOOL_SUMMARY.map((t) => t.name))
     expect(COMPETE_TOOL_SUMMARY.every((t) => !t.write)).toBe(true)
     for (const t of tools) {
       expect(t.readOnly).not.toBe(false)
       expect(t.inputSchema.additionalProperties).toBe(false)
-      for (const re of NOT_NEUTRAL) expect(JSON.stringify(t)).not.toMatch(re)
+      for (const re of NEVER_SENT) expect(JSON.stringify(t)).not.toMatch(re)
+      // Every tool says it reads Etsy live and costs API quota.
+      expect(t.description).toMatch(/Etsy/)
+      expect(t.description).toContain('Live Etsy API read')
+      expect(t.description).toContain('API quota')
     }
   })
 
@@ -554,7 +561,7 @@ describe('compete feature — MCP tools', () => {
     const full = await tool('get_store_sections', { store_id: SHOP, include_products: true })
     expectGet(lastCall(full.calls), `${A}/shops/${SHOP}/shop-sections/listings`, { shop_section_ids: '10,11', limit: '100', offset: '0' })
     expect(full.json.sections[0].products).toEqual([{ product_id: LISTING, title: 'Budget Planner & Tracker', price: { amount: 12.5, currency: 'USD' } }])
-    expect(full.json.sections[1].products).toEqual([{ product_id: 2003, title: 'Wall calendar — see [link]', price: { amount: 5, currency: 'USD' } }])
+    expect(full.json.sections[1].products).toEqual([{ product_id: 2003, title: 'Wall calendar — see etsy.com/shop/Other', price: { amount: 5, currency: 'USD' } }])
     expect(full.json).toMatchObject({ products_total: 2, products_truncated: false })
   })
 
@@ -646,7 +653,7 @@ describe('compete feature — MCP tools', () => {
       items: [
         {
           rating: 5,
-          text: 'Great & useful! Found it on [link]',
+          text: 'Great & useful! Found it on etsy.com/shop/Other',
           language: 'en',
           created_at: '2023-11-14T22:15:00.000Z',
           updated_at: '2023-11-14T22:16:40.000Z',
@@ -720,8 +727,8 @@ describe('compete feature — MCP tools', () => {
     }, { status: signedOut })
     expect(res.isError).toBe(false)
     expect(res.json.photos).toHaveLength(2)
-    expect(res.json.errors.videos).toBe('Not found (HTTP 404): No videos on marketplace.')
-    expect(res.json.errors.shipping).toContain('has not connected their own store')
+    expect(res.json.errors.videos).toBe('Not found on Etsy (HTTP 404): No videos on etsy.')
+    expect(res.json.errors.shipping).toBe(NOT_SIGNED_IN)
     expect(res.json.translation).toBeNull()
     expect(res.json.translation_note).toBe(TRANSLATION_NOT_FOUND)
     expect(res.calls.some((c) => c.url.pathname.includes('shipping'))).toBe(false)
@@ -731,9 +738,9 @@ describe('compete feature — MCP tools', () => {
     const other = await tool('get_product_live_details', { product_id: LISTING, store_id: SHOP, parts: ['shipping'] }, {
       [`GET ${A}/listings/batch/shipping`]: { body: { count: 1, results: [{ ...listingA, shipping_profile: null }] } }
     })
-    expect(other.json).toEqual({ product_id: LISTING, store_id: SHOP, shipping: null, shipping_note: 'Shipping details are only shared for products of the user’s own store.' })
+    expect(other.json).toEqual({ product_id: LISTING, store_id: SHOP, shipping: null, shipping_note: SHIPPING_NOT_SHARED })
     const scope = await tool('get_product_live_details', { product_id: LISTING, parts: ['shipping'] }, routes, { status: signedIn({ scopes: ['listings_r'] }) })
-    expect(scope.json.errors.shipping).toContain('lacks a permission')
+    expect(scope.json.errors.shipping).toContain('lacks an OAuth scope this needs (shops_r)')
   })
 
   it('get_product_live_details: bad parts, nothing asked, unknown product', async () => {
@@ -746,12 +753,14 @@ describe('compete feature — MCP tools', () => {
     const lang = await tool('get_product_live_details', { product_id: LISTING, language: 'xx' })
     expect(lang.isError).toBe(true)
     const unknown = await tool('get_product_live_details', { product_id: 9, parts: ['properties'] }, { [`GET ${A}/listings/{l}`]: { status: 404 } })
-    expect(unknown.json.errors.properties).toBe('Not found (HTTP 404).')
+    expect(unknown.json.errors.properties).toBe('Not found on Etsy (HTTP 404).')
+    const noShop = await tool('get_product_live_details', { product_id: 9, parts: ['properties'] }, { [`GET ${A}/listings/{l}`]: { body: { listing_id: 9 } } })
+    expect(noShop.json.errors.properties).toBe('Etsy returned no shop for listing 9.')
     const extra = await tool('get_product_live_details', { product_id: LISTING, url: 'x' })
     expect(extra.isError).toBe(true)
   })
 
-  it('list_shipping_carriers: normalized country, neutral names', async () => {
+  it('list_shipping_carriers: normalized country, carrier names as Etsy sends them', async () => {
     const res = await tool('list_shipping_carriers', { origin_country: 'us' })
     expectGet(lastCall(res.calls), `${A}/shipping-carriers`, { origin_country_iso: 'US' })
     expect(res.json).toEqual({
@@ -770,7 +779,7 @@ describe('compete feature — MCP tools', () => {
     expect(bad.text).toContain('ISO 3166-1')
   })
 
-  it('every tool: no API key → "Not available"; store errors neutral', async () => {
+  it('every tool: no API key → "Not available"; Etsy errors as English texts naming Etsy', async () => {
     const calls: Array<[string, Record<string, unknown>]> = [
       ['get_store_sections', { store_id: SHOP }],
       ['get_store_featured', { store_id: SHOP }],
@@ -789,11 +798,61 @@ describe('compete feature — MCP tools', () => {
       expect(res.isError).toBe(true)
     }
     const nf = await tool('get_store_featured', { store_id: SHOP }, { [`GET ${A}/shops/{s}/listings/featured`]: { status: 404, body: { error: 'Shop etsy 1 not found' } } })
-    expect(nf.text).toBe('Not found (HTTP 404): Shop marketplace 1 not found.')
+    expect(nf.text).toBe('Not found on Etsy (HTTP 404): Shop etsy 1 not found.')
+    expect(NOT_AVAILABLE).toContain('Etsy API key')
   })
 
-  it('neutrality sweep: nothing any tool said names the marketplace or carries a URL', () => {
+  it('honesty: text from Etsy reaches the client unchanged — "Etsy", etsy.com links and all', async () => {
+    const said = 'Made for Etsy sellers — see https://www.etsy.com/shop/Other and etsy.me/abc'
+    const r = {
+      ...routes,
+      [`GET ${A}/shops/{s}/sections`]: { body: { count: 1, results: [{ ...sections.results[1], title: said }] } },
+      [`GET ${A}/shops/{s}/shop-sections/listings`]: { body: { count: 1, results: [{ ...listingA, title: said }] } },
+      [`GET ${A}/shops/{s}/listings/featured`]: { body: { count: 1, results: [{ ...listingA, title: said }] } },
+      [`GET ${A}/shops/{s}/listings/{l}/properties`]: {
+        body: { count: 1, results: [{ ...properties.results[0], property_name: said, scale_name: said, values: [said] }] }
+      },
+      [`GET ${A}/listings/{l}/images`]: { body: { count: 1, results: [{ ...image(501, 1), alt_text: said }] } },
+      [`GET ${A}/listings/{l}/personalization`]: {
+        body: { personalization_questions: [{ ...personalization.personalization_questions[1], question_text: said, instructions: said, options: [{ option_id: 1, label: said }] }] }
+      },
+      [`GET ${A}/shops/{s}/listings/{l}/variation-images`]: { body: { count: 1, results: [{ ...variationImages.results[0], value: said }] } },
+      [`GET ${A}/listings/{l}/reviews`]: { body: { count: 1, results: [{ ...review, review: said }] } },
+      [`GET ${A}/shops/{s}/listings/{l}/translations/{lang}`]: { body: { ...translation, title: said, description: said, tags: [said] } },
+      [`GET ${A}/listings/batch/shipping`]: {
+        body: {
+          count: 1,
+          results: [{ ...listingA, shipping_profile: { ...profile, title: said, shipping_profile_upgrades: [{ ...profile.shipping_profile_upgrades[0], upgrade_name: said }] } }]
+        }
+      },
+      [`GET ${A}/shipping-carriers`]: {
+        body: { count: 1, results: [{ ...carriers.results[0], name: said, domestic_classes: [{ mail_class_key: 'k', name: said }], international_classes: [] }] }
+      }
+    }
+    const sec = await tool('get_store_sections', { store_id: SHOP, include_products: true }, r)
+    expect(sec.json.sections[0].title).toBe(said)
+    expect(sec.json.sections[0].products[0].title).toBe(said)
+    const feat = await tool('get_store_featured', { store_id: SHOP }, r)
+    expect(feat.json.products[0].title).toBe(said)
+    const live = await tool('get_product_live_details', { product_id: LISTING, store_id: SHOP, parts: [...LIVE_ALL], language: 'de' }, r)
+    const j = live.json
+    expect(j.errors).toBeUndefined()
+    expect(j.properties[0]).toMatchObject({ name: said, scale: said, values: [said] })
+    expect(j.photos[0].alt_text).toBe(said)
+    expect(j.personalization[0]).toMatchObject({ question: said, instructions: said, options: [said] })
+    expect(j.variation_photos[0].value).toBe(said)
+    expect(j.reviews.items[0].text).toBe(said)
+    expect(j.translation).toMatchObject({ title: said, description: said, tags: [said] })
+    expect(j.shipping.name).toBe(said)
+    expect(j.shipping.upgrades[0].name).toBe(said)
+    const car = await tool('list_shipping_carriers', { origin_country: 'US' }, r)
+    expect(car.json.carriers[0]).toMatchObject({ name: said, domestic_classes: [{ key: 'k', name: said }] })
+    // …while the photos' CDN URLs never go out.
+    expect(live.text).not.toMatch(/etsystatic/)
+  })
+
+  it('honesty sweep: nothing any tool said carries a CDN URL, a raw API object, the API key or the token', () => {
     expect(texts.length).toBeGreaterThan(20)
-    for (const t of texts) for (const re of NOT_NEUTRAL) expect(t).not.toMatch(re)
+    for (const t of texts) for (const re of NEVER_SENT) expect(t).not.toMatch(re)
   })
 })

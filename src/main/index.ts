@@ -194,8 +194,9 @@ if (!app.requestSingleInstanceLock()) {
     })
     protocol.handle(IMAGE_SCHEME, imageHandler)
 
-    // The local MCP server (off until enabled in the MCP modal): read-only
-    // tools over the same db; photos through the same handler as the window.
+    // The local MCP server "etsy-tracker" (off until enabled in the MCP modal):
+    // tools over the same db (local reads), live Etsy reads, and own-shop
+    // writes; photos through the same handler as the window.
     const mcpTools = createMcpTools({
       db,
       // The user's own store (signed in via "Мій магазин"); writes only while

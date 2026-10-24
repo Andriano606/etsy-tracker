@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { McpStatus } from '@shared/types'
 import {
+  MCP_OLD_SERVER_NAMES,
   MCP_SERVER_NAME,
   validateMcpPort,
   MCP_TOOL_SUMMARY,
@@ -23,6 +24,35 @@ const CLIENTS = [
   { value: 'desktop' as const, label: 'Claude Desktop', hint: 'Програма Claude для комп’ютера' },
   { value: 'other' as const, label: 'Інший клієнт', hint: 'Будь-яка програма, що підтримує MCP-сервери за адресою' }
 ]
+
+/**
+ * Read tools that answer from the app's own database (the data as of the last
+ * scan; listing/review photos from MinIO, else Etsy's CDN; logos, banners and
+ * video frames from the CDN) — no Etsy API request, no quota.
+ * Every other read tool (not a draft tool) calls the Etsy API live — on the
+ * daily quota, except the category trees (find_categories,
+ * list_market_categories): read once per app run, then answered from memory.
+ */
+export const MCP_LOCAL_TOOLS: ReadonlySet<string> = new Set([
+  'list_stores',
+  'get_store',
+  'search_products',
+  'get_product',
+  'get_product_history',
+  'list_snapshots',
+  'get_snapshot_changes',
+  'list_reviews',
+  'get_store_stats',
+  'get_product_image',
+  'get_store_logo',
+  'get_product_video_preview',
+  'get_review_photo'
+])
+
+/** Drafts kept in the app (nothing reaches Etsy until one is sent); sending is a write tool. */
+export const MCP_DRAFT_TOOLS: ReadonlySet<string> = new Set(['prepare_product', 'list_prepared_products', 'delete_prepared_product'])
+
+const OLD_NAMES = MCP_OLD_SERVER_NAMES.map((n) => `«${n}»`).join(', ')
 
 const EXAMPLES = ['Які нові товари з’явилися в магазинах?', 'Покажи найпопулярніші товари зі знижкою', 'Що пишуть у відгуках про цей товар?']
 
@@ -165,9 +195,14 @@ function ConnectSteps({ client, st }: { client: ClientKind; st: McpStatus & { to
           <details className="settings-details is-inline">
             <summary>
               <Icon name="chevron-right" size={16} className="settings-details-chevron" />
-              Уже підключали раніше, а тепер змінився порт чи токен?
+              Уже підключали раніше, змінився порт чи токен?
             </summary>
             <div className="settings-details-body">
+              <p className="settings-note" data-testid="mcp-replace-note">
+                Ця команда спершу видаляє вже доданий сервер, а тоді додає його знову з поточними портом і токеном.
+                Попередні версії програми називали сервер {OLD_NAMES} — команда прибирає і цей запис, щоб у Claude не
+                лишилося двох серверів.
+              </p>
               <CopyBlock
                 id="claude-code-replace"
                 label={`Замінити вже доданий «${MCP_SERVER_NAME}»`}
@@ -196,7 +231,8 @@ function ConnectSteps({ client, st }: { client: ClientKind; st: McpStatus & { to
         <li>
           <p>
             У Claude Desktop відкрийте Settings → Developer → Edit Config і вставте це у файл claude_desktop_config.json
-            (якщо там уже є інші сервери — додайте лише блок «{MCP_SERVER_NAME}»):
+            (якщо там уже є інші сервери — додайте лише блок «{MCP_SERVER_NAME}»; блок {OLD_NAMES} від попередньої
+            версії програми, якщо він є, видаліть):
           </p>
           <CopyBlock id="claude-desktop" label="Налаштування для Claude Desktop" text={claudeDesktopConfig(st.port, st.token)} />
         </li>
@@ -210,7 +246,8 @@ function ConnectSteps({ client, st }: { client: ClientKind; st: McpStatus & { to
     <ol className="mcp-steps">
       <li>
         <p>
-          Для файлу .mcp.json у теці проєкту або будь-якої іншої програми, що вміє підключатися до MCP-сервера за адресою:
+          Для файлу .mcp.json у теці проєкту або будь-якої іншої програми, що вміє підключатися до MCP-сервера за адресою
+          (запис {OLD_NAMES} від попередньої версії програми, якщо він є, видаліть):
         </p>
         <CopyBlock id="mcp-json" label="Налаштування сервера" text={mcpJsonConfig(st.port, st.token)} />
       </li>
@@ -306,7 +343,7 @@ function McpDialog({ onClose }: { onClose: () => void }): JSX.Element {
       !(await confirmWith({
         title: 'Зміни у вашому магазині',
         message:
-          'Дозволити Claude змінювати ваш магазин на Etsy? Він зможе створювати товари (чернетки, а якщо ви попросите — публікувати їх за $0,20), редагувати товари й тексти магазину. Claude Code однаково питатиме дозволу на кожну дію.',
+          'Дозволити Claude змінювати ваш магазин на Etsy? Він зможе створювати й публікувати товари (публікація коштує $0,20), змінювати й видаляти їх, міняти ціни й залишки, фото й файли, тексти, розділи, доставку й політики магазину, позначати замовлення відправленими (покупець отримає лист від Etsy). Зміни одразу потрапляють на Etsy. Claude Code за замовчуванням питає дозволу на кожен виклик інструмента.',
         confirmLabel: 'Дозволити зміни',
         danger: true
       }))
@@ -330,7 +367,9 @@ function McpDialog({ onClose }: { onClose: () => void }): JSX.Element {
     setMcpStatus(await window.api.regenerateMcpToken())
   }
 
-  const readTools = MCP_TOOL_SUMMARY.filter((t) => !t.write)
+  const localTools = MCP_TOOL_SUMMARY.filter((t) => !t.write && MCP_LOCAL_TOOLS.has(t.name))
+  const draftTools = MCP_TOOL_SUMMARY.filter((t) => !t.write && MCP_DRAFT_TOOLS.has(t.name))
+  const liveTools = MCP_TOOL_SUMMARY.filter((t) => !t.write && !MCP_LOCAL_TOOLS.has(t.name) && !MCP_DRAFT_TOOLS.has(t.name))
   const writeTools = MCP_TOOL_SUMMARY.filter((t) => t.write)
   const token = st?.token ?? null
 
@@ -345,7 +384,7 @@ function McpDialog({ onClose }: { onClose: () => void }): JSX.Element {
         <>
           <span className="ui-modal-foot-start settings-foot-note">
             <Icon name="lock" size={14} />
-            Лише на цьому комп’ютері й лише поки програма відкрита.
+            Сервер працює лише на цьому комп’ютері й лише поки програма відкрита.
           </span>
           <Button onClick={onClose}>Закрити</Button>
         </>
@@ -354,16 +393,19 @@ function McpDialog({ onClose }: { onClose: () => void }): JSX.Element {
       <section className="ui-section mcp-intro">
         <p className="ui-section-desc">
           <Term glossary="claude" /> — помічник зі штучним інтелектом. Підключіть його до програми через{' '}
-          <Term glossary="mcp">MCP-сервер</Term> — і просто питайте його про магазини, за якими стежите: товари, ціни й
-          знижки, популярність, відгуки, фото, історію змін і статистику. Для Claude це просто каталог «магазинів» і
-          «товарів» — без назви майданчика й посилань на нього.
+          <Term glossary="mcp">MCP-сервер</Term> — і просто питайте його про магазини Etsy, за якими стежите: товари,
+          ціни й знижки, популярність, відгуки, фото, історію змін і статистику. Claude знає, що це дані з Etsy, зібрані
+          цією програмою, і бачить тексти товарів, політик і відгуків такими, як вони є на Etsy. Сирих відповідей API,
+          ключів і токенів він не отримує.
         </p>
         <ul className="settings-facts mcp-can">
           <li>
             <Icon name="eye" size={16} />
             <span>
-              Без окремого дозволу Claude <b>лише читає</b>: дані, які програма вже зібрала, а деякі інструменти — свіжі
-              дані з Etsy (вони витрачають <Term glossary="quota">денний ліміт запитів</Term>).
+              Без окремого дозволу Claude нічого не змінює на Etsy, а <b>лише читає</b>: дані, які програма зібрала під
+              час сканувань (стан на останнє сканування), а деякі інструменти — свіжі дані з Etsy (вони витрачають{' '}
+              <Term glossary="quota">денний ліміт запитів</Term>). Ще він може готувати чернетки товарів у програмі — на
+              Etsy вони потрапляють, лише коли їх надіслати.
             </span>
           </li>
           <li>
@@ -440,7 +482,7 @@ function McpDialog({ onClose }: { onClose: () => void }): JSX.Element {
           <Toggle
             label="Дозволити Claude змінювати мій магазин"
             glossary="settings.mcpWrites"
-            hint="Створювати товари з фото й файлами, редагувати, вмикати й вимикати їх, змінювати тексти магазину. Читати свої товари (і чернетки) Claude може й без цього."
+            hint="Створювати, публікувати, редагувати й видаляти товари (ціни, залишки, фото, відео, файли, атрибути), змінювати тексти, розділи, доставку й політики магазину, позначати замовлення відправленими. Читати свій магазин (і чернетки на Etsy) Claude може й без цього, якщо ви увійшли."
             checked={!!st?.allowWrites}
             disabled={!st}
             onChange={(on) => void toggleWrites(on)}
@@ -466,15 +508,49 @@ function McpDialog({ onClose }: { onClose: () => void }): JSX.Element {
           <summary>
             <Icon name="chevron-right" size={16} className="settings-details-chevron" />
             <Icon name="eye" size={16} />
-            Читати
-            <Badge>{readTools.length}</Badge>
+            Читати дані програми
+            <Badge>{localTools.length}</Badge>
+          </summary>
+          <div className="settings-details-body">
+            <p className="settings-note">
+              Відповідають з бази програми — стан на останнє сканування; до Etsy API не звертаються. Фото товарів і
+              відгуків беруться з вашого сховища MinIO (якщо копії там немає — з Etsy), логотипи, банери й кадри відео — з
+              Etsy; ліміт запитів на це не витрачається.
+            </p>
+            <ToolList tools={localTools} testId="mcp-local-tools" />
+          </div>
+        </details>
+        <details className="settings-details">
+          <summary>
+            <Icon name="chevron-right" size={16} className="settings-details-chevron" />
+            <Icon name="eye" size={16} />
+            Читати наживо з Etsy
+            <Badge>{liveTools.length}</Badge>
           </summary>
           <div className="settings-details-body">
             <p className="settings-note mcp-tools-note">
-              Більшість читають те, що програма вже зібрала. Ті, що шукають по всьому Etsy або дають «живі дані»,
-              звертаються до Etsy напряму й витрачають денний ліміт запитів <InfoTip glossary="quota" />.
+              Звертаються до Etsy API напряму: пошук по всьому Etsy, свіжі дані будь-якого магазину й товару, ваш
+              власний магазин (для нього потрібен вхід у «Мій магазин»). Кожен виклик витрачає денний ліміт запитів{' '}
+              <InfoTip glossary="quota" />. Виняток — пошук категорій (<code>find_categories</code>,{' '}
+              <code>list_market_categories</code>): дерево категорій програма завантажує з Etsy один раз, поки відкрита,
+              і далі шукає в ньому сама, без запитів.
             </p>
-            <ToolList tools={readTools} />
+            <ToolList tools={liveTools} testId="mcp-live-tools" />
+          </div>
+        </details>
+        <details className="settings-details">
+          <summary>
+            <Icon name="chevron-right" size={16} className="settings-details-chevron" />
+            <Icon name="edit" size={16} />
+            Чернетки в програмі
+            <Badge>{draftTools.length}</Badge>
+          </summary>
+          <div className="settings-details-body">
+            <p className="settings-note">
+              Чернетки зберігаються лише в програмі (кнопка «Чернетки» у шапці вашого магазину — вона з’являється, коли ви увійшли в Etsy), дозвіл на зміни для них не потрібен. На Etsy чернетку
+              надсилаєте ви самі — або Claude інструментом <code>send_prepared_product</code>, якщо зміни дозволено.
+            </p>
+            <ToolList tools={draftTools} testId="mcp-draft-tools" />
           </div>
         </details>
         <details className="settings-details">

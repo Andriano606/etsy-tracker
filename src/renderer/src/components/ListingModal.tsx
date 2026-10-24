@@ -17,8 +17,9 @@ import { ownShopId, useStore } from '../store'
 import { LazyDetails, panelMeta } from '../features/LazyDetails'
 import { LISTING_PANELS } from '../features/registry'
 import { imageSrc, reviewImageSrc } from '../imageUrl'
-import { Badge, Button, Callout, Icon, InfoTip, Loading, Modal, Stat, buttonClass, type BadgeTone, type IconName } from '../ui'
+import { Badge, Button, Callout, Icon, InfoTip, Loading, Modal, Stat, ZoomImage, buttonClass, type BadgeTone, type IconName } from '../ui'
 import { ExternalLink } from './ExternalLink'
+import { listingGallery } from './ListingCard'
 import { NowPrice, WasPrice } from './PriceParts'
 
 // The listing window: a gallery beside the price, popularity, tags, description,
@@ -639,7 +640,14 @@ function ReviewItem({ r }: { r: Review }): JSX.Element {
         </div>
         {r.text ? <div className="review-text">{r.text}</div> : <div className="lm-dim lm-review-empty">Покупець поставив оцінку без тексту.</div>}
         {r.hasImage && (
-          <img className="review-photo" src={reviewImageSrc(r)} alt="Фото покупця" loading="lazy" referrerPolicy="no-referrer" />
+          <ZoomImage
+            className="review-photo-zoom"
+            imgClassName="review-photo"
+            src={reviewImageSrc(r)}
+            alt="Фото покупця"
+            caption={`Фото покупця · ${formatEtsyDate(r.createdAt)}`}
+            loading="lazy"
+          />
         )}
       </div>
     </li>
@@ -774,7 +782,15 @@ function Gallery({ images, title }: { images: ListingImage[]; title: string }): 
     <div className="gallery lm-gallery" role="group" aria-label="Фото товару" ref={root}>
       <div className="gallery-main">
         {img ? (
-          <img src={imageSrc(img, 'fullxfull')} alt={img.alt || title} referrerPolicy="no-referrer" />
+          // Click → the viewer over everything, as a gallery of every photo at this one;
+          // the window's own arrows and thumbnails keep working.
+          <ZoomImage
+            className="lm-gallery-zoom"
+            src={imageSrc(img, 'fullxfull')}
+            alt={img.alt || title}
+            gallery={listingGallery(images, title)}
+            index={idx}
+          />
         ) : (
           <div className="lm-noimg">
             <Icon name="image" size={32} />

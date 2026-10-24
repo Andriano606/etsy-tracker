@@ -347,3 +347,8 @@
 .market-card .ui-callout {
   flex-wrap: nowrap;
 }
+/* The result's photo opens at full size (ZoomImage fills the 4:3 box). */
+.market-thumb > .market-zoom {
+  width: 100%;
+  height: 100%;
+}

@@ -15,6 +15,7 @@ import './styles/listing.css'
 import './styles/settings.css'
 import './styles/stats.css'
 import './styles/myshop.css'
+import './styles/drafts.css'
 import './styles/features.css'
 
 createRoot(document.getElementById('root') as HTMLElement).render(

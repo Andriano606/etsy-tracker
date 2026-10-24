@@ -24,6 +24,7 @@ import {
   Segmented,
   Spinner,
   Stat,
+  ZoomButton,
   type IconName,
   type SegmentedOption
 } from '../ui'
@@ -762,7 +763,7 @@ function TopTable({
               </>
             )
             return (
-              <li key={r.listingId}>
+              <li key={r.listingId} className={r.imageId != null ? 'ui-zoom-host' : undefined}>
                 {r.stored ? (
                   <button type="button" className="top-row" onClick={() => onOpen(r.listingId)} title={r.title}>
                     {inner}
@@ -772,6 +773,14 @@ function TopTable({
                   <div className="top-row static" title="Товар не збережено — відкрити неможливо">
                     {inner}
                   </div>
+                )}
+                {r.imageId != null && (
+                  // Over the row's thumbnail, a sibling of the row button: the photo full size.
+                  <ZoomButton
+                    images={{ src: imageSrc({ id: r.imageId }, 'fullxfull'), alt: r.title, caption: r.title }}
+                    label={`Відкрити фото на весь розмір: ${r.title}`}
+                    className="ui-zoom-corner thumb-zoom top-zoom"
+                  />
                 )}
               </li>
             )

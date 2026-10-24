@@ -17,19 +17,39 @@ import {
   WHEN_MADE,
   WHO_MADE,
   draftInput,
+  etsyListingEditUrl,
+  etsyListingUrl,
   newListingProblems,
   splitList
 } from '@shared/myShop'
 import { formatDateTime } from '@shared/format'
 import { GLOSSARY, type GlossaryKey } from '@shared/glossary'
-import { ownShopId, useStore } from '../store'
-import { Badge, Button, Callout, EmptyState, Field, Icon, InfoTip, Modal, Segmented, Term, Toggle, Tooltip, type BadgeTone } from '../ui'
+import { ownShopId, useStore, type ViewerImage } from '../store'
+import {
+  Badge,
+  Button,
+  Callout,
+  EmptyState,
+  Field,
+  Icon,
+  InfoTip,
+  Modal,
+  Segmented,
+  Term,
+  Toggle,
+  Tooltip,
+  ZoomImage,
+  type BadgeTone
+} from '../ui'
 import { LISTING_FEE, SaveBar, UnsavedContext, confirmDiscard, leaveThen, useUnsaved } from './MyShopModal'
 
 /** How many category matches the search shows. */
 export const TAXONOMY_RESULTS = 30
 
-const kb = (n: number): string => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} МБ` : `${Math.max(1, Math.round(n / 1024))} КБ`)
+const kb = (n: number): string =>
+  n >= 1024 * 1024
+    ? `${(n / 1024 / 1024).toLocaleString('uk-UA', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} МБ`
+    : `${Math.max(1, Math.round(n / 1024))} КБ`
 
 /** A media slot in the form: stored with the draft (with a preview for photos) or freshly picked. */
 interface Slot {
@@ -40,14 +60,20 @@ interface Slot {
   preview: string | null
 }
 
+/** A stored photo of a draft, as the app serves it (the original bytes — its biggest size). */
+const draftPhotoSrc = (mediaId: number): string => `etsyimg://draft/${mediaId}`
+
 const stored = (d: ListingDraft, kind: 'photos' | 'files'): Slot[] =>
   d[kind].map((m) => ({
     key: `m${m.id}`,
     name: m.name,
     size: m.size,
     ref: { mediaId: m.id },
-    preview: kind === 'photos' ? `etsyimg://draft/${m.id}` : null
+    preview: kind === 'photos' ? draftPhotoSrc(m.id) : null
   }))
+
+/** The id of a slot already stored with the draft (null = freshly picked, not in the app yet). */
+const storedId = (s: Slot): number | null => ('mediaId' in s.ref ? s.ref.mediaId : null)
 
 export const DRAFT_STATUS: Record<ListingDraft['status'], string> = {
   draft: 'чекає перевірки',
@@ -92,12 +118,22 @@ function PhotoList({ items, onChange, readOnly }: { items: Slot[]; onChange: (v:
     ;[v[i - 1], v[i]] = [v[i], v[i - 1]]
     onChange(v)
   }
+  // Every photo with a preview opens in the viewer, as a gallery of the draft's photos.
+  const shown = items.filter((f) => f.preview)
+  const gallery: ViewerImage[] = shown.map((f) => ({ src: f.preview!, alt: f.name, caption: f.name }))
   return (
     <ol className="my-photos picked-files">
       {items.map((f, i) => (
         <li key={f.key} className="my-photo">
           {f.preview ? (
-            <img className="my-photo-img draft-thumb" src={f.preview} alt="" />
+            <ZoomImage
+              src={f.preview}
+              alt={f.name}
+              gallery={gallery}
+              index={shown.indexOf(f)}
+              className="draft-photo-zoom"
+              imgClassName="my-photo-img draft-thumb"
+            />
           ) : (
             <span className="my-photo-img my-photo-img--empty" aria-hidden="true">
               <Icon name="image" size={22} />
@@ -130,22 +166,113 @@ function PhotoList({ items, onChange, readOnly }: { items: Slot[]; onChange: (v:
   )
 }
 
-/** The buyer's files (digital listings) as rows with remove. */
-function FileList({ items, onChange }: { items: Slot[]; onChange: (v: Slot[]) => void }): JSX.Element | null {
+/** How long "Збережено: …" stays under the files. */
+export const DOWNLOAD_NOTE_MS = 8000
+
+/**
+ * The buyer's files (digital listings) as rows: a stored file can be saved to
+ * the computer (download — the app keeps the bytes); in the editor each can be
+ * removed (`onChange`; absent = read-only). A freshly picked file is still on
+ * the disk, so it has no download.
+ */
+function FileList({ items, onChange }: { items: Slot[]; onChange?: (v: Slot[]) => void }): JSX.Element | null {
+  const [busy, setBusy] = useState<number | null>(null)
+  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null)
+  useEffect(() => {
+    if (!note?.ok) return
+    const t = setTimeout(() => setNote(null), DOWNLOAD_NOTE_MS)
+    return () => clearTimeout(t)
+  }, [note])
   if (!items.length) return null
+
+  const download = async (id: number): Promise<void> => {
+    setBusy(id)
+    try {
+      const res = await window.api.saveDraftMedia(id)
+      if (!res.ok) setNote({ ok: false, text: `Не вдалося зберегти файл: ${res.error}` })
+      else if (res.value) setNote({ ok: true, text: `Збережено: ${res.value.path}` })
+      // null = the save dialog was cancelled: nothing to say.
+    } catch (e) {
+      setNote({ ok: false, text: `Не вдалося зберегти файл: ${e instanceof Error ? e.message : String(e)}` })
+    } finally {
+      setBusy(null)
+    }
+  }
+
   return (
-    <ul className="my-files picked-files">
-      {items.map((f) => (
-        <li key={f.key} className="my-file">
-          <Icon name="file" size={16} />
-          <span className="picked-name truncate" title={f.name}>
-            {f.name}
-          </span>
-          <span className="dim num">{kb(f.size)}</span>
-          <Button size="sm" variant="ghost" icon="close" iconOnly label={`Прибрати: ${f.name}`} onClick={() => onChange(items.filter((x) => x !== f))} />
-        </li>
-      ))}
-    </ul>
+    <div className="draft-files">
+      <ul className="my-files picked-files">
+        {items.map((f) => {
+          const id = storedId(f)
+          return (
+            <li key={f.key} className="my-file">
+              <Icon name="file" size={16} />
+              <span className="picked-name truncate" title={f.name}>
+                {f.name}
+              </span>
+              <span className="dim num">{kb(f.size)}</span>
+              {id != null && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  icon="download"
+                  iconOnly
+                  label={`Завантажити файл «${f.name}»`}
+                  busy={busy === id}
+                  disabled={busy != null && busy !== id}
+                  onClick={() => void download(id)}
+                />
+              )}
+              {onChange && (
+                <Button size="sm" variant="ghost" icon="close" iconOnly label={`Прибрати: ${f.name}`} onClick={() => onChange(items.filter((x) => x !== f))} />
+              )}
+            </li>
+          )
+        })}
+      </ul>
+      {note &&
+        (note.ok ? (
+          <p className="draft-dl-note" role="status">
+            <Icon name="check" size={14} />
+            <span>{note.text}</span>
+          </p>
+        ) : (
+          <p className="draft-dl-note is-error" role="alert">
+            <Icon name="error" size={14} />
+            <span>{note.text}</span>
+          </p>
+        ))}
+    </div>
+  )
+}
+
+/**
+ * Right after a send: where the listing is on Etsy. The public page exists only
+ * once published; the seller's listing editor (drafts too) opens for the owner.
+ */
+function EtsyLinks({ listingId, published }: { listingId: number; published: boolean }): JSX.Element {
+  const open = (url: string) => () => void window.api.openExternal(url)
+  return (
+    <div className="draft-next" data-testid="draft-etsy-links">
+      <div className="ui-row draft-next-actions">
+        {published && (
+          <Button variant="primary" icon="external" tooltip="Сторінка товару на Etsy — так його бачать покупці." onClick={open(etsyListingUrl(listingId))}>
+            Відкрити на Etsy
+          </Button>
+        )}
+        <Button
+          variant={published ? 'secondary' : 'primary'}
+          icon="edit"
+          tooltip="Редактор товару в кабінеті продавця на Etsy: там можна змінити будь-що й опублікувати."
+          onClick={open(etsyListingEditUrl(listingId))}
+        >
+          Редагувати на Etsy
+        </Button>
+      </div>
+      <p className="ui-field-hint draft-next-hint">
+        Відкривається в браузері. Редактор Etsy покаже товар, якщо на etsy.com ви увійшли як власник цього магазину.
+      </p>
+    </div>
   )
 }
 
@@ -366,6 +493,7 @@ function DraftEditor({ draft, onBack }: { draft: ListingDraft | null; onBack: ()
             ? current.lastError
             : `Надіслано на Etsy: товар № ${current.sentListingId} (${current.sentPublished ? 'опубліковано' : 'чернетка на Etsy'}).`}
         </Callout>
+        {current.sentListingId != null && <EtsyLinks listingId={current.sentListingId} published={!!current.sentPublished} />}
         <p className="my-muted">
           {current.sentPublished
             ? 'Він з’явиться серед товарів магазину в програмі після наступного сканування.'
@@ -374,11 +502,16 @@ function DraftEditor({ draft, onBack }: { draft: ListingDraft | null; onBack: ()
         <section className="my-card">
           <h3 className="my-card-title draft-title">{current.fields.title || '(без назви)'}</h3>
           <PhotoList items={photos} onChange={() => undefined} readOnly />
+          {files.length > 0 && (
+            <div className="my-block">
+              <BlockHead label="Файли для покупця" glossary="myshop.digitalFiles" aside={<span className="num">{files.length}</span>} />
+              <FileList items={files} />
+            </div>
+          )}
         </section>
         <div className="ui-row my-sent-actions">
           {current.sentPublished && shop && (
             <Button
-              variant="primary"
               icon="refresh"
               onClick={() => {
                 void scanShop(shop.id)
@@ -737,7 +870,13 @@ function DraftList(): JSX.Element {
             {drafts.map((d) => (
               <li key={d.id} className="my-row">
                 {d.photos[0] ? (
-                  <img className="my-thumb my-thumb--md" src={`etsyimg://draft/${d.photos[0].id}`} alt="" />
+                  <ZoomImage
+                    src={draftPhotoSrc(d.photos[0].id)}
+                    alt={d.fields.title || d.photos[0].name}
+                    gallery={d.photos.map((m) => ({ src: draftPhotoSrc(m.id), alt: m.name, caption: d.fields.title ? `${d.fields.title} — ${m.name}` : m.name }))}
+                    className="draft-row-zoom"
+                    imgClassName="my-thumb my-thumb--md"
+                  />
                 ) : (
                   <span className="my-thumb my-thumb--md my-thumb--empty" aria-hidden="true">
                     <Icon name="image" size={20} />
@@ -795,7 +934,9 @@ export function DraftsModal(): JSX.Element | null {
       subtitle={
         !editing
           ? 'Зберігаються в програмі, поки ви не надішлете їх на Etsy.'
-          : 'Заповніть поля — підказки ⓘ пояснюють кожне. Зберегти можна будь-коли, навіть неповну.'
+          : draft?.sentListingId != null
+            ? 'Уже надіслано на Etsy — тут лишилась копія для довідки. Змінюйте товар через «Керувати» або на Etsy.'
+            : 'Заповніть поля — підказки ⓘ пояснюють кожне. Зберегти можна будь-коли, навіть неповну.'
       }
       size="lg"
       onClose={close}

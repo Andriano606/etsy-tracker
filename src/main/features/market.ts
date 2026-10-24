@@ -5,7 +5,8 @@
 // (GET /buyer-taxonomy/nodes, cached per client) and a category's properties
 // (GET /buyer-taxonomy/nodes/{taxonomy_id}/properties). The app's search also
 // reads the results' photos in ONE /listings/batch call per page; the MCP
-// search doesn't (it returns no photos).
+// search doesn't (it returns no photos — never Etsy CDN URLs — but each
+// listing's etsy.com page url).
 
 import {
   MARKET_MAX_OFFSET,
@@ -24,7 +25,6 @@ import { isAllowedExternalUrl, isEtsyCdnUrl } from '../../shared/externalUrl'
 import { decodeHtmlEntities } from '../../shared/html'
 import { EtsyApiError, type EtsyClient, type EtsyListing, type EtsyListingWithAssociations, type Paged } from '../etsyApi'
 import { textResult, ToolInputError, type McpTool } from '../mcpProtocol'
-import { neutralText } from '../neutral'
 import { FeatureError, idArg, mcpFail, optIdArg, strArg } from './common'
 import type { Feature } from './types'
 
@@ -125,12 +125,15 @@ export async function categoryProperties(client: EtsyClient, taxonomyId: number)
 
 // -------------------------------------------------------------------- search
 
-function firstImage(d: EtsyListingWithAssociations | undefined): string | null {
+function firstImage(d: EtsyListingWithAssociations | undefined): { thumb: string | null; full: string | null } {
   const img = [...(d?.images ?? [])].sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0))[0]
-  return img && isEtsyCdnUrl(img.url_570xN) ? img.url_570xN : null
+  const cdn = (u: string | null | undefined): string | null => (u && isEtsyCdnUrl(u) ? u : null)
+  const thumb = cdn(img?.url_570xN)
+  return { thumb, full: thumb ? (cdn(img?.url_fullxfull) ?? thumb) : null }
 }
 
 export function toMarketListing(l: EtsyListing, details?: EtsyListingWithAssociations): MarketListing {
+  const image = firstImage(details)
   const price = l.price && Number.isFinite(l.price.amount) && l.price.divisor > 0 ? l.price : null
   return {
     listingId: l.listing_id,
@@ -144,7 +147,8 @@ export function toMarketListing(l: EtsyListing, details?: EtsyListingWithAssocia
     numFavorers: l.num_favorers ?? null,
     views: l.views ?? details?.views ?? null,
     createdAt: l.original_creation_timestamp ?? l.created_timestamp ?? l.creation_timestamp ?? null,
-    imageUrl: firstImage(details)
+    imageUrl: image.thumb,
+    imageFullUrl: image.full
   }
 }
 
@@ -248,7 +252,7 @@ export function parseMarketQuery(args: Record<string, unknown>): MarketQuery {
 
 // ----------------------------------------------------------------------- MCP
 
-const NOT_AVAILABLE = 'Not available: the app has no access to the marketplace right now (no API key configured).'
+const NOT_AVAILABLE = 'Not available: the app has no Etsy API client right now (no API key configured in Settings).'
 
 function needClient(client: EtsyClient | null): EtsyClient {
   if (!client) throw new ToolInputError(NOT_AVAILABLE)
@@ -278,23 +282,24 @@ function mcpTools(deps: { client: EtsyClient | null }): McpTool[] {
   return [
     {
       name: 'search_market',
-      title: 'Search the whole marketplace',
+      title: 'Search all of Etsy',
+      openWorld: true,
       description:
-        'Searches every active product of every store on the marketplace (not only the stores the user follows) — live, not a snapshot. Filters (give at least one): keywords (must all appear), category_id (from list_market_categories), min_price / max_price (the currency the range is compared in is not documented; prices come back in each seller\'s own currency, never converted), store_location (a place name such as "Germany"; an unknown place is an error). The sort applies only together with keywords, category_id or store_location — with a price range alone the newest come first and sorted is false. Returns total (all matches), sorted and one page of products: id, store_id, title, price, currency, tags, favorites, views (null when unknown), created_at (ISO 8601 UTC). Page with offset (≤ 12000).',
+        'Searches every active listing on all of Etsy (Etsy API findAllListingsActive) — not only the shops the user tracks, and not the app\'s local data: a live call (1 API request, API key only, no sign-in); nothing is saved. Filters (give at least one): keywords (a search term; Etsy\'s own search decides which listings match — it is not an exact-text filter), category_id (an Etsy buyer category from list_market_categories), min_price / max_price (the currency the range is compared in is not documented; prices come back in each listing\'s own currency, never converted), store_location (a place name Etsy parses, such as "Germany"; an unknown place is an error). The sort applies only together with keywords, category_id or store_location — with a price range alone Etsy\'s default order is used and sorted is false. Returns total (all matches), sorted, offset, returned and one page of products (Etsy listings): id (listing id), store_id (Etsy shop id), title, price (the seller\'s base price — before VAT and any sale), currency, tags, favorites (Etsy favorers), views (null when unknown), created_at (ISO 8601 UTC, when the listing was first created), url (the listing page on etsy.com, or null). No photos. Page with limit (1–100, default 25) and offset (≤ 12000).',
       inputSchema: {
         type: 'object',
         properties: {
-          keywords: { type: 'string', maxLength: 200, description: 'Words that must all appear in each product.' },
-          category_id: { type: 'integer', minimum: 1, description: 'A category id from list_market_categories.' },
+          keywords: { type: 'string', maxLength: 200, description: 'Search term or phrase, matched by Etsy\'s own search.' },
+          category_id: { type: 'integer', minimum: 1, description: 'An Etsy buyer category id from list_market_categories.' },
           min_price: { type: 'number', minimum: 0, description: 'Lowest price (currency not documented).' },
           max_price: { type: 'number', minimum: 0, description: 'Highest price (currency not documented).' },
           sort: {
             type: 'string',
             enum: MARKET_SORT_KEYS,
             default: 'relevance',
-            description: 'relevance, newest/oldest (listing date), price_low/price_high, updated (recently edited first).'
+            description: 'relevance (Etsy\'s search score), newest/oldest (listing date), price_low/price_high, updated (recently edited first). Ignored without keywords, category_id or store_location.'
           },
-          store_location: { type: 'string', maxLength: 100, description: 'Only stores located here (a country or city name).' },
+          store_location: { type: 'string', maxLength: 100, description: 'Only Etsy shops located here (a country or city name).' },
           limit: { type: 'integer', minimum: 1, maximum: 100, default: 25 },
           offset: { type: 'integer', minimum: 0, maximum: MARKET_MAX_OFFSET, default: 0 }
         },
@@ -311,13 +316,14 @@ function mcpTools(deps: { client: EtsyClient | null }): McpTool[] {
             products: r.listings.map((l) => ({
               id: l.listingId,
               store_id: l.shopId,
-              title: neutralText(l.title),
+              title: l.title,
               price: l.priceAmount != null && l.priceDivisor ? l.priceAmount / l.priceDivisor : null,
               currency: l.currency,
-              tags: l.tags.map((t) => neutralText(t)),
+              tags: l.tags,
               favorites: l.numFavorers,
               views: l.views,
-              created_at: isoDate(l.createdAt)
+              created_at: isoDate(l.createdAt),
+              url: l.url
             }))
           })
         } catch (e) {
@@ -327,9 +333,10 @@ function mcpTools(deps: { client: EtsyClient | null }): McpTool[] {
     },
     {
       name: 'list_market_categories',
-      title: 'Marketplace categories',
+      title: 'Etsy buyer categories',
+      openWorld: true,
       description:
-        'The marketplace\'s shopper categories whose path contains every word of `query` (or whose id equals it); the top-level categories when `query` is empty. Returns total (all matches) and categories: id, path ("Home & Living › Kitchen › Mugs"), level. Use an id as category_id of search_market / get_market_category_properties.',
+        'Etsy\'s buyer categories (the shopper-facing taxonomy, getBuyerTaxonomyNodes) whose path contains every word of `query` (case-insensitive) or whose id equals it; the top-level categories when `query` is empty. The tree is read live from the Etsy API once per app run (API key only), then matched locally. Best first: the id, then the category\'s own name containing the query, then shallower. Returns total (all matches) and up to `limit` categories: id, path ("Home & Living › Kitchen › Mugs"), level (0 = top). Use an id as category_id of search_market / get_market_category_properties. These are not the seller categories a new listing needs (find_categories).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -344,7 +351,7 @@ function mcpTools(deps: { client: EtsyClient | null }): McpTool[] {
           const m = matchCategories(all, typeof a.query === 'string' ? a.query : '', (a.limit as number | undefined) ?? 30)
           return textResult({
             total: m.total,
-            categories: m.categories.map((c) => ({ id: c.id, path: neutralText(c.path), level: c.level }))
+            categories: m.categories.map((c) => ({ id: c.id, path: c.path, level: c.level }))
           })
         } catch (e) {
           return mcpFail(e)
@@ -353,12 +360,13 @@ function mcpTools(deps: { client: EtsyClient | null }): McpTool[] {
     },
     {
       name: 'get_market_category_properties',
-      title: 'Category properties',
+      title: 'Etsy buyer category properties',
+      openWorld: true,
       description:
-        'The product properties shoppers can filter a marketplace category by (e.g. color, material, size): id, name, display_name, required, multivalued, max_values, scales (measuring scales: id, name, description) and values (id, name, scale_id).',
+        'The listing properties Etsy supports for one buyer category (getPropertiesByBuyerTaxonomyId: e.g. color, material, size) — a live Etsy API call (1 request, API key only). Returns category_id and properties: id, name, display_name, required, multivalued, max_values, scales (units: id, name, description) and values (the possible values: id, name, scale_id).',
       inputSchema: {
         type: 'object',
-        properties: { category_id: { type: 'integer', minimum: 1, description: 'A category id from list_market_categories.' } },
+        properties: { category_id: { type: 'integer', minimum: 1, description: 'An Etsy buyer category id from list_market_categories.' } },
         required: ['category_id'],
         additionalProperties: false
       },
@@ -369,13 +377,13 @@ function mcpTools(deps: { client: EtsyClient | null }): McpTool[] {
             category_id: a.category_id,
             properties: props.map((p) => ({
               id: p.propertyId,
-              name: neutralText(p.name),
-              display_name: neutralText(p.displayName),
+              name: p.name,
+              display_name: p.displayName,
               required: p.isRequired,
               multivalued: p.isMultivalued,
               max_values: p.maxValuesAllowed,
-              scales: p.scales.map((s) => ({ id: s.scaleId, name: neutralText(s.name), description: neutralText(s.description) })),
-              values: p.possibleValues.map((v) => ({ id: v.valueId, name: neutralText(v.name), scale_id: v.scaleId }))
+              scales: p.scales.map((s) => ({ id: s.scaleId, name: s.name, description: s.description })),
+              values: p.possibleValues.map((v) => ({ id: v.valueId, name: v.name, scale_id: v.scaleId }))
             }))
           })
         } catch (e) {

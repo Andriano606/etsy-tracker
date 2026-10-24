@@ -1,7 +1,8 @@
 import { beforeAll, describe, expect, it } from 'vitest'
 import type { Db } from '../../src/main/db'
 import { handleMcpMessage, type McpTool, type McpToolResult } from '../../src/main/mcpProtocol'
-import { createMcpTools, imageMime, mcpServerInfo, MCP_INSTRUCTIONS, neutralFields, neutralText } from '../../src/main/mcpTools'
+import { createMcpTools, imageMime, mcpServerInfo, MCP_INSTRUCTIONS, changeFields } from '../../src/main/mcpTools'
+import { finishScanError, finishScanOk, insertRunningScan, upsertListing } from '../../src/main/db'
 import { createImageProtocolHandler } from '../../src/main/imageProtocol'
 import { createReviewSyncer } from '../../src/main/reviewSync'
 import { createScanner } from '../../src/main/scanner'
@@ -9,7 +10,7 @@ import { MCP_TOOL_SUMMARY } from '../../src/shared/mcpConfig'
 import type { ScanOutcome } from '../../src/shared/types'
 import { FakeEtsy, SHOP_ID, mkEtsyListing, mkEtsyReview } from '../helpers/fakeEtsy'
 import { cdnBytes, fakeCdn } from '../helpers/fakeImageStore'
-import { memDb, seedShop } from '../helpers/db'
+import { memDb, mkInput, seedShop } from '../helpers/db'
 
 function ok(o: ScanOutcome) {
   if (!o.ok) throw new Error(`scan failed: ${o.error}`)
@@ -23,8 +24,9 @@ const PROMO = { percentage: 60, start: 1_759_276_800, end: 1_861_868_800 }
  *  1 baseline: listings 1, 2, 3
  *  2: + 4, − 3, 2 renamed, a −60 % promotion on 1, +5 favorites on 1
  *  3: + 5, − 4, 3 back; one review new since the backfill
- * Text mentioning the marketplace is planted in a description, the shop
- * announcement and a review to prove it never reaches a client.
+ * Text mentioning Etsy (and etsy.com links) is planted in a description, tags,
+ * the shop announcement, a policy and a review to prove it reaches a client
+ * exactly as stored.
  */
 interface World {
   db: Db
@@ -42,6 +44,7 @@ async function buildWorld(): Promise<World> {
   etsy.listings[0].description = 'Hand made. More at https://www.etsy.com/shop/CeramicStudioUA or etsy.me/abc — thanks, Etsy shoppers! #etsyfinds'
   etsy.listings[0].tags = ['mug', 'Etsy gift']
   etsy.shop.announcement = 'Welcome to our Etsy shop!'
+  etsy.shop.policy_refunds = 'Contact us via Etsy messages: https://www.etsy.com/conversations/new'
   etsy.listings[0].videos = [
     {
       video_id: 91_234_567,
@@ -110,7 +113,7 @@ beforeAll(async () => {
   w = await buildWorld()
 })
 
-/** Every text a client got, for the neutrality sweep. */
+/** Every text a client got, for the honesty sweep. */
 const seen: string[] = []
 
 async function call(name: string, args: Record<string, unknown> = {}): Promise<McpToolResult> {
@@ -151,6 +154,20 @@ describe('the tool set', () => {
       for (const r of t.inputSchema.required ?? []) expect(t.inputSchema.properties).toHaveProperty(r)
     }
   })
+
+  it('core tools: only the image tools reach outside the app (openWorldHint), the database reads do not', async () => {
+    const res = await handleMcpMessage(
+      { info: mcpServerInfo('0.1.0'), tools: w.tools },
+      { jsonrpc: '2.0', id: 1, method: 'tools/list' }
+    )
+    const ann = new Map(
+      (res!.result as { tools: Array<{ name: string; annotations: Record<string, boolean> }> }).tools.map((t) => [t.name, t.annotations])
+    )
+    const cdn = ['get_product_image', 'get_store_logo', 'get_product_video_preview', 'get_review_photo']
+    const local = ['list_stores', 'get_store', 'search_products', 'get_product', 'get_product_history', 'list_snapshots', 'get_snapshot_changes', 'list_reviews', 'get_store_stats']
+    for (const n of cdn) expect(ann.get(n), n).toMatchObject({ readOnlyHint: true, openWorldHint: true })
+    for (const n of local) expect(ann.get(n), n).toMatchObject({ readOnlyHint: true, openWorldHint: false })
+  })
 })
 
 describe('list_stores / get_store', () => {
@@ -163,19 +180,24 @@ describe('list_stores / get_store', () => {
       name: 'CeramicStudioUA',
       active_products: 4,
       new_products_in_latest_snapshot: 1,
-      latest_update_failed: false
+      latest_update_failed: false,
+      latest_update_error: null
     })
+    expect(s.url).toMatch(/^https:\/\/www\.etsy\.com\/shop\/CeramicStudioUA/)
     expect(s.latest_snapshot).toMatchObject({ id: w.scans[2], status: 'ok', added: 1, removed: 1, returned: 1 })
     expect(s.latest_snapshot.finished_at).toMatch(/^\d{4}-\d\d-\d\dT.*Z$/)
   })
 
-  it('the profile: policies, announcement (neutralized), stored reviews', async () => {
+  it('the profile: policies, announcement exactly as on Etsy, stored reviews, the shop page', async () => {
     const s = await data('get_store', { store_id: SHOP_ID })
-    expect(s.announcement).toBe('Welcome to our marketplace shop!')
+    expect(s.announcement).toBe('Welcome to our Etsy shop!')
+    expect(s.policies.refunds).toBe('Contact us via Etsy messages: https://www.etsy.com/conversations/new')
     expect(s.policies.shipping).toBe('Ships in 1-3 days.')
     expect(s.stored_reviews).toMatchObject({ count: 7, complete: true, new_in_latest_snapshot: 1 })
-    expect(s).not.toHaveProperty('url')
+    expect(s.url).toMatch(/^https:\/\/www\.etsy\.com\/shop\/CeramicStudioUA/)
+    expect(s.latest_update_error).toBeNull()
     expect(s).not.toHaveProperty('icon_url')
+    expect(s).not.toHaveProperty('banner_url')
   })
 
   it('an unknown store is a tool error that says where to find ids', async () => {
@@ -190,7 +212,14 @@ describe('search_products', () => {
     expect(d.total).toBe(4)
     expect(d.products.map((p: { id: number }) => p.id)).toEqual([5, 3, 2, 1])
     const p5 = d.products[0]
-    expect(p5).toMatchObject({ id: 5, store_id: SHOP_ID, title: 'Fifth', status: 'active', new_in_latest_snapshot: true })
+    expect(p5).toMatchObject({
+      id: 5,
+      store_id: SHOP_ID,
+      title: 'Fifth',
+      url: 'https://www.etsy.com/listing/5/item',
+      status: 'active',
+      new_in_latest_snapshot: true
+    })
     expect(d.products[1].new_in_latest_snapshot).toBe(false)
   })
 
@@ -250,20 +279,27 @@ describe('get_product', () => {
     })
   })
 
-  it('everything about the product, neutral and without links', async () => {
+  it('everything about the product: text exactly as on Etsy, the listing page, no photo URLs', async () => {
     const p = await data('get_product', { product_id: 1 })
-    expect(p).toMatchObject({ id: 1, store_name: 'CeramicStudioUA', status: 'active', state: 'active' })
+    expect(p).toMatchObject({
+      id: 1,
+      store_name: 'CeramicStudioUA',
+      status: 'active',
+      state: 'active',
+      url: 'https://www.etsy.com/listing/1/item'
+    })
     expect(p.description).toBe(
-      'Hand made. More at [link] or [link] — thanks, marketplace shoppers! #marketplacefinds'
+      'Hand made. More at https://www.etsy.com/shop/CeramicStudioUA or etsy.me/abc — thanks, Etsy shoppers! #etsyfinds'
     )
-    expect(p.tags).toEqual(['mug', 'marketplace gift'])
+    expect(p.tags).toEqual(['mug', 'Etsy gift'])
     expect(p.images).toHaveLength(2)
     expect(p.images[0]).toMatchObject({ position: 1 })
     expect(Object.keys(p.images[0])).not.toContain('url')
+    expect(p).not.toHaveProperty('raw_json')
     expect(p.attributes).toHaveProperty('product_type')
     expect(p.favorites_change).toBe(0)
     expect(p.reviews).toMatchObject({ complete: true })
-    expect(JSON.stringify(p)).not.toMatch(/https?:/)
+    expect(JSON.stringify(p)).not.toMatch(/etsystatic/i)
   })
 
   it('an unknown product is a tool error', async () => {
@@ -368,7 +404,7 @@ describe('list_reviews', () => {
     const day4 = new Date((1_700_000_000 + 4 * 86_400) * 1000).toISOString()
     expect((await data('list_reviews', { since: day3, until: day4 })).total).toBe(2)
     const text = await data('list_reviews', { query: 'purchase' })
-    expect(text.reviews.map((r: { text: string }) => r.text)).toEqual(['Best marketplace purchase ever'])
+    expect(text.reviews.map((r: { text: string }) => r.text)).toEqual(['Best Etsy purchase ever'])
     expect((await data('list_reviews', { query: '100%' })).total).toBe(0)
     const sorted = await data('list_reviews', { sort: 'lowest_rating', limit: 2, offset: 0 })
     expect(sorted.reviews[0].rating).toBeLessThanOrEqual(sorted.reviews[1].rating)
@@ -548,23 +584,49 @@ describe('photos', () => {
       readImage: async () => ({ data: Buffer.alloc(5 * 1024 * 1024 + 1), mimeType: 'image/jpeg' })
     })
     const r2 = await big.find((x) => x.name === 'get_product_image')!.run({ product_id: 1, size: 'full' })
-    expect((r2.content[0] as { text: string }).text).toContain('too large')
+    expect((r2.content[0] as { text: string }).text).toBe('The image is larger than 5 MB and cannot be returned. Ask for size "medium".')
+  })
+
+  it('messages fit the tool: the "medium" hint only for get_product_image size full; CDN-only images never mention a local copy', async () => {
+    const big = createMcpTools({
+      db: w.db,
+      readImage: async () => ({ data: Buffer.alloc(5 * 1024 * 1024 + 1), mimeType: 'image/jpeg' })
+    })
+    const text = async (tools: McpTool[], name: string, args: Record<string, unknown>) => {
+      const r = await tools.find((x) => x.name === name)!.run(args)
+      expect(r.isError).toBe(true)
+      return (r.content[0] as { text: string }).text
+    }
+    const plain = 'The image is larger than 5 MB and cannot be returned.'
+    expect(await text(big, 'get_product_image', { product_id: 1 })).toBe(plain)
+    expect(await text(big, 'get_review_photo', { review_id: w.photoReviewId })).toBe(plain)
+    expect(await text(big, 'get_store_logo', { store_id: SHOP_ID })).toBe(plain)
+    expect(await text(big, 'get_product_video_preview', { product_id: 1 })).toBe(plain)
+
+    const none = createMcpTools({ db: w.db, readImage: async () => null })
+    const local = "The image is not available right now (no local copy, and it could not be downloaded from Etsy's image CDN)."
+    const cdnOnly = "The image could not be downloaded from Etsy's image CDN right now."
+    expect(await text(none, 'get_product_image', { product_id: 1 })).toBe(local)
+    expect(await text(none, 'get_review_photo', { review_id: w.photoReviewId })).toBe(local)
+    expect(await text(none, 'get_store_logo', { store_id: SHOP_ID })).toBe(cdnOnly)
+    expect(await text(none, 'get_product_video_preview', { product_id: 1 })).toBe(cdnOnly)
   })
 })
 
-describe('neutrality: a client never learns where the data comes from', () => {
-  it('no "etsy" in the instructions, tool list, any tool output or error', async () => {
+describe('honesty: data reaches a client as stored, secrets and CDN URLs never do', () => {
+  it('every tool, the tool list and initialize: Etsy text unchanged; no etsystatic URL, raw_json or key', async () => {
     // Make sure the sweep covers every tool, whatever ran before.
-    await data('list_stores')
-    await data('get_store', { store_id: SHOP_ID })
+    const stores = await data('list_stores')
+    const store = await data('get_store', { store_id: SHOP_ID })
     await data('search_products', { status: 'all', search_description: true, query: 'a' })
+    const products = []
     for (const id of [1, 2, 3, 4, 5]) {
-      await data('get_product', { product_id: id })
+      products.push(await data('get_product', { product_id: id }))
       await data('get_product_history', { product_id: id })
     }
     await data('list_snapshots', { store_id: SHOP_ID })
     for (const s of w.scans) await data('get_snapshot_changes', { store_id: SHOP_ID, snapshot_id: s })
-    await data('list_reviews', {})
+    const reviews = await data('list_reviews', {})
     await data('get_store_stats', { store_id: SHOP_ID })
     await call('get_product_image', { product_id: 1 })
     await call('get_review_photo', { review_id: w.photoReviewId })
@@ -572,6 +634,13 @@ describe('neutrality: a client never learns where the data comes from', () => {
     await call('get_store_logo', { store_id: SHOP_ID, kind: 'banner' })
     await call('get_product_video_preview', { product_id: 1 })
     await call('get_product', { product_id: 0 })
+
+    // (a) text from the data is passed through unchanged
+    expect(store.announcement).toBe('Welcome to our Etsy shop!')
+    expect(products[0].description).toContain('https://www.etsy.com/shop/CeramicStudioUA or etsy.me/abc')
+    expect(products[0].tags).toContain('Etsy gift')
+    expect(reviews.reviews.map((r: { text: string | null }) => r.text)).toContain('Best Etsy purchase ever')
+    expect(stores.stores[0].url).toMatch(/^https:\/\/www\.etsy\.com\//)
 
     const list = await handleMcpMessage(
       { info: mcpServerInfo('0.1.0'), tools: w.tools },
@@ -583,27 +652,152 @@ describe('neutrality: a client never learns where the data comes from', () => {
     )
     const everything = [JSON.stringify(list), JSON.stringify(init), ...seen].join('\n')
     expect(seen.length).toBeGreaterThan(30)
-    expect(everything).not.toMatch(/etsy/i)
-    expect(everything).not.toMatch(/https?:\/\//)
-    expect(MCP_INSTRUCTIONS).not.toMatch(/etsy/i)
+    // (b) never: CDN image URLs, raw API JSON, the API key
+    expect(everything).not.toMatch(/etsystatic\.com/i)
+    expect(everything).not.toMatch(/raw_json/)
+    expect(everything).not.toContain('keystring:secret')
+    expect(everything).not.toMatch(/Bearer /)
+    // every URL a client gets is an Etsy page
+    for (const u of everything.match(/https?:\/\/[^\s"\\)]+/g) ?? []) expect(u).toMatch(/^https:\/\/(www\.)?etsy\.com\//)
+  })
+
+  it('the server presents itself as Etsy Tracker and explains what is local and what is live', () => {
+    expect(mcpServerInfo('1.0.0')).toMatchObject({ name: 'etsy-tracker', title: 'Etsy Tracker', instructions: MCP_INSTRUCTIONS })
+    expect(MCP_INSTRUCTIONS).toContain('Etsy Open API v3')
+    expect(MCP_INSTRUCTIONS).toMatch(/Local data — no Etsy request/)
+    expect(MCP_INSTRUCTIONS).toMatch(/Live Etsy tools/)
+    expect(MCP_INSTRUCTIONS).toContain('is_mine')
+    expect(MCP_INSTRUCTIONS).toContain('$0.20')
+    expect(MCP_INSTRUCTIONS).toContain('prepare_product')
+    expect(MCP_INSTRUCTIONS).not.toMatch(/marketplace/i)
+    // every tool name the instructions use is a real tool
+    const names = new Set(w.tools.map((t) => t.name))
+    const fields = new Set(['finished_at', 'latest_snapshot', 'customer_country', 'sales_count', 'featured_position', 'is_mine', 'shop_id', 'listing_id', 'category_id'])
+    const mentioned = (MCP_INSTRUCTIONS.match(/\b[a-z]+(?:_[a-z]+)+\b/g) ?? []).filter((m) => !fields.has(m))
+    expect(mentioned.length).toBeGreaterThan(30)
+    for (const m of mentioned) expect(names, m).toContain(m)
+  })
+
+  it('instructions: the gated writes (incl. consolidate_my_return_policies) and the local-draft exception', () => {
+    const para = MCP_INSTRUCTIONS.split('\n\n').find((p) => p.startsWith('Changing the shop'))!
+    for (const n of ['create_product', 'update_my_product', 'add_product_media', 'update_my_store', 'send_prepared_product', 'mark_my_order_shipped', 'update_my_order', 'consolidate_my_return_policies']) {
+      expect(para, n).toContain(n)
+    }
+    expect(para).toMatch(/exception: prepare_product and delete_prepared_product change only drafts kept inside the app/)
+    expect(para).toContain('need neither the sign-in nor the switch')
+  })
+
+  it('instructions: the fee is for publishing a draft or renewing an expired/sold-out listing, not reactivating', () => {
+    expect(MCP_INSTRUCTIONS).toContain('before publishing a draft')
+    expect(MCP_INSTRUCTIONS).toContain('renewing an expired or sold-out listing')
+    expect(MCP_INSTRUCTIONS).toContain('Reactivating an inactive listing costs no fee.')
+    expect(MCP_INSTRUCTIONS).not.toMatch(/publishing or activating/)
+  })
+
+  it('instructions: where photos come from, live tools without sign-in, cached category trees', () => {
+    expect(MCP_INSTRUCTIONS).toContain('get_product_image and get_review_photo return the app\'s local copy when there is one')
+    expect(MCP_INSTRUCTIONS).toContain('get_store_logo and get_product_video_preview always download from Etsy\'s image CDN')
+    expect(MCP_INSTRUCTIONS).toContain('CDN downloads cost no API quota')
+    const live = MCP_INSTRUCTIONS.split('\n\n').find((p) => p.startsWith('Live Etsy tools'))!
+    expect(live).toContain('no Etsy sign-in needed')
+    expect(live).toContain('find_categories')
+    expect(live).toContain('get_category_attributes')
+    expect(live).toContain('read from Etsy once per app run and then matched locally')
+    expect(MCP_INSTRUCTIONS).not.toMatch(/each call makes/)
+  })
+
+  it('instructions: holidays are public-holiday processing, not vacation mode; text is entity-decoded, descriptions in changes are excerpts', () => {
+    expect(MCP_INSTRUCTIONS).toContain('public-holiday processing preferences (get_my_holidays, set_my_holiday')
+    expect(MCP_INSTRUCTIONS).toContain('not vacation mode, which no tool changes')
+    expect(MCP_INSTRUCTIONS).not.toMatch(/holiday mode/)
+    expect(MCP_INSTRUCTIONS).toContain('HTML entities decoded')
+    expect(MCP_INSTRUCTIONS).toContain('excerpts of at most 1000 characters')
+    expect(MCP_INSTRUCTIONS).not.toMatch(/exactly what Etsy returned/)
+  })
+
+  it('tool texts: description excerpts in change records, the Ukrainian scan error', () => {
+    const desc = (n: string) => w.tools.find((t) => t.name === n)!.description
+    expect(desc('get_snapshot_changes')).toContain('excerpts of at most 1000 characters, get_product has the full current text')
+    expect(desc('get_product_history')).toContain('excerpts of at most 1000 characters, get_product has the full current text')
+    expect(desc('list_stores')).toContain("latest_update_error = the app's error message, in Ukrainian")
   })
 })
 
-describe('neutralText / neutralFields', () => {
-  it('takes out the marketplace name and links, keeps other words', () => {
-    expect(neutralText('Etsy’s best; visit https://www.etsy.com/listing/1/x?ref=a now')).toBe('marketplace’s best; visit [link] now')
-    expect(neutralText('ETSY.com/shop/x and etsystatic.com/img.jpg')).toBe('[link] and [link]')
-    expect(neutralText('Betsy loves #EtsyFinds')).toBe('Betsy loves #marketplaceFinds')
-    expect(neutralText('You must add this language as a shop language in Shop Manager.')).toBe(
-      'You must add this language as a shop language in the store settings.'
+describe('url / latest_update_error', () => {
+  function tinyWorld(shopUrl: string, listingUrl: string) {
+    const db = memDb()
+    seedShop(db, { id: 7, url: shopUrl })
+    upsertListing(db, mkInput(1, { shopId: 7, url: listingUrl }), 1000)
+    return { db, tools: createMcpTools({ db }) }
+  }
+  const run = async (tools: McpTool[], name: string, args: Record<string, unknown> = {}) => {
+    const res = await handleMcpMessage(
+      { info: mcpServerInfo('0.1.0'), tools },
+      { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }
     )
-    expect(neutralText(null)).toBeNull()
-    expect(neutralText('')).toBe('')
+    const r = res!.result as McpToolResult
+    expect(r.isError).toBeFalsy()
+    return JSON.parse((r.content[0] as { text: string }).text)
+  }
+
+  it('Etsy page URLs are given as stored', async () => {
+    const { tools } = tinyWorld('https://www.etsy.com/shop/Seven', 'https://www.etsy.com/listing/1/x')
+    expect((await run(tools, 'list_stores')).stores[0].url).toBe('https://www.etsy.com/shop/Seven')
+    expect((await run(tools, 'get_store', { store_id: 7 })).url).toBe('https://www.etsy.com/shop/Seven')
+    expect((await run(tools, 'search_products', { store_id: 7 })).products[0].url).toBe('https://www.etsy.com/listing/1/x')
+    expect((await run(tools, 'get_product', { product_id: 1 })).url).toBe('https://www.etsy.com/listing/1/x')
   })
 
-  it('maps tracked change fields to neutral names', () => {
+  it('a URL that is not an https etsy.com page is null', async () => {
+    for (const [shopUrl, listingUrl] of [
+      ['http://www.etsy.com/shop/Seven', 'https://evil.example/listing/1'],
+      ['https://user:pw@www.etsy.com/shop/Seven', 'javascript:alert(1)'],
+      ['', 'https://i.etsystatic.com/1/il_fullxfull.1.jpg']
+    ]) {
+      const { tools } = tinyWorld(shopUrl, listingUrl)
+      expect((await run(tools, 'list_stores')).stores[0].url).toBeNull()
+      expect((await run(tools, 'get_product', { product_id: 1 })).url).toBeNull()
+    }
+  })
+
+  it('get_snapshot_changes of a running or a failed scan: a note saying which', async () => {
+    const { db, tools } = tinyWorld('https://www.etsy.com/shop/Seven', 'https://www.etsy.com/listing/1/x')
+    const failed = insertRunningScan(db, 7, 2000)
+    finishScanError(db, failed, 3000, 'boom')
+    const running = insertRunningScan(db, 7, 4000)
+    const r = await run(tools, 'get_snapshot_changes', { store_id: 7, snapshot_id: running })
+    expect(r.snapshot).toMatchObject({ id: running, status: 'running' })
+    expect(r.note).toBe('This snapshot is still running; its changes are recorded when it finishes.')
+    const f = await run(tools, 'get_snapshot_changes', { store_id: 7, snapshot_id: failed })
+    expect(f.snapshot).toMatchObject({ id: failed, status: 'failed' })
+    expect(f.note).toBe('This snapshot did not succeed; it recorded no changes.')
+  })
+
+  it('a failed latest scan: latest_update_failed with the error text; ok again → null', async () => {
+    const { db, tools } = tinyWorld('https://www.etsy.com/shop/Seven', 'https://www.etsy.com/listing/1/x')
+    const scan = insertRunningScan(db, 7, 2000)
+    finishScanError(db, scan, 3000, 'Etsy не відповідає (тайм-аут 30 с)')
+    const s = (await run(tools, 'list_stores')).stores[0]
+    expect(s).toMatchObject({ latest_update_failed: true, latest_update_error: 'Etsy не відповідає (тайм-аут 30 с)' })
+    expect(await run(tools, 'get_store', { store_id: 7 })).toMatchObject({ latest_update_failed: true })
+    const next = insertRunningScan(db, 7, 4000)
+    finishScanOk(db, next, 5000, { isBaseline: true, truncated: false, total: 1, added: 0, removed: 0, changed: 0, returned: 0 })
+    expect((await run(tools, 'list_stores')).stores[0]).toMatchObject({ latest_update_failed: false, latest_update_error: null })
+  })
+})
+
+describe('changeFields', () => {
+  it('passes text fields through unchanged', () => {
+    expect(changeFields({ title: 'Etsy mug', description: 'See https://www.etsy.com/shop/x', tags: ['Etsy gift'] })).toEqual({
+      title: 'Etsy mug',
+      description: 'See https://www.etsy.com/shop/x',
+      tags: ['Etsy gift']
+    })
+  })
+
+  it('maps tracked change fields to the output names', () => {
     expect(
-      neutralFields({
+      changeFields({
         priceAmount: 250,
         priceDivisor: 100,
         currency: 'USD',
@@ -625,6 +819,6 @@ describe('neutralText / neutralFields', () => {
       image_ids: [1, 2],
       made_by: 'i_did'
     })
-    expect(neutralFields(null)).toBeNull()
+    expect(changeFields(null)).toBeNull()
   })
 })

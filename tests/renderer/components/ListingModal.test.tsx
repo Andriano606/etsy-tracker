@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { ListingModal } from '../../../src/renderer/src/components/ListingModal'
 import { useStore } from '../../../src/renderer/src/store'
+import { ImageViewer } from '../../../src/renderer/src/ui'
 import { GLOSSARY } from '../../../src/shared/glossary'
 import { mkBuyerPrice, mkListing, mkPromotion, mkReview, mkShop, setupRenderer, type Api } from '../helpers'
 import { mkDetails } from '../../helpers/db'
@@ -732,5 +733,72 @@ describe('ListingModal: price block (buyer price vs. seller base price)', () => 
       details.dispatchEvent(new Event('toggle'))
     })
     expect(await screen.findByText('Акцій ще не було помічено.')).toBeInTheDocument()
+  })
+})
+
+describe('ListingModal: photos open full size in the image viewer', () => {
+  const img = (id: number, rank: number) => ({ ...mkListing(1).images[0], id, rank })
+  const show = (l = mkListing(2, { title: 'Mug', images: [img(1, 1), img(2, 2), img(3, 3)] })) => {
+    useStore.setState({ detailListing: l })
+    return render(
+      <>
+        <ListingModal />
+        <ImageViewer />
+      </>
+    )
+  }
+  const viewerImg = () => screen.getByRole('dialog', { name: 'Перегляд зображення' }).querySelector('img')!
+
+  it('the big photo opens a gallery of every photo (fullxfull) at the shown one; the window stays open', async () => {
+    const { container } = show()
+    await act(async () => fireEvent.click(screen.getByLabelText('Фото 3')))
+    const big = container.querySelector('.gallery-main .ui-zoom') as HTMLElement
+    expect(big.tagName).toBe('BUTTON')
+    expect(big.querySelector('img')).toHaveAttribute('src', 'etsyimg://img/3/fullxfull')
+    await act(async () => fireEvent.click(big))
+    const viewer = useStore.getState().viewer!
+    expect(viewer.index).toBe(2)
+    expect(viewer.images.map((i) => i.src)).toEqual(['etsyimg://img/1/fullxfull', 'etsyimg://img/2/fullxfull', 'etsyimg://img/3/fullxfull'])
+    expect(viewerImg()).toHaveAttribute('src', 'etsyimg://img/3/fullxfull')
+    expect(useStore.getState().detailListing?.listingId).toBe(2)
+    // Escape closes only the viewer; the listing window is still there.
+    act(() => void fireEvent.keyDown(document.body, { key: 'Escape' }))
+    expect(useStore.getState().viewer).toBeNull()
+    expect(useStore.getState().detailListing?.listingId).toBe(2)
+  })
+
+  it("the window's own arrows still switch the photo (and don't open the viewer)", async () => {
+    const { container } = show()
+    const main = () => container.querySelector('.gallery-main img')!.getAttribute('src')
+    await act(async () => fireEvent.click(screen.getByLabelText('Наступне фото')))
+    expect(main()).toBe('etsyimg://img/2/fullxfull')
+    await act(async () => fireEvent.click(screen.getByLabelText('Попереднє фото')))
+    expect(main()).toBe('etsyimg://img/1/fullxfull')
+    expect(useStore.getState().viewer).toBeNull()
+  })
+
+  it('a single photo opens alone; no photo → nothing to open', async () => {
+    const { container, unmount } = show(mkListing(5, { title: 'Plate' }))
+    await act(async () => fireEvent.click(container.querySelector('.gallery-main .ui-zoom')!))
+    expect(useStore.getState().viewer).toEqual({ images: [expect.objectContaining({ src: 'etsyimg://img/50/fullxfull' })], index: 0 })
+    unmount()
+    act(() => useStore.getState().closeImage())
+    const r = show(mkListing(6, { images: [] }))
+    expect(r.container.querySelector('.gallery-main .ui-zoom')).toBeNull()
+  })
+
+  it("a review's buyer photo opens full size", async () => {
+    api.getListingReviews.mockResolvedValue({ total: 1, offset: 0, reviews: [mkReview(5, { hasImage: true, text: 'Nice' })] })
+    const { container } = show(mkListing(2, { reviewCount: 1, reviewAvg: 5 }))
+    const details = container.querySelector('details.reviews-details') as HTMLDetailsElement
+    await act(async () => {
+      details.open = true
+      details.dispatchEvent(new Event('toggle'))
+    })
+    const item = await screen.findByTestId('review-item')
+    const btn = within(item).getByRole('button', { name: /Відкрити на весь розмір: Фото покупця/ })
+    await act(async () => fireEvent.click(btn))
+    expect(useStore.getState().viewer?.images[0].src).toBe('etsyimg://review/5/fullxfull')
+    expect(viewerImg()).toHaveAttribute('src', 'etsyimg://review/5/fullxfull')
   })
 })

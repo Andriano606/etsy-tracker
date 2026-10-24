@@ -37,6 +37,7 @@ import {
   Tabs,
   Term,
   Toggle,
+  ZoomImage,
   type BadgeTone,
   type IconName,
   type TabItem
@@ -164,10 +165,21 @@ const openExternal = (url: string) => (e: { preventDefault: () => void }) => {
   void window.api.openExternal(url)
 }
 
-/** A thumbnail, or a calm placeholder when the listing has no photo. */
-function Thumb({ src, size = 'md' }: { src: string | null | undefined; size?: 'md' | 'sm' }): JSX.Element {
+/**
+ * A thumbnail that opens the listing's main photo at full size, or a calm
+ * placeholder when the listing has no photo.
+ */
+function Thumb({ listing, size = 'md' }: { listing: MyListing; size?: 'md' | 'sm' }): JSX.Element {
+  const src = listing.imageUrl
   return src ? (
-    <img className={`my-thumb my-thumb--${size}`} src={src} alt="" />
+    <ZoomImage
+      className={`my-thumb-zoom my-thumb-zoom--${size}`}
+      imgClassName={`my-thumb my-thumb--${size}`}
+      src={src}
+      full={listing.imageFullUrl ?? src}
+      alt={listing.title ? `Головне фото: ${listing.title}` : 'Головне фото товару'}
+      caption={listing.title || undefined}
+    />
   ) : (
     <span className={`my-thumb my-thumb--${size} my-thumb--empty`} aria-hidden="true">
       <Icon name="image" size={size === 'sm' ? 16 : 20} />
@@ -552,7 +564,7 @@ function ListingEditor({
       if (!res.ok) setError(res.error)
       else {
         setSaved(true)
-        onSaved({ ...res.value, imageUrl: res.value.imageUrl ?? listing.imageUrl })
+        onSaved({ ...res.value, imageUrl: res.value.imageUrl ?? listing.imageUrl, imageFullUrl: res.value.imageFullUrl ?? listing.imageFullUrl })
       }
     } finally {
       setBusy(false)
@@ -572,7 +584,7 @@ function ListingEditor({
         <Button variant="ghost" size="sm" icon="chevron-left" onClick={() => void leave()}>
           До списку
         </Button>
-        <Thumb src={listing.imageUrl} size="sm" />
+        <Thumb listing={listing} size="sm" />
         <div className="my-editor-headtext">
           <div className="my-editor-title truncate" title={listing.title}>
             {listing.title || '(без назви)'}
@@ -693,7 +705,7 @@ function ListingEditor({
                 <sec.Component
                   listing={listing}
                   // A listing passed = it changed on Etsy; none = it is gone (deleted): back to the reloaded list.
-                  onChanged={(l) => (l ? onSaved({ ...l, imageUrl: l.imageUrl ?? listing.imageUrl }) : onClose())}
+                  onChanged={(l) => (l ? onSaved({ ...l, imageUrl: l.imageUrl ?? listing.imageUrl, imageFullUrl: l.imageUrl ? (l.imageFullUrl ?? l.imageUrl) : listing.imageFullUrl }) : onClose())}
                 />
               )}
             </LazyDetails>
@@ -817,7 +829,7 @@ function ListingsTab(): JSX.Element {
           <ul className="my-listings my-rows">
             {rows.map((l) => (
               <li key={l.listingId} className="my-row">
-                <Thumb src={l.imageUrl} />
+                <Thumb listing={l} />
                 <div className="my-listing-text my-row-main">
                   <div className="my-listing-title my-row-title truncate" title={l.title}>
                     {l.title || '(без назви)'}

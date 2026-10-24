@@ -263,3 +263,14 @@ describe('draft helpers', () => {
     ).toEqual({ ...EMPTY_DRAFT_FIELDS, type: 'physical', price: '5.5', tags: ['a'], shouldAutoRenew: false })
   })
 })
+
+describe('Etsy listing links', () => {
+  it('the public page and the seller editor', async () => {
+    const { etsyListingUrl, etsyListingEditUrl } = await import('../../src/shared/myShop')
+    const { isAllowedExternalUrl } = await import('../../src/shared/externalUrl')
+    expect(etsyListingUrl(4242)).toBe('https://www.etsy.com/listing/4242')
+    expect(etsyListingEditUrl(4242)).toBe('https://www.etsy.com/your/shops/me/listing-editor/edit/4242')
+    expect(isAllowedExternalUrl(etsyListingUrl(1))).toBe(true)
+    expect(isAllowedExternalUrl(etsyListingEditUrl(1))).toBe(true)
+  })
+})

@@ -1,13 +1,13 @@
 // Helpers every feature shares: arguments, the signed-in shop, scopes, and the
-// MCP side (neutral errors, own-store/write gates).
+// MCP side (English error texts via mcpErrorText, own-shop/write gates).
 
 import { missingScopes, SCOPE_LABEL } from '../../shared/myShop'
 import { EtsyApiError } from '../etsyApi'
 import { ToolInputError, type McpToolResult } from '../mcpProtocol'
-import { NOT_SIGNED_IN, WRITES_OFF, neutralError } from '../mcpStoreTools'
+import { NOT_SIGNED_IN, WRITES_OFF, mcpErrorText } from '../mcpStoreTools'
 import type { FeatureCtx, FeatureMcpDeps } from './types'
 
-/** A Ukrainian message for a refused action — shown as is (IPC) / neutralized (MCP). */
+/** A Ukrainian message for a refused action — shown as is (IPC and MCP). */
 export class FeatureError extends Error {}
 
 /** A positive safe integer argument, else FeatureError. */
@@ -40,7 +40,7 @@ export function ownShop(status: FeatureCtx['authStatus'], scopes: readonly strin
   const missing = missingScopes(st.scopes, scopes)
   if (missing.length) {
     throw new FeatureError(
-      `Для цього потрібен дозвіл: ${missing.map((s) => SCOPE_LABEL[s] ?? s).join(', ')}. Вийдіть і увійдіть в Etsy ще раз («✏️ Мій магазин»).`
+      `Для цього потрібен дозвіл: ${missing.map((s) => SCOPE_LABEL[s] ?? s).join(', ')}. Вийдіть і увійдіть в Etsy ще раз («Керувати» у шапці вашого магазину → «Вийти»).`
     )
   }
   return st.shopId
@@ -48,29 +48,29 @@ export function ownShop(status: FeatureCtx['authStatus'], scopes: readonly strin
 
 // ------------------------------------------------------------------- MCP side
 
-/** Own store for an MCP tool: signed in (+ scopes), else a neutral ToolInputError. */
+/** The user's own Etsy shop for an MCP tool: signed in (+ OAuth scopes), else a ToolInputError. */
 export function mcpOwnShop(deps: FeatureMcpDeps, scopes: readonly string[] = []): number {
   const st = deps.authStatus()
   if (!deps.client || !st.loggedIn || !st.shopId) throw new ToolInputError(NOT_SIGNED_IN)
   const missing = missingScopes(st.scopes, scopes)
   if (missing.length) {
     throw new ToolInputError(
-      `The user's sign-in to their store lacks a permission this needs (${missing.join(', ')}). Ask them to sign out and sign in again in the app ("✏️ Мій магазин").`
+      `The user's Etsy sign-in lacks a permission this needs (${missing.join(', ')}) — an Etsy OAuth scope, granted at sign-in. Ask them to sign out and sign in to Etsy again in the app: the "Керувати" button in their own shop's header → "Вийти", then "Увійти через Etsy".`
     )
   }
   return st.shopId
 }
 
-/** Own store + the "allow changes" switch. */
+/** The own Etsy shop + the MCP modal's "allow changes" switch. */
 export function mcpWritable(deps: FeatureMcpDeps, scopes: readonly string[] = []): number {
   const id = mcpOwnShop(deps, scopes)
   if (!deps.writesAllowed()) throw new ToolInputError(WRITES_OFF)
   return id
 }
 
-/** A tool error result with a neutral text. */
+/** A tool error result with mcpErrorText's English text (Etsy errors with Etsy's own detail). */
 export function mcpFail(e: unknown): McpToolResult {
-  return { content: [{ type: 'text', text: neutralError(e) }], isError: true }
+  return { content: [{ type: 'text', text: mcpErrorText(e) }], isError: true }
 }
 
-export { neutralError }
+export { mcpErrorText }

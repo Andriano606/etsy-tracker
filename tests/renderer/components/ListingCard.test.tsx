@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { ListingCard, PriceTag } from '../../../src/renderer/src/components/ListingCard'
 import { GLOSSARY } from '../../../src/shared/glossary'
+import { ImageViewer } from '../../../src/renderer/src/ui'
+import { useStore } from '../../../src/renderer/src/store'
 import { mkBuyerPrice, mkListing, setupRenderer } from '../helpers'
 
 beforeEach(() => {
@@ -90,7 +92,7 @@ describe('ListingCard price (like the shop page)', () => {
     expect(screen.getByText('ціна зі знижкою')).toHaveClass('sr-only')
     // The card button's content reads in order: sale price, then the old one, then whose price
     // (the flex items get separated by the browser; jsdom's textContent just concatenates).
-    const name = screen.getByRole('button').textContent!.replace(/\s+/g, ' ')
+    const name = screen.getByTestId('listing-card').textContent!.replace(/\s+/g, ' ')
     expect(name).toMatch(/ціна зі знижкою 1,20 USD ?стара ціна 3,00 USD ?−60% ?UA ?\(ціна для покупця з UA\)/)
     // No sale: nothing to name.
     render(<PriceTag listing={mkListing(2, { ...usd, buyerPrice: mkBuyerPrice({ discount: false }) })} />)
@@ -162,5 +164,49 @@ describe('ListingCard badges explain themselves (hover tooltips)', () => {
     const title = 'A very long listing title that will be cut after two lines on a narrow card in the grid'
     render(<ListingCard listing={mkListing(1, { title })} onOpen={vi.fn()} />)
     expect(screen.getByText(title)).toHaveAttribute('title', title)
+  })
+})
+
+describe('ListingCard photo → the image viewer', () => {
+  const img = (id: number, rank: number, alt: string | null = null) => ({ ...mkListing(1).images[0], id, rank, alt })
+
+  it('the magnifier (a sibling of the card button) opens every photo full size at the first; the card does not open', async () => {
+    const onOpen = vi.fn()
+    const l = mkListing(1, { title: 'Mug', images: [img(11, 1, 'Front'), img(12, 2), img(13, 3)] })
+    render(
+      <>
+        <ListingCard listing={l} onOpen={onOpen} />
+        <ImageViewer />
+      </>
+    )
+    const card = screen.getByTestId('listing-card')
+    const zoom = screen.getByRole('button', { name: /^Відкрити фото на весь розмір: / })
+    expect(card.contains(zoom)).toBe(false)
+    expect(zoom).toHaveClass('ui-zoom-corner')
+    expect(zoom.closest('.ui-zoom-host')).toBe(card.parentElement)
+    await act(async () => fireEvent.click(zoom))
+    expect(onOpen).not.toHaveBeenCalled()
+    const viewer = useStore.getState().viewer!
+    expect(viewer.index).toBe(0)
+    expect(viewer.images.map((i) => i.src)).toEqual(['etsyimg://img/11/fullxfull', 'etsyimg://img/12/fullxfull', 'etsyimg://img/13/fullxfull'])
+    expect(viewer.images[0].alt).toBe('Front')
+    expect(viewer.images[1].alt).toBe('Mug')
+    const dlg = screen.getByRole('dialog', { name: 'Перегляд зображення' })
+    expect(dlg.querySelector('img')).toHaveAttribute('src', 'etsyimg://img/11/fullxfull')
+    expect(dlg).toHaveTextContent('1 / 3')
+  })
+
+  it('the card click still opens the listing (and not the viewer)', async () => {
+    const onOpen = vi.fn()
+    const l = mkListing(1)
+    render(<ListingCard listing={l} onOpen={onOpen} />)
+    await act(async () => fireEvent.click(screen.getByTestId('listing-card')))
+    expect(onOpen).toHaveBeenCalledWith(l)
+    expect(useStore.getState().viewer).toBeNull()
+  })
+
+  it('no photo → no magnifier', () => {
+    render(<ListingCard listing={mkListing(1, { images: [] })} onOpen={vi.fn()} />)
+    expect(screen.queryByRole('button', { name: /^Відкрити фото на весь розмір/ })).toBeNull()
   })
 })

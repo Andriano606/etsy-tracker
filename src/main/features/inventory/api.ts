@@ -91,7 +91,7 @@ export class InvError extends FeatureError {
   }
 }
 
-const unexpected = (): InvError => new InvError('Etsy повернув неочікувану відповідь.', 'The store service returned an unexpected answer.')
+const unexpected = (): InvError => new InvError('Etsy повернув неочікувану відповідь.', 'Etsy returned an unexpected answer.')
 
 export const problemsError = (ps: InvProblem[]): InvError =>
   new InvError(ps.map((p) => p.uk).join(' '), ps.map((p) => p.en).join(' '))
@@ -150,9 +150,11 @@ export function mapInventory(raw: EtsyInventory | null | undefined, listingId: n
 
 function mapPhoto(i: EtsyListingImage): ListingPhoto {
   const url = i.url_170x135 ?? i.url_75x75 ?? null
+  const full = i.url_fullxfull ?? i.url_570xN ?? null
   return {
     imageId: i.listing_image_id,
     url: url && isEtsyCdnUrl(url) ? url : null,
+    urlFull: full && isEtsyCdnUrl(full) ? full : null,
     rank: typeof i.rank === 'number' ? i.rank : null,
     alt: i.alt_text ? txt(i.alt_text) : null
   }
@@ -326,7 +328,14 @@ export async function inventoriesByIdsLenient(client: EtsyClient, ids: number[])
 export function overviewRow(l: EtsyListingWithInventory): InventoryOverviewRow {
   const imgs = Array.isArray(l.images) ? [...l.images].sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0)) : []
   const thumb = imgs[0]?.url_170x135 ?? null
-  const base = { listingId: l.listing_id, title: txt(l.title), state: String(l.state ?? ''), imageUrl: thumb && isEtsyCdnUrl(thumb) ? thumb : null }
+  const full = imgs[0]?.url_fullxfull ?? imgs[0]?.url_570xN ?? null
+  const base = {
+    listingId: l.listing_id,
+    title: txt(l.title),
+    state: String(l.state ?? ''),
+    imageUrl: thumb && isEtsyCdnUrl(thumb) ? thumb : null,
+    imageFullUrl: full && isEtsyCdnUrl(full) ? full : null
+  }
   if (l.inventory && Array.isArray(l.inventory.products)) {
     return { ...base, ...inventorySummary(mapInventory(l.inventory, l.listing_id)), hasInventory: true }
   }
@@ -366,13 +375,13 @@ export async function updateSingle(client: EtsyClient, listingId: number, change
   if (!inv.products.length) {
     throw new InvError(
       'Etsy не має запису інвентарю для цього товару (його ще не редагували інструментами інвентарю Etsy) — змініть ціну й кількість на Etsy.com.',
-      'This product has no variant data yet; use update_my_product_inventory with one variant without options to set its price and quantity.'
+      'Etsy has no inventory record for this listing yet; use update_my_product_inventory with one variant without options to set its price and quantity.'
     )
   }
   if (!inventorySummary(inv).single) {
     throw new InvError(
       'У цього товару кілька варіантів — змініть ціни в розділі «Ціна, кількість і варіанти» (Мій магазин → Товари → Редагувати).',
-      'This product has several variants; use update_my_product_inventory with the full list of variants instead.'
+      'This listing has several variants; use update_my_product_inventory with the full list of variants instead.'
     )
   }
   const w = inventoryToWrite(inv)

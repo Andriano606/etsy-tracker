@@ -352,6 +352,8 @@ export interface VariationImage {
 export interface ListingPhoto {
   imageId: number
   url: string | null
+  /** The same photo at full size (fullxfull, validated) — for the image viewer. */
+  urlFull: string | null
   rank: number | null
   alt: string | null
 }
@@ -394,6 +396,8 @@ export interface InventoryOverviewRow extends InventorySummary {
   title: string
   state: string
   imageUrl: string | null
+  /** The first photo at full size (fullxfull, validated) — for the image viewer. */
+  imageFullUrl: string | null
   /** false = Etsy returned no inventory record: price/quantity are the listing's own. */
   hasInventory: boolean
 }
@@ -406,10 +410,10 @@ export interface InventoryOverviewPage {
 
 /** The MCP tools of this feature, in Ukrainian for the MCP modal. */
 export const INVENTORY_TOOL_SUMMARY: ReadonlyArray<{ name: string; text: string; write?: boolean }> = [
-  { name: 'get_my_product_inventory', text: 'варіанти мого товару: властивості, артикули, ціни, кількість, що продається' },
-  { name: 'get_my_inventory_overview', text: 'ціни й залишки моїх товарів: діапазон цін, загальна кількість' },
-  { name: 'update_my_product_price', text: 'змінити ціну / кількість / артикул товару без варіантів', write: true },
-  { name: 'update_my_product_inventory', text: 'замінити всі варіанти товару (ціни, кількість, артикули, властивості)', write: true },
-  { name: 'get_my_variation_photos', text: 'які фото прив’язані до значень варіацій' },
-  { name: 'set_my_variation_photos', text: 'прив’язати фото до значень варіацій', write: true }
+  { name: 'get_my_product_inventory', text: 'варіанти мого товару напряму з Etsy: властивості, SKU, ціни продавця, кількість, які варіанти продаються' },
+  { name: 'get_my_inventory_overview', text: 'ціни й залишки моїх товарів напряму з Etsy: діапазон цін, загальна кількість, число варіантів (за id або сторінка активних)' },
+  { name: 'update_my_product_price', text: 'змінити ціну / кількість / SKU товару без варіантів на Etsy', write: true },
+  { name: 'update_my_product_inventory', text: 'замінити всі варіанти товару на Etsy (властивості, SKU, ціни, кількість; пропущений варіант видаляється)', write: true },
+  { name: 'get_my_variation_photos', text: 'які фото прив’язані до значень варіацій мого товару, і всі його фото' },
+  { name: 'set_my_variation_photos', text: 'прив’язати фото до значень однієї властивості варіацій (замінює всі прив’язки)', write: true }
 ]

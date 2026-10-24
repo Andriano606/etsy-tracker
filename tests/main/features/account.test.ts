@@ -60,15 +60,46 @@ describe('account feature', () => {
     await expect(runAction(accountFeature, 'summary', {}, ctx)).rejects.toThrow('Увійдіть в Etsy')
   })
 
-  it('MCP get_my_account: neutral fields; signed out → the neutral sign-in note', async () => {
-    const { deps } = mcpDeps(routes)
+  it('MCP get_my_account: the account as Etsy sent it; no avatar CDN URL or token; signed out → the Etsy sign-in note', async () => {
+    const { deps } = mcpDeps({
+      ...routes,
+      'GET /v3/application/user/addresses': {
+        body: { count: 1, results: [{ user_address_id: 9, name: 'Etsy Andrii', first_line: 'Main st 1 (see https://www.etsy.com/x)', city: 'Lviv', iso_country_code: 'UA', is_default_shipping_address: true }] }
+      }
+    })
     const r = await callTool(accountFeature, deps, 'get_my_account')
     expect(r.isError).toBe(false)
-    expect(r.json).toMatchObject({ user_id: OWN_USER, email: 'me@example.com', store_id: OWN_SHOP, permissions: ['listings_r', 'email_r'] })
-    expect(r.json.addresses[0]).toMatchObject({ city: 'Lviv', country: 'UA', default_shipping: true })
-    expect(r.text).not.toMatch(/etsy/i)
+    expect(r.json).toEqual({
+      user_id: OWN_USER,
+      first_name: 'Andrii',
+      last_name: 'K',
+      email: 'me@example.com',
+      addresses: [
+        { id: 9, name: 'Etsy Andrii', line1: 'Main st 1 (see https://www.etsy.com/x)', line2: null, city: 'Lviv', state: null, zip: null, country: 'UA', default_shipping: true }
+      ],
+      permissions: ['listings_r', 'email_r'],
+      store_id: OWN_SHOP,
+      store_name: 'TidyFoxSheets',
+      notes: []
+    })
+    expect(r.text).not.toMatch(/etsystatic\.com/i)
+    expect(r.text).not.toContain('raw_json')
+    expect(r.text).not.toContain('"tok"')
+    expect(r.text).not.toContain('keystring')
+    const tool = accountFeature.mcpTools!(deps)[0]
+    expect(tool.description).toContain('Etsy account')
+    expect(tool.description).toContain('live from the Etsy API')
+    expect(tool.description).toMatch(/email_r[\s\S]*address_r/)
     const out = await callTool(accountFeature, mcpDeps(routes, { status: signedOut }).deps, 'get_my_account')
     expect(out.isError).toBe(true)
-    expect(out.text).toContain('has not connected their own store')
+    expect(out.text).toContain('has not signed in to their own Etsy shop')
+  })
+
+  it('MCP get_my_account: a part that could not be read is null with a note', async () => {
+    const { deps } = mcpDeps(routes, { status: signedIn({ scopes: ['shops_r'] }) })
+    const r = await callTool(accountFeature, deps, 'get_my_account')
+    expect(r.isError).toBe(false)
+    expect(r.json).toMatchObject({ email: null, first_name: null, addresses: null, store_id: OWN_SHOP })
+    expect(r.json.notes.join(' ')).toContain('email акаунта')
   })
 })

@@ -713,3 +713,72 @@ describe('Відгуки (живі)', () => {
     expect(languageName('not a code!')).toBe('not a code!')
   })
 })
+
+describe('Відкрити на весь розмір (живі дані)', () => {
+  const viewer = () => useStore.getState().viewer
+
+  it('a live photo opens every photo of the listing (fullxfull) at the clicked one; "Деталі" is not opened', async () => {
+    mockFeature({
+      'compete.images': [img(501), img(502, { rank: 2, url570: '' }), img(503, { rank: 3, urlFull: '', altText: null })],
+      'compete.videos': []
+    })
+    await renderListing('compete-media')
+    const photos = screen.getAllByTestId('compete-photo')
+    // no thumbnail → nothing to open, and not in the gallery
+    expect(within(photos[1]).queryByRole('button', { name: /на весь розмір/ })).toBeNull()
+    await click(within(photos[2]).getByRole('button', { name: 'Відкрити на весь розмір: Фото 3' }))
+    expect(viewer()).toEqual({
+      images: [
+        { src: 'https://i.etsystatic.com/1/501/full.jpg', alt: 'Planner on a desk', caption: 'Фото 1 — Planner on a desk' },
+        // no fullxfull → the 570xN
+        { src: 'https://i.etsystatic.com/1/503/570.jpg', alt: 'Фото 3', caption: 'Фото 3' }
+      ],
+      index: 1
+    })
+    expect(api.featureCall).not.toHaveBeenCalledWith('compete', 'image', expect.anything())
+    expect(screen.queryByTestId('compete-image-details')).toBeNull()
+  })
+
+  it('a video frame opens in the viewer; no video details are loaded', async () => {
+    mockFeature({
+      'compete.images': [],
+      'compete.videos': [{ id: 601, width: 1920, height: 1080, state: 'active', thumbnailUrl: 'https://v.etsystatic.com/t.jpg' }]
+    })
+    await renderListing('compete-media')
+    await click(screen.getByRole('button', { name: 'Відкрити на весь розмір: Кадр відео' }))
+    expect(viewer()!.images).toEqual([expect.objectContaining({ src: 'https://v.etsystatic.com/t.jpg' })])
+    expect(api.featureCall).not.toHaveBeenCalledWith('compete', 'video', expect.anything())
+  })
+
+  it('variation photos open as a gallery: the stored original, else the live fullxfull', async () => {
+    mockFeature({
+      'compete.variationImages': [
+        { propertyId: 200, valueId: 1, value: 'Black', imageId: 50 },
+        { propertyId: 200, valueId: 2, value: 'White', imageId: 777 },
+        { propertyId: 200, valueId: 3, value: null, imageId: 999 }
+      ],
+      'compete.images': [img(777)]
+    })
+    await renderListing('compete-variation-images')
+    await click(screen.getByRole('button', { name: 'Відкрити на весь розмір: White' }))
+    expect(viewer()).toEqual({
+      images: [
+        { src: 'etsyimg://img/50/fullxfull', alt: 'Black', caption: 'Варіант: Black' },
+        { src: 'https://i.etsystatic.com/1/777/full.jpg', alt: 'White', caption: 'Варіант: White' }
+      ],
+      index: 1
+    })
+    const [, , third] = screen.getAllByTestId('compete-variation')
+    expect(within(third).queryByRole('button')).toBeNull()
+  })
+
+  it('a buyer photo of a live review opens in the viewer', async () => {
+    mockFeature({ 'compete.reviews': { count: 1, offset: 0, reviews: [review(1, { rating: 5, imageUrl: 'https://i.etsystatic.com/r.jpg', createdAt: 1_700_000_000 })] } })
+    await renderListing('compete-reviews')
+    await click(screen.getByRole('button', { name: 'Відкрити на весь розмір: Фото покупця' }))
+    const v = viewer()!
+    expect(v.images).toHaveLength(1)
+    expect(v.images[0]).toMatchObject({ src: 'https://i.etsystatic.com/r.jpg', alt: 'Фото покупця' })
+    expect(v.images[0].caption).toMatch(/^Фото покупця · оцінка 5 з 5 · /)
+  })
+})

@@ -5,6 +5,8 @@
 // shipping profiles (OAuth shops_r; Etsy fills them only for the user's own
 // listings). Types are what main sends the renderer (URLs already validated).
 
+import { TRANSLATION_CODES as SHARED_TRANSLATION_CODES, TRANSLATION_LANGUAGES as SHARED_TRANSLATION_LANGUAGES } from './translations'
+
 /** Etsy Money kept exactly: value = amount / divisor. */
 export interface CompeteMoney {
   amount: number
@@ -209,24 +211,13 @@ export interface ShippingCarrierInfo {
   internationalClasses: MailClassInfo[]
 }
 
-/** The languages Etsy documents for listing translations (OAS ListingTranslations). */
-export const TRANSLATION_LANGUAGES: ReadonlyArray<{ code: string; name: string }> = [
-  { code: 'de', name: 'Німецька' },
-  { code: 'en-GB', name: 'Англійська (Велика Британія)' },
-  { code: 'en-IN', name: 'Англійська (Індія)' },
-  { code: 'en-US', name: 'Англійська (США)' },
-  { code: 'es', name: 'Іспанська' },
-  { code: 'fr', name: 'Французька' },
-  { code: 'it', name: 'Італійська' },
-  { code: 'ja', name: 'Японська' },
-  { code: 'nl', name: 'Нідерландська' },
-  { code: 'pl', name: 'Польська' },
-  { code: 'pt', name: 'Португальська' },
-  { code: 'ru', name: 'Російська' },
-  { code: 'sv', name: 'Шведська' }
-]
+/** The languages of listing translations (one list for every feature — see ./translations), with `name` for the panels. */
+export const TRANSLATION_LANGUAGES: ReadonlyArray<{ code: string; name: string }> = SHARED_TRANSLATION_LANGUAGES.map((l) => ({
+  code: l.code,
+  name: l.label
+}))
 
-export const TRANSLATION_CODES: readonly string[] = TRANSLATION_LANGUAGES.map((l) => l.code)
+export const TRANSLATION_CODES: readonly string[] = SHARED_TRANSLATION_CODES
 
 /** The parts get_product_live_details can read. */
 export const LIVE_PARTS = ['properties', 'photos', 'videos', 'personalization', 'variation_photos', 'shipping', 'reviews'] as const
@@ -236,14 +227,17 @@ export type LivePart = (typeof LIVE_PARTS)[number]
 export const COMPETE_PAGE = 100
 export const REVIEWS_PAGE = 20
 
-/** The MCP tools of this feature, in Ukrainian for the MCP modal. */
+/** The MCP tools of this feature, in Ukrainian for the MCP modal (each is a live Etsy API read). */
 export const COMPETE_TOOL_SUMMARY: ReadonlyArray<{ name: string; text: string; write?: boolean }> = [
-  { name: 'get_store_sections', text: 'розділи будь-якого магазину (з товарами за бажанням) — живі дані' },
-  { name: 'get_store_featured', text: 'рекомендовані товари будь-якого магазину' },
-  { name: 'get_store_return_policies', text: 'політики повернення будь-якого магазину' },
+  {
+    name: 'get_store_sections',
+    text: 'розділи будь-якого магазину Etsy з кількістю товарів (за бажанням — і самі товари, до 500) — наживо з Etsy'
+  },
+  { name: 'get_store_featured', text: 'рекомендовані (виділені) товари будь-якого магазину Etsy, сторінками — наживо з Etsy' },
+  { name: 'get_store_return_policies', text: 'політики повернення будь-якого магазину Etsy: повернення, обмін, строк — наживо з Etsy' },
   {
     name: 'get_product_live_details',
-    text: 'живі деталі будь-якого товару: атрибути, фото, відео, персоналізація, фото варіацій, доставка, відгуки, переклад'
+    text: 'деталі будь-якого товару Etsy наживо: атрибути, дані фото, відео, персоналізація, фото варіацій, доставка (лише для власних товарів, потрібен вхід), сторінка відгуків, переклад'
   },
-  { name: 'list_shipping_carriers', text: 'служби доставки й класи відправлень для країни' }
+  { name: 'list_shipping_carriers', text: 'служби доставки й класи відправлень, які Etsy підтримує для країни відправлення' }
 ]

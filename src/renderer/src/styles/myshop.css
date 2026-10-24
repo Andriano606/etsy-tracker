@@ -845,3 +845,21 @@
     white-space: nowrap;
   }
 }
+
+/* A listing thumbnail that opens the photo at full size (ZoomImage). */
+.my-thumb-zoom {
+  flex: none;
+  border-radius: var(--r-sm);
+}
+.my-thumb-zoom .ui-zoom-badge {
+  width: 20px;
+  height: 20px;
+  right: 3px;
+  bottom: 3px;
+}
+.my-thumb-zoom--sm .ui-zoom-badge {
+  width: 18px;
+  height: 18px;
+  right: 2px;
+  bottom: 2px;
+}

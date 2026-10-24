@@ -486,6 +486,7 @@ export function makeApi() {
       value: mkDraft(input.id ?? 501, { fields: input.fields })
     })),
     deleteDraft: vi.fn(async (_id: number): Promise<boolean> => true),
+    saveDraftMedia: vi.fn(async (_id: number): Promise<MyShopResult<{ path: string } | null>> => ({ ok: true, value: { path: '/tmp/file' } })),
     sendDraft: vi.fn(
       async (_id: number, publish: boolean): Promise<CreateListingResult> => ({
         ok: true,
@@ -566,7 +567,8 @@ export function resetStore(): void {
     historyScan: null,
     historyChanges: [],
     statsShopId: null,
-    confirmRequest: null
+    confirmRequest: null,
+    viewer: null
   })
 }
 

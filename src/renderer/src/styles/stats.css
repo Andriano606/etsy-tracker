@@ -669,6 +669,18 @@
   flex-shrink: 0;
   background: var(--bg-3);
 }
+/* The photo magnifier over a top row's 36 px thumbnail (li = .ui-zoom-host): after the row's
+   padding (6px), the rank (14px) and the gap; vertically centred like the row's content. */
+.top-table li.ui-zoom-host > .ui-zoom-corner.top-zoom {
+  top: 50%;
+  right: auto;
+  bottom: auto;
+  left: calc(6px + 14px + var(--sp-2));
+  width: 36px;
+  height: 36px;
+  border-radius: var(--r-sm);
+  transform: translateY(-50%);
+}
 .top-title {
   flex: 1;
   min-width: 0;

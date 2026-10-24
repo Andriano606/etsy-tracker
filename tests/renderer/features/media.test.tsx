@@ -496,3 +496,58 @@ describe('Файли для покупця', () => {
     expect(screen.getByRole('button', { name: 'Додати файли' })).toBeDisabled()
   })
 })
+
+describe('Відкрити на весь розмір', () => {
+  const viewer = () => useStore.getState().viewer
+
+  it('a photo opens every photo of the listing as a gallery (biggest URL) at the clicked one; no action runs', async () => {
+    mockFeature({ 'media.load': media({ photos: [photo(11, 1), photo(12, 2, { urlFull: null }), photo(13, 3, { altText: '' })] }) })
+    await show()
+    const before = api.featureCall.mock.calls.length
+    await act(async () => {
+      fireEvent.click(inPhoto(12).getByRole('button', { name: 'Відкрити на весь розмір: Alt 12' }))
+    })
+    expect(viewer()).toEqual({
+      images: [
+        { src: cdn(11, 'fullxfull'), alt: 'Alt 11', caption: 'Фото №1 — Alt 11' },
+        // no fullxfull → the next biggest
+        { src: cdn(12, '570xN'), alt: 'Alt 12', caption: 'Фото №2 — Alt 12' },
+        { src: cdn(13, 'fullxfull'), alt: 'Фото №3', caption: 'Фото №3' }
+      ],
+      index: 1
+    })
+    expect(api.featureCall.mock.calls.length).toBe(before)
+    expect(asked()).toBeNull()
+  })
+
+  it('a photo without any URL is a placeholder (not openable) and is left out of the gallery', async () => {
+    const none = photo(12, 2, { url75: null, url170: null, url570: null, urlFull: null })
+    mockFeature({ 'media.load': media({ photos: [photo(11, 1), none, photo(13, 3)] }) })
+    await show()
+    expect(inPhoto(12).queryByRole('button', { name: /на весь розмір/ })).toBeNull()
+    await act(async () => {
+      fireEvent.click(inPhoto(13).getByRole('button', { name: /^Відкрити на весь розмір/ }))
+    })
+    expect(viewer()!.images.map((i) => i.src)).toEqual([cdn(11, 'fullxfull'), cdn(13, 'fullxfull')])
+    expect(viewer()!.index).toBe(1)
+  })
+
+  it('the video frame opens in the viewer (Etsy gives only the frame)', async () => {
+    mockFeature({ 'media.load': media() })
+    await show()
+    await act(async () => {
+      fireEvent.click(within(screen.getByTestId('media-video')).getByRole('button', { name: 'Відкрити на весь розмір: Кадр відео' }))
+    })
+    expect(viewer()!.images).toEqual([expect.objectContaining({ src: 'https://v.etsystatic.com/video/31/thumb.jpg', alt: 'Кадр відео' })])
+    expect(calls('video')).toHaveLength(0)
+  })
+
+  it('a new main photo hands its full-size URL to onChanged too', async () => {
+    mockFeature({ 'media.load': media(), 'media.replacePhoto': media({ photos: [photo(99, 1), photo(12, 2), photo(13, 3)] }) })
+    const onChanged = await show()
+    picks(['new.jpg'])
+    await click(inPhoto(11).getByRole('button', { name: 'Замінити фото' }))
+    await confirm()
+    expect(onChanged).toHaveBeenCalledWith(expect.objectContaining({ imageUrl: cdn(99, '170x135'), imageFullUrl: cdn(99, 'fullxfull') }))
+  })
+})

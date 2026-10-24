@@ -3,7 +3,8 @@ import { formatPrice } from '@shared/format'
 import { FIELD_LABEL, changedFields } from '@shared/changes'
 import { discountLabel, formatMoney, shownPrice } from '@shared/price'
 import { imageSrc } from '../imageUrl'
-import { Icon } from '../ui'
+import { Icon, ZoomButton } from '../ui'
+import { listingGallery } from './ListingCard'
 import { NowPrice, WasPrice } from './PriceParts'
 
 /** Ukrainian plural: plural(1, 'товар', 'товари', 'товарів') → "товар"; 2–4 → "товари"; 5+ → "товарів". */
@@ -166,7 +167,7 @@ export function ChangeRows({
         const l = c.listing
         const img = l?.images[0]
         return (
-          <li key={c.id}>
+          <li key={c.id} className={img ? 'ui-zoom-host' : undefined}>
             <button className="change-row" onClick={() => onOpen(c)} disabled={!l}>
               {img ? (
                 <img src={imageSrc(img, '75x75')} alt="" loading="lazy" referrerPolicy="no-referrer" />
@@ -184,6 +185,14 @@ export function ChangeRows({
               </div>
               {l && <Icon name="chevron-right" size={16} className="change-go" />}
             </button>
+            {img && l && (
+              // Over the thumbnail, a sibling of the row button: the photo full size.
+              <ZoomButton
+                images={listingGallery(l.images, l.title)}
+                label={`Відкрити фото на весь розмір: ${l.title}`}
+                className="ui-zoom-corner thumb-zoom change-zoom"
+              />
+            )}
           </li>
         )
       })}

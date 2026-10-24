@@ -24,6 +24,7 @@ import {
   type IpcContext
 } from '../../src/main/ipc'
 import { createReviewSyncer } from '../../src/main/reviewSync'
+import { saveDraft } from '../../src/main/drafts'
 import { createImageSyncer } from '../../src/main/imageSync'
 import { createScanner } from '../../src/main/scanner'
 import {
@@ -751,6 +752,53 @@ describe('drafts over IPC', () => {
     expect(await call('drafts:delete', r.value.id)).toBe(true)
     expect(await call('drafts:delete', r.value.id)).toBe(false)
     expect(await call('drafts:list')).toEqual([])
+  })
+
+  it('drafts:saveMedia writes a stored file where the user picked; cancel, unknown id and a write error', async () => {
+    const { c } = ctx()
+    const draft = saveDraft(
+      c.db,
+      { source: 'app', fields: EMPTY_DRAFT_FIELDS, files: [{ name: 'planner.pdf', data: new Uint8Array([37, 80, 68, 70]) }] },
+      1
+    )
+    const mediaId = draft.files[0].id
+    const dialogs: Array<{ title?: string; defaultPath?: string }> = []
+    const written: Array<[string, number[]]> = []
+    let answer: { canceled: boolean; filePath?: string } = { canceled: false, filePath: '/home/u/Downloads/my.pdf' }
+    c.showSaveDialog = async (o) => (dialogs.push(o), answer)
+    c.writeFile = async (p, d) => void written.push([p, [...d]])
+    c.downloadsDir = () => '/home/u/Downloads'
+    registerIpc(c)
+    expect(await call('drafts:saveMedia', mediaId)).toEqual({ ok: true, value: { path: '/home/u/Downloads/my.pdf' } })
+    expect(dialogs[0]).toMatchObject({ defaultPath: '/home/u/Downloads/planner.pdf' })
+    expect(written).toEqual([['/home/u/Downloads/my.pdf', [37, 80, 68, 70]]])
+    answer = { canceled: true }
+    expect(await call('drafts:saveMedia', mediaId)).toEqual({ ok: true, value: null })
+    expect(written).toHaveLength(1)
+    expect(await call('drafts:saveMedia', 99_999)).toEqual({ ok: false, error: 'Цього файлу в чернетці вже немає.' })
+    expect(await call('drafts:saveMedia', 'x')).toEqual({ ok: false, error: 'Цього файлу в чернетці вже немає.' })
+    answer = { canceled: false, filePath: '/ro/x.pdf' }
+    c.writeFile = async () => {
+      throw new Error('EACCES')
+    }
+    registerIpc(c)
+    expect(await call('drafts:saveMedia', mediaId)).toEqual({ ok: false, error: 'Не вдалося зберегти файл: EACCES' })
+  })
+
+  it('drafts:saveMedia never offers a path from the stored name (only its base name)', async () => {
+    const { c } = ctx()
+    const draft = saveDraft(c.db, { source: 'mcp', fields: EMPTY_DRAFT_FIELDS, files: [{ name: '../../etc/evil.pdf', data: new Uint8Array([1]) }] }, 1)
+    let asked = ''
+    c.showSaveDialog = async (o) => ((asked = o.defaultPath ?? ''), { canceled: true })
+    c.downloadsDir = () => '/home/u/Downloads'
+    registerIpc(c)
+    await call('drafts:saveMedia', draft.files[0].id)
+    expect(asked).toBe('/home/u/Downloads/evil.pdf')
+    for (const [bad, i] of [['..', 0], ['a/..', 1], [' . ', 2]] as const) {
+      const d = saveDraft(c.db, { source: 'mcp', fields: EMPTY_DRAFT_FIELDS, files: [{ name: bad, data: new Uint8Array([1]) }] }, 2 + i)
+      await call('drafts:saveMedia', d.files[0].id)
+      expect(asked).toBe(`/home/u/Downloads/file-${d.files[0].id}`)
+    }
   })
 
   it('drafts:save refuses an unknown token, garbage and a bad id; never throws', async () => {

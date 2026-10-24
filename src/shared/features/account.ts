@@ -33,4 +33,6 @@ export interface AccountSummary {
 }
 
 /** The MCP tools of this feature, in Ukrainian for the MCP modal. */
-export const ACCOUNT_TOOL_SUMMARY = [{ name: 'get_my_account', text: 'мій акаунт: ім’я, email, адреси, видані дозволи' }]
+export const ACCOUNT_TOOL_SUMMARY = [
+  { name: 'get_my_account', text: 'мій акаунт Etsy наживо: ім’я, email, збережені адреси, видані дозволи входу, мій магазин' }
+]

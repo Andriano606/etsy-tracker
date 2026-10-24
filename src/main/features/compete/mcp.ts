@@ -1,6 +1,8 @@
-// The neutral MCP tools of the "compete" feature: live reads of any store /
-// product. Never a URL, never the marketplace's name; free text through
-// neutralText; photos as ids/sizes/alt/colors only.
+// The MCP tools of the "compete" feature: live Etsy API reads of any Etsy shop
+// ("store") / listing ("product"), each call costing API quota. Text from Etsy
+// goes out as Etsy returned it (entities decoded); no URLs (no listing pages,
+// no CDN images), no ids of Etsy-internal objects the client can't use;
+// photos as ids/sizes/alt/colors only.
 
 import {
   LIVE_PARTS,
@@ -17,8 +19,7 @@ import { priceValue } from '../../../shared/format'
 import type { EtsyClient } from '../../etsyApi'
 import { ToolInputError, textResult, type McpTool } from '../../mcpProtocol'
 import { NOT_SIGNED_IN } from '../../mcpStoreTools'
-import { neutralText } from '../../neutral'
-import { mcpFail, neutralError } from '../common'
+import { mcpFail, mcpErrorText } from '../common'
 import type { FeatureMcpDeps } from '../types'
 import {
   SHIPPING_SCOPES,
@@ -38,9 +39,12 @@ import {
 } from './api'
 import { optInt } from './map'
 
-export const NOT_AVAILABLE = 'Not available: the app has no connection to the store service configured (no API key).'
+export const NOT_AVAILABLE = 'Not available: the app has no Etsy API key configured (Settings), so it cannot read Etsy live.'
+/** Etsy's 404 for getListingTranslation is generic, so both meanings are named. */
 export const TRANSLATION_NOT_FOUND =
-  'Nothing found for this language: the product has no translation into it, or the product is not (or no longer) in that store.'
+  'Etsy found nothing for this language: the listing has no translation into it, or the listing is not (or no longer) in that shop.'
+/** Etsy answers getListingsShippingByListingIds with a null profile for listings the signed-in user doesn't own. */
+export const SHIPPING_NOT_SHARED = 'Etsy shares shipping profiles only for listings of the signed-in user’s own shop.'
 /** get_store_sections include_products: at most this many products (5 requests). */
 export const SECTION_PRODUCTS_MAX = 500
 const DEFAULT_PARTS: readonly LivePart[] = LIVE_PARTS.filter((p) => p !== 'shipping')
@@ -56,7 +60,7 @@ function publicClient(deps: FeatureMcpDeps): EtsyClient {
 
 const product = (l: CompeteListingRow) => ({
   product_id: l.listingId,
-  title: neutralText(l.title),
+  title: l.title,
   price: money(l.price),
   status: l.state,
   quantity: l.quantity,
@@ -70,13 +74,13 @@ const photo = (i: LiveImage) => ({
   position: i.rank,
   width: i.width,
   height: i.height,
-  alt_text: neutralText(i.altText),
+  alt_text: i.altText,
   color: { hex: i.hexCode, red: i.red, green: i.green, blue: i.blue, hue: i.hue, saturation: i.saturation, brightness: i.brightness },
   black_and_white: i.isBlackAndWhite
 })
 
 const shippingProfile = (p: ShippingProfileInfo) => ({
-  name: neutralText(p.title),
+  name: p.title,
   origin_country: p.originCountry,
   origin_postal_code: p.originPostalCode,
   profile_type: p.profileType,
@@ -94,7 +98,7 @@ const shippingProfile = (p: ShippingProfileInfo) => ({
     max_delivery_days: d.maxDeliveryDays
   })),
   upgrades: p.upgrades.map((u) => ({
-    name: neutralText(u.name),
+    name: u.name,
     scope: u.type === 0 ? 'domestic' : u.type === 1 ? 'international' : null,
     price: money(u.price),
     price_per_additional_item: money(u.secondaryPrice),
@@ -106,8 +110,8 @@ const shippingProfile = (p: ShippingProfileInfo) => ({
 })
 
 /**
- * Signed in with `scopes` — owning a store or not (getListingsShippingByListingIds
- * needs only the scope), else a neutral ToolInputError. Mirrors requireSignIn.
+ * Signed in to Etsy with `scopes` — owning a shop or not (getListingsShippingByListingIds
+ * needs only the scope), else a ToolInputError for the client. Mirrors requireSignIn.
  */
 export function mcpSignedIn(deps: FeatureMcpDeps, scopes: readonly string[]): void {
   const st = deps.authStatus()
@@ -115,7 +119,7 @@ export function mcpSignedIn(deps: FeatureMcpDeps, scopes: readonly string[]): vo
   const missing = missingScopes(st.scopes, scopes)
   if (missing.length) {
     throw new ToolInputError(
-      `The user's sign-in lacks a permission this needs (${missing.join(', ')}). Ask them to sign out and sign in again in the app ("✏️ Мій магазин").`
+      `The user's Etsy sign-in lacks an OAuth scope this needs (${missing.join(', ')}). Ask them to sign out and sign in to Etsy again in the app: the "Керувати" button in their own shop's header → "Вийти", then "Увійти через Etsy".`
     )
   }
 }
@@ -129,17 +133,17 @@ export function partsArg(v: unknown): LivePart[] {
   return [...new Set(parts as LivePart[])]
 }
 
-/** The store of a product in our snapshot data, else undefined. */
+/** The shop of a listing in the local database (tracked shops), else undefined. */
 function knownStore(deps: FeatureMcpDeps, productId: number): number | undefined {
   const row = deps.db.prepare('SELECT shop_id FROM listings WHERE listing_id = ?').get(productId) as { shop_id: number } | undefined
   return row?.shop_id
 }
 
-/** The store of a product by one live lookup. */
+/** The shop of a listing by one live getListing call. */
 async function liveStore(client: EtsyClient, productId: number): Promise<number> {
   const l = await client.call<{ shop_id?: unknown } | undefined>(`/v3/application/listings/${productId}`)
   const id = optInt(l?.shop_id)
-  if (!id) throw new ToolInputError(`Product ${productId} was not found.`)
+  if (!id) throw new ToolInputError(`Etsy returned no shop for listing ${productId}.`)
   return id
 }
 
@@ -150,8 +154,8 @@ async function liveDetails(deps: FeatureMcpDeps, a: Record<string, unknown>) {
   const language = a.language as string | undefined
   if (!parts.length && !language) throw new ToolInputError('Ask for at least one part or a language.')
   const out: Record<string, unknown> = { product_id: productId }
-  // Our snapshot data wins over a given store_id (a wrong one would only turn
-  // the store-scoped reads into "not found"); unknown to us → given, else live.
+  // The local database wins over a given store_id (a wrong one would only turn
+  // the shop-scoped reads into "not found"); untracked → given, else live.
   const known = knownStore(deps, productId)
   const given = a.store_id as number | undefined
   if (known && given && known !== given) out.store_id_note = `Product ${productId} belongs to store ${known}; store_id ${given} was ignored.`
@@ -163,36 +167,36 @@ async function liveDetails(deps: FeatureMcpDeps, a: Record<string, unknown>) {
     properties: async () =>
       (await listingProperties(client, await storeId(), productId)).map((p) => ({
         attribute_id: p.propertyId,
-        name: neutralText(p.name),
-        scale: neutralText(p.scaleName),
-        values: p.values.map((v) => neutralText(v))
+        name: p.name,
+        scale: p.scaleName,
+        values: p.values
       })),
     photos: async () => (await listingImages(client, productId)).map(photo),
     videos: async () =>
       (await listingVideos(client, productId)).map((v) => ({ video_id: v.id, width: v.width, height: v.height, status: v.state })),
     personalization: async () =>
       (await listingPersonalization(client, productId)).map((q) => ({
-        question: neutralText(q.text),
-        instructions: neutralText(q.instructions),
+        question: q.text,
+        instructions: q.instructions,
         type: q.type,
         required: q.required,
         max_characters: q.maxChars,
         max_files: q.maxFiles,
         add_on_price: money(q.addOnPrice),
-        options: q.options.map((o) => neutralText(o.label))
+        options: q.options.map((o) => o.label)
       })),
     variation_photos: async () =>
       (await variationImages(client, await storeId(), productId)).map((v) => ({
         attribute_id: v.propertyId,
         value_id: v.valueId,
-        value: neutralText(v.value),
+        value: v.value,
         photo_id: v.imageId
       })),
     shipping: async () => {
       mcpSignedIn(deps, SHIPPING_SCOPES)
       const [s] = await listingsShipping(client, [productId])
       if (s?.profile) return shippingProfile(s.profile)
-      out.shipping_note = 'Shipping details are only shared for products of the user’s own store.'
+      out.shipping_note = SHIPPING_NOT_SHARED
       return null
     },
     reviews: async () => {
@@ -202,7 +206,7 @@ async function liveDetails(deps: FeatureMcpDeps, a: Record<string, unknown>) {
         offset: page.offset,
         items: page.reviews.map((r) => ({
           rating: r.rating,
-          text: neutralText(r.text),
+          text: r.text,
           language: r.language,
           created_at: isoSec(r.createdAt),
           updated_at: isoSec(r.updatedAt),
@@ -215,7 +219,7 @@ async function liveDetails(deps: FeatureMcpDeps, a: Record<string, unknown>) {
     try {
       out[part] = await readers[part]()
     } catch (e) {
-      errors[part] = neutralError(e)
+      errors[part] = mcpErrorText(e)
     }
   }
   if (language) {
@@ -223,13 +227,13 @@ async function liveDetails(deps: FeatureMcpDeps, a: Record<string, unknown>) {
       const t = await listingTranslation(client, await storeId(), productId, language)
       out.translation = t && {
         language: t.language,
-        title: neutralText(t.title),
-        description: neutralText(t.description),
-        tags: t.tags.map((x) => neutralText(x))
+        title: t.title,
+        description: t.description,
+        tags: t.tags
       }
       if (!t) out.translation_note = TRANSLATION_NOT_FOUND
     } catch (e) {
-      errors.translation = neutralError(e)
+      errors.translation = mcpErrorText(e)
     }
   }
   if (store) out.store_id = await store.catch(() => null)
@@ -241,7 +245,7 @@ async function sectionsWithProducts(client: EtsyClient, storeId: number, include
   const sections = await shopSections(client, storeId)
   const out = sections.map((s) => ({
     section_id: s.id,
-    title: neutralText(s.title),
+    title: s.title,
     position: s.rank,
     active_product_count: s.activeListingCount,
     ...(includeProducts ? { products: [] as Array<{ product_id: number; title: string; price: ReturnType<typeof money> }> } : {})
@@ -256,12 +260,20 @@ async function sectionsWithProducts(client: EtsyClient, storeId: number, include
     if (!page.listings.length) break
   } while (rows.length < total && rows.length < SECTION_PRODUCTS_MAX)
   for (const l of rows) {
-    out.find((s) => s.section_id === l.shopSectionId)?.products?.push({ product_id: l.listingId, title: neutralText(l.title), price: money(l.price) })
+    out.find((s) => s.section_id === l.shopSectionId)?.products?.push({ product_id: l.listingId, title: l.title, price: money(l.price) })
   }
   return { store_id: storeId, sections: out, products_total: total, products_truncated: rows.length < total }
 }
 
-const storeIdSchema = { type: 'integer', minimum: 1, description: 'Store id (from list_stores or get_store).' } as const
+const storeIdSchema = {
+  type: 'integer',
+  minimum: 1,
+  description: 'Etsy shop id: a store_id from list_stores / get_store / search_market, or any Etsy shop_id (the shop need not be tracked).'
+} as const
+
+/** Shared by the tool descriptions: what every call here is. */
+const LIVE = 'Live Etsy API read (not the local database; costs API quota, needs only the app’s API key)'
+const PRICE_NOTE = 'price = the listing’s base price set by the seller (before VAT and sales, not the buyer price)'
 
 export function competeMcpTools(deps: FeatureMcpDeps): McpTool[] {
   const run =
@@ -276,14 +288,15 @@ export function competeMcpTools(deps: FeatureMcpDeps): McpTool[] {
   return [
     {
       name: 'get_store_sections',
-      title: 'Store sections (live)',
+      title: 'Etsy shop sections (live)',
+      openWorld: true,
       description:
-        'Live: the sections (shelves) of any store, in display order, with how many active products each has. With include_products, also the active products of each section (id, title, price; at most 500 products overall — products_truncated says when more exist).',
+        `${LIVE}: the sections of any Etsy shop, in the shop’s display order, with each section’s active listing count (1 request). include_products adds the listings of the sections (product_id, title, ${PRICE_NOTE}), 100 per extra request, at most ${SECTION_PRODUCTS_MAX} overall; products_total = Etsy’s count, products_truncated = more exist.`,
       inputSchema: {
         type: 'object',
         properties: {
           store_id: storeIdSchema,
-          include_products: { type: 'boolean', description: 'Also list the products of each section. Default false.' }
+          include_products: { type: 'boolean', description: `Also list each section’s listings (up to ${SECTION_PRODUCTS_MAX} in all). Default false.` }
         },
         required: ['store_id'],
         additionalProperties: false
@@ -292,15 +305,16 @@ export function competeMcpTools(deps: FeatureMcpDeps): McpTool[] {
     },
     {
       name: 'get_store_featured',
-      title: 'Featured products of a store (live)',
+      title: 'Featured listings of an Etsy shop (live)',
+      openWorld: true,
       description:
-        'Live: the products a store features on its front page (featured_position 1 = first), with price, status, favorites and section. Paged with limit/offset; total = all featured products.',
+        `${LIVE}: the listings an Etsy shop features on its shop home page, one page per call — product_id, title, ${PRICE_NOTE}, status, quantity, featured_position (1 = first; null = not ranked), favorites (Etsy favorers), section_id. total = all featured listings; page with limit/offset.`,
       inputSchema: {
         type: 'object',
         properties: {
           store_id: storeIdSchema,
           limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Page size, default 25.' },
-          offset: { type: 'integer', minimum: 0, maximum: 12000, description: 'Products to skip, default 0.' }
+          offset: { type: 'integer', minimum: 0, maximum: 12000, description: 'Listings to skip, default 0.' }
         },
         required: ['store_id'],
         additionalProperties: false
@@ -312,9 +326,10 @@ export function competeMcpTools(deps: FeatureMcpDeps): McpTool[] {
     },
     {
       name: 'get_store_return_policies',
-      title: 'Return policies of a store (live)',
+      title: 'Return policies of an Etsy shop (live)',
+      openWorld: true,
       description:
-        'Live: the return policies a store uses for its products — whether it accepts returns and exchanges, and the return window in days.',
+        `${LIVE}: the return policies an Etsy shop assigns to its listings — accepts_returns, accepts_exchanges and return_window_days (null = none). 1 request.`,
       inputSchema: {
         type: 'object',
         properties: { store_id: storeIdSchema },
@@ -332,20 +347,25 @@ export function competeMcpTools(deps: FeatureMcpDeps): McpTool[] {
     },
     {
       name: 'get_product_live_details',
-      title: 'Live product details',
+      title: 'Live Etsy listing details',
+      openWorld: true,
       description:
-        'Live details of any product, read now (not from a snapshot). parts (default: all but shipping): properties = attributes (e.g. color, size) with values; photos = id, position, size, alt text, average color (no images — use get_product_image for tracked products); videos = id, size, status; personalization = the questions a buyer answers; variation_photos = which photo each variation value shows; shipping = the shipping profile (costs per destination, delivery days, upgrades) — needs the user’s sign-in and is only shared for the user’s own products; reviews = one page of the product’s reviews (reviews_limit/reviews_offset). language adds the product’s translation into that language (null = no translation, or the product was not found in that store — translation_note says so). A part that fails is reported in errors without failing the rest.',
+        'Live Etsy API read (not the local database; costs API quota) of any Etsy listing, one request per part; every part but shipping needs only the app’s API key. parts (default: all but shipping): properties = the listing’s attributes (e.g. color, size) with values; photos = id, position, full size, alt text, average color, black_and_white (metadata only — get_product_image returns the photo of a tracked listing); videos = id, size, status; personalization = the questions a buyer answers (type, required, limits, add-on price, options); variation_photos = which photo each variation value shows; shipping = the listing’s shipping profile (costs per destination, delivery days, upgrades; carrier_id as in list_shipping_carriers) — needs the user’s Etsy sign-in with the OAuth scope shops_r, and Etsy returns it only for the user’s own listings (else null + shipping_note); reviews = one page of Etsy’s reviews of the listing (rating, text, language, dates, has_photo; reviews_limit/reviews_offset; list_reviews has the stored reviews of tracked shops). language adds Etsy’s translation of title/description/tags (null + translation_note when Etsy has none). properties, variation_photos and the translation need the shop: the tracked shop from the local database, else store_id, else one extra getListing request; the answer then has store_id. A part that fails is reported in errors without failing the rest.',
       inputSchema: {
         type: 'object',
         properties: {
-          product_id: { type: 'integer', minimum: 1, description: 'Product id.' },
-          store_id: { type: 'integer', minimum: 1, description: 'The product’s store id (optional — looked up when omitted; a tracked product always uses its known store).' },
+          product_id: { type: 'integer', minimum: 1, description: 'Etsy listing id (a product_id from the other tools, or any Etsy listing_id).' },
+          store_id: {
+            type: 'integer',
+            minimum: 1,
+            description: 'The listing’s Etsy shop id (optional — looked up live when omitted; a tracked listing always uses its known shop).'
+          },
           parts: {
             type: 'array',
             items: { type: 'string', enum: LIVE_PARTS },
             description: `Which parts to read: ${LIVE_PARTS.join(', ')}.`
           },
-          language: { type: 'string', enum: TRANSLATION_CODES, description: 'Also read the translation into this language.' },
+          language: { type: 'string', enum: TRANSLATION_CODES, description: 'Also read Etsy’s translation of the listing into this language.' },
           reviews_limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Reviews per page, default 25.' },
           reviews_offset: { type: 'integer', minimum: 0, maximum: 12000, description: 'Reviews to skip, default 0.' }
         },
@@ -356,13 +376,14 @@ export function competeMcpTools(deps: FeatureMcpDeps): McpTool[] {
     },
     {
       name: 'list_shipping_carriers',
-      title: 'Shipping carriers of a country',
+      title: 'Etsy shipping carriers of a country (live)',
+      openWorld: true,
       description:
-        'The shipping carriers available for parcels sent from a country, each with its domestic and international mail classes (key + name) — used for delivery-date estimates in shipping profiles.',
+        `${LIVE}: the shipping carriers Etsy supports for parcels sent from a country, each with its domestic and international mail classes (key + name) — the carrier_id / mail_class values Etsy shipping profiles use for delivery-time estimates. 1 request.`,
       inputSchema: {
         type: 'object',
         properties: {
-          origin_country: { type: 'string', minLength: 2, maxLength: 2, description: 'ISO 3166-1 alpha-2 country code, e.g. US, GB, UA.' }
+          origin_country: { type: 'string', minLength: 2, maxLength: 2, description: 'Origin country, ISO 3166-1 alpha-2 (e.g. US, GB, UA; UK = GB).' }
         },
         required: ['origin_country'],
         additionalProperties: false
@@ -375,9 +396,9 @@ export function competeMcpTools(deps: FeatureMcpDeps): McpTool[] {
           origin_country: country,
           carriers: carriers.map((c) => ({
             id: c.id,
-            name: neutralText(c.name),
-            domestic_classes: c.domesticClasses.map((m) => ({ key: m.key, name: neutralText(m.name) })),
-            international_classes: c.internationalClasses.map((m) => ({ key: m.key, name: neutralText(m.name) }))
+            name: c.name,
+            domestic_classes: c.domesticClasses.map((m) => ({ key: m.key, name: m.name })),
+            international_classes: c.internationalClasses.map((m) => ({ key: m.key, name: m.name }))
           }))
         }
       })

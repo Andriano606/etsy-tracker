@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
   MCP_DEFAULT_PORT,
+  MCP_OLD_SERVER_NAMES,
   MCP_SERVER_NAME,
+  MCP_TOOL_SUMMARY,
   claudeCodeCommand,
   claudeCodeReplaceCommand,
   claudeDesktopConfig,
@@ -13,28 +15,30 @@ import {
 const TOKEN = 'AbC_12-xyz'
 
 describe('MCP client configs', () => {
-  it('the server has a neutral name and a local URL', () => {
-    expect(MCP_SERVER_NAME).toBe('shop-catalog')
-    expect(MCP_SERVER_NAME).not.toMatch(/etsy/i)
+  it('the server is named after the app, remembers its old name, and has a local URL', () => {
+    expect(MCP_SERVER_NAME).toBe('etsy-tracker')
+    expect(MCP_OLD_SERVER_NAMES).toEqual(['shop-catalog'])
     expect(mcpUrl(MCP_DEFAULT_PORT)).toBe('http://127.0.0.1:9102/mcp')
   })
 
   it('Claude Code: user scope, HTTP transport, the header last (it takes several values)', () => {
     expect(claudeCodeCommand(9102, TOKEN)).toBe(
-      'claude mcp add --transport http --scope user shop-catalog http://127.0.0.1:9102/mcp --header "Authorization: Bearer AbC_12-xyz"'
+      'claude mcp add --transport http --scope user etsy-tracker http://127.0.0.1:9102/mcp --header "Authorization: Bearer AbC_12-xyz"'
     )
   })
 
-  it('the replace variant removes the old entry first and ignores "not found"', () => {
+  it('the replace variant removes the current and the old (shop-catalog) entry first, ignoring "not found"', () => {
     expect(claudeCodeReplaceCommand(9200, TOKEN)).toBe(
-      `claude mcp remove --scope user shop-catalog 2>/dev/null; ${claudeCodeCommand(9200, TOKEN)}`
+      'claude mcp remove --scope user etsy-tracker 2>/dev/null; ' +
+        'claude mcp remove --scope user shop-catalog 2>/dev/null; ' +
+        claudeCodeCommand(9200, TOKEN)
     )
   })
 
   it('.mcp.json: an HTTP server with the bearer header', () => {
     expect(JSON.parse(mcpJsonConfig(9102, TOKEN))).toEqual({
       mcpServers: {
-        'shop-catalog': {
+        'etsy-tracker': {
           type: 'http',
           url: 'http://127.0.0.1:9102/mcp',
           headers: { Authorization: 'Bearer AbC_12-xyz' }
@@ -46,7 +50,7 @@ describe('MCP client configs', () => {
   it('Claude Desktop: stdio through mcp-remote with the header', () => {
     expect(JSON.parse(claudeDesktopConfig(9102, TOKEN))).toEqual({
       mcpServers: {
-        'shop-catalog': {
+        'etsy-tracker': {
           command: 'npx',
           args: ['-y', 'mcp-remote', 'http://127.0.0.1:9102/mcp', '--header', 'Authorization: Bearer AbC_12-xyz']
         }
@@ -66,5 +70,16 @@ describe('validateMcpPort', () => {
     for (const bad of [1023, 65536, 0, -5, 9102.5, '91o2', '', '  ', null, undefined, {}, NaN]) {
       expect(() => validateMcpPort(bad)).toThrow('Порт — ціле число від 1024 до 65535.')
     }
+  })
+})
+
+describe('MCP_TOOL_SUMMARY', () => {
+  const text = (name: string) => MCP_TOOL_SUMMARY.find((t) => t.name === name)!.text
+
+  it('get_store / get_product give review counts and averages, not review texts (those are list_reviews)', () => {
+    expect(text('get_store')).toContain('кількість і середня оцінка збережених відгуків')
+    expect(text('get_product')).toContain('кількість і середня оцінка відгуків')
+    expect(text('get_product_history')).toContain('кількість відгуків')
+    expect(text('list_reviews')).toContain('збережені відгуки')
   })
 })

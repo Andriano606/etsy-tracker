@@ -6,14 +6,34 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import type { ListingPhoto, VariationImage, VariationImageInput, VariationImagesData } from '@shared/features/inventory'
 import type { MyListing } from '@shared/types'
-import { useStore } from '../../store'
-import { Button, Callout, EmptyState, Icon, Loading, Segmented, Term } from '../../ui'
+import { useStore, type ViewerImage } from '../../store'
+import { Button, Callout, EmptyState, Icon, Loading, Segmented, Term, ZoomButton } from '../../ui'
 import { featureCall } from '../call'
 
 type Choice = Record<number, number | null>
 
 const choiceFor = (assigned: VariationImage[], propertyId: number | null): Choice =>
   Object.fromEntries(assigned.filter((a) => a.propertyId === propertyId).map((a) => [a.valueId, a.imageId]))
+
+const ROVING_KEYS = new Set(['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp', 'Home', 'End'])
+
+/** Arrow keys on a magnifier must not move the radio group's choice (the radios keep their roving keys). */
+const keepArrowsOnZoom = (e: KeyboardEvent<HTMLSpanElement>): void => {
+  if (ROVING_KEYS.has(e.key) && (e.target as HTMLElement).classList.contains('ui-zoom-btn')) e.stopPropagation()
+}
+
+/** The listing's photos that have a picture, as one viewer gallery (biggest URL first), + where each photo sits in it. */
+function photoGallery(photos: ListingPhoto[]): { images: ViewerImage[]; index: Map<number, number> } {
+  const images: ViewerImage[] = []
+  const index = new Map<number, number>()
+  photos.forEach((ph, n) => {
+    const src = ph.urlFull ?? ph.url
+    if (!src) return
+    index.set(ph.imageId, images.length)
+    images.push({ src, alt: ph.alt ?? `Фото ${n + 1}`, caption: `Фото ${n + 1}${ph.alt ? ` — ${ph.alt}` : ''}` })
+  })
+  return { images, index }
+}
 
 /** One value's photo choice: «без фото» + every photo, as radios with a roving tab stop. */
 function PhotoChoice({
@@ -28,6 +48,7 @@ function PhotoChoice({
   onPick: (imageId: number | null) => void
 }): JSX.Element {
   const refs = useRef<Array<HTMLButtonElement | null>>([])
+  const gallery = photoGallery(photos)
   const ids: Array<number | null> = [null, ...photos.map((p) => p.imageId)]
   const at = ids.indexOf(selected)
   const stop = at < 0 ? 0 : at
@@ -60,14 +81,28 @@ function PhotoChoice({
           <Icon name="check" size={12} />
         </span>
       </button>
-      {photos.map((ph, n) => (
-        <button {...radio(n + 1)} key={ph.imageId} className="inv-thumb" aria-label={`«${value}»: фото ${n + 1}`} title={`Фото ${n + 1}`}>
-          {ph.url ? <img src={ph.url} alt="" /> : <span className="inv-thumb-n">{n + 1}</span>}
-          <span className="inv-thumb-check" aria-hidden="true">
-            <Icon name="check" size={12} />
+      {photos.map((ph, n) => {
+        const pick = (
+          <button {...radio(n + 1)} className="inv-thumb" aria-label={`«${value}»: фото ${n + 1}`} title={`Фото ${n + 1}`}>
+            {ph.url ? <img src={ph.url} alt="" /> : <span className="inv-thumb-n">{n + 1}</span>}
+            <span className="inv-thumb-check" aria-hidden="true">
+              <Icon name="check" size={12} />
+            </span>
+          </button>
+        )
+        const at = gallery.index.get(ph.imageId)
+        // The radio picks the photo; the magnifier beside it (never inside it) opens the photo at full size.
+        return at == null ? (
+          <span key={ph.imageId} className="inv-thumb-host">
+            {pick}
           </span>
-        </button>
-      ))}
+        ) : (
+          <span key={ph.imageId} className="inv-thumb-host ui-zoom-host" onKeyDown={keepArrowsOnZoom}>
+            {pick}
+            <ZoomButton className="ui-zoom-corner inv-thumb-zoom" images={gallery.images} index={at} label={`Відкрити фото ${n + 1} на весь розмір`} />
+          </span>
+        )
+      })}
     </div>
   )
 }

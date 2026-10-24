@@ -1,12 +1,13 @@
 // The local MCP server (main/mcpServer.ts) as other apps connect to it: its
-// neutral name, address and the ready-to-paste client configs the MCP modal
-// shows. The name and everything a client sees say "store/product", never the
-// marketplace the data comes from.
+// name, address and the ready-to-paste client configs the MCP modal shows.
 
 import { FEATURE_TOOL_SUMMARY } from './features'
 
 /** The server's name in a client's config and in `serverInfo`. */
-export const MCP_SERVER_NAME = 'shop-catalog'
+export const MCP_SERVER_NAME = 'etsy-tracker'
+
+/** Names earlier builds used; the replace command removes them too, so nobody keeps both. */
+export const MCP_OLD_SERVER_NAMES: readonly string[] = ['shop-catalog']
 
 /** Default port: 9100/9101 are MinIO's (docker-compose.yml). */
 export const MCP_DEFAULT_PORT = 9102
@@ -37,9 +38,15 @@ export function claudeCodeCommand(port: number, token: string): string {
   return `claude mcp add --transport http --scope user ${MCP_SERVER_NAME} ${mcpUrl(port)} --header "${authHeader(token)}"`
 }
 
-/** The same after a new token / port: `add` refuses a name that exists, so remove it first. */
+/**
+ * The same after a new token / port (or the rename): `add` refuses a name that
+ * exists, so remove it — and the old name — first.
+ */
 export function claudeCodeReplaceCommand(port: number, token: string): string {
-  return `claude mcp remove --scope user ${MCP_SERVER_NAME} 2>/dev/null; ${claudeCodeCommand(port, token)}`
+  const removes = [MCP_SERVER_NAME, ...MCP_OLD_SERVER_NAMES]
+    .map((name) => `claude mcp remove --scope user ${name} 2>/dev/null; `)
+    .join('')
+  return `${removes}${claudeCodeCommand(port, token)}`
 }
 
 /** `.mcp.json` in a project (Claude Code) or any client that takes HTTP servers with headers. */
@@ -81,29 +88,29 @@ export function claudeDesktopConfig(port: number, token: string): string {
  * tests/main/mcpTools.test.ts keeps the names in step with the real tools.
  */
 export const MCP_TOOL_SUMMARY: ReadonlyArray<{ name: string; text: string; write?: boolean }> = [
-  { name: 'list_stores', text: 'список магазинів з головними цифрами й останнім скануванням' },
-  { name: 'get_store', text: 'профіль магазину: оголошення, політики, відпустка, цифри та їх зміна' },
-  { name: 'search_products', text: 'пошук товарів (назва, теги, опис), сортування, фільтри «нові», «зі знижкою», «зниклі»' },
-  { name: 'get_product', text: 'усе про товар: опис, ціни, знижка, теги, матеріали, атрибути, фото, відгуки' },
-  { name: 'get_product_history', text: 'історія товару: популярність і ціни по скануваннях, акції, усі зміни' },
-  { name: 'list_snapshots', text: 'історія сканувань магазину' },
-  { name: 'get_snapshot_changes', text: 'що нового: додані, зниклі, змінені товари, нові відгуки, акції' },
-  { name: 'list_reviews', text: 'відгуки покупців з фільтрами за оцінкою, датою, текстом' },
+  { name: 'list_stores', text: 'відстежувані магазини Etsy з бази програми: посилання, головні цифри, останнє сканування та його помилка' },
+  { name: 'get_store', text: 'профіль магазину з бази: оголошення, політики, відпустка, цифри та їх зміна, кількість і середня оцінка збережених відгуків' },
+  { name: 'search_products', text: 'пошук товарів відстежуваних магазинів у базі (назва, теги, опис), сортування, фільтри «нові», «зі знижкою», «зниклі»' },
+  { name: 'get_product', text: 'усе про товар з бази: опис, ціни, акція, теги, матеріали, атрибути, фото, відео, кількість і середня оцінка відгуків, посилання на Etsy' },
+  { name: 'get_product_history', text: 'історія товару: популярність, залишок, кількість відгуків і ціни по скануваннях, акції, усі зміни' },
+  { name: 'list_snapshots', text: 'історія сканувань магазину (успішні, з помилкою, поточне) з підсумками' },
+  { name: 'get_snapshot_changes', text: 'що знайшло сканування: нові, зниклі, повернуті й змінені товари, нові відгуки, акції' },
+  { name: 'list_reviews', text: 'збережені відгуки покупців з фільтрами за магазином, товаром, оцінкою, датою, текстом' },
   { name: 'get_store_stats', text: 'статистика магазину за період (те саме, що «📊 Статистика»)' },
-  { name: 'get_product_image', text: 'фото товару як картинка' },
-  { name: 'get_store_logo', text: 'логотип або банер магазину як картинка' },
-  { name: 'get_product_video_preview', text: 'кадр-прев’ю відео товару як картинка' },
-  { name: 'get_review_photo', text: 'фото з відгуку як картинка' },
-  { name: 'list_my_products', text: 'мій магазин: товари в будь-якому стані (чернетки, неактивні…)' },
-  { name: 'find_categories', text: 'пошук категорії для нового товару' },
-  { name: 'get_product_options', text: 'допустимі значення, ліміти, профілі доставки й обробки' },
-  { name: 'create_product', text: 'створити товар з фото й файлами (чернетка або публікація)', write: true },
-  { name: 'update_my_product', text: 'змінити назву, опис, теги, матеріали; увімкнути / вимкнути', write: true },
-  { name: 'add_product_media', text: 'додати фото чи файли до товару', write: true },
-  { name: 'update_my_store', text: 'змінити тексти магазину', write: true },
+  { name: 'get_product_image', text: 'фото товару як картинка (локальна копія, інакше з CDN Etsy)' },
+  { name: 'get_store_logo', text: 'логотип або банер магазину як картинка (з CDN Etsy)' },
+  { name: 'get_product_video_preview', text: 'кадр-прев’ю відео товару як картинка (з CDN Etsy)' },
+  { name: 'get_review_photo', text: 'фото з відгуку як картинка (локальна копія, інакше з CDN Etsy)' },
+  { name: 'list_my_products', text: 'мій магазин на Etsy наживо: товари в будь-якому стані (активні, чернетки, неактивні…)' },
+  { name: 'find_categories', text: 'пошук категорії Etsy для нового товару (дерево категорій продавця)' },
+  { name: 'get_product_options', text: 'допустимі значення й ліміти Etsy для нового товару, профілі доставки й обробки (наживо)' },
+  { name: 'create_product', text: 'створити товар на Etsy з фото й файлами (чернетка Etsy або публікація)', write: true },
+  { name: 'update_my_product', text: 'змінити на Etsy назву, опис, теги, матеріали, автопоновлення; увімкнути / вимкнути', write: true },
+  { name: 'add_product_media', text: 'додати фото чи файли в кінець товару на Etsy', write: true },
+  { name: 'update_my_store', text: 'змінити тексти магазину на Etsy: заголовок, оголошення, повідомлення покупцям, додаткові правила (лише ЄС)', write: true },
   { name: 'prepare_product', text: 'підготувати чернетку в програмі — ви переглядаєте й надсилаєте самі (працює без дозволу на зміни)' },
-  { name: 'list_prepared_products', text: 'чернетки в програмі, що чекають перевірки' },
+  { name: 'list_prepared_products', text: 'усі чернетки в програмі: чого бракує, чи надіслано на Etsy' },
   { name: 'delete_prepared_product', text: 'видалити чернетку в програмі' },
-  { name: 'send_prepared_product', text: 'надіслати чернетку з програми в магазин', write: true },
+  { name: 'send_prepared_product', text: 'надіслати чернетку з програми на Etsy — як чернетку Etsy або з публікацією', write: true },
   ...FEATURE_TOOL_SUMMARY
 ]

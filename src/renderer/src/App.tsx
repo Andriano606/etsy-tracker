@@ -13,7 +13,7 @@ import { HistoryModal } from './components/ScanHistory'
 import { ConfirmModal } from './components/ConfirmModal'
 import { StatsModal } from './components/StatsModal'
 import { NoKeyState, NoShopsState } from './components/EmptyStates'
-import { Callout, EmptyState, Loading } from './ui'
+import { Callout, EmptyState, ImageViewer, Loading } from './ui'
 
 export function App(): JSX.Element {
   const {
@@ -94,6 +94,8 @@ export function App(): JSX.Element {
       <HistoryModal />
       <ListingModal />
       <ConfirmModal />
+      {/* Any picture opened full size — over every window. */}
+      <ImageViewer />
     </div>
   )
 }

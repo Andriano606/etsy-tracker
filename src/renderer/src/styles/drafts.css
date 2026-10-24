@@ -1,0 +1,68 @@
+/* ---- Drafts in the app (DraftsModal): zoomable photos, file downloads, links after a send ---- */
+
+/* A photo card's picture is a ZoomImage button: fill the card like the plain <img> did. */
+.my-photo > .draft-photo-zoom {
+  width: 100%;
+  border-radius: 0;
+}
+/* The card clips its overflow: keep the focus ring inside it. */
+.my-photo > .draft-photo-zoom:focus-visible {
+  outline-offset: -2px;
+}
+
+/* The first-photo thumbnail of a draft row (a ZoomImage — the row itself is not clickable). */
+.my-row > .draft-row-zoom {
+  flex: none;
+  border-radius: var(--r-sm);
+}
+.draft-row-zoom .ui-zoom-badge {
+  right: 3px;
+  bottom: 3px;
+  width: 20px;
+  height: 20px;
+}
+
+/* Files of a draft with their download buttons, and what the last download did. */
+.draft-files {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.draft-dl-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+  min-width: 0;
+}
+.draft-dl-note:not(.is-error) > svg {
+  color: var(--green);
+}
+.draft-dl-note > svg {
+  flex: none;
+  margin-top: 2px;
+}
+.draft-dl-note > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.draft-dl-note.is-error {
+  color: var(--danger-text);
+}
+
+/* Right after a send: open the listing on Etsy / in Etsy's listing editor. */
+.draft-next {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.draft-next-actions {
+  flex-wrap: wrap;
+}
+.draft-next-hint {
+  margin: 0;
+}

@@ -66,6 +66,7 @@ export function toMyListing(l: EtsyListing | EtsyListingWithAssociations): MyLis
   const img = (l as EtsyListingWithAssociations).images
   const first = Array.isArray(img) && img.length ? [...img].sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0))[0] : null
   const thumb = first ? (first.url_170x135 ?? first.url_570xN ?? null) : null
+  const full = first ? (first.url_fullxfull ?? first.url_570xN ?? null) : null
   return {
     listingId: l.listing_id,
     state: String(l.state ?? ''),
@@ -81,6 +82,7 @@ export function toMyListing(l: EtsyListing | EtsyListingWithAssociations): MyLis
     quantity: typeof l.quantity === 'number' ? l.quantity : null,
     url: typeof l.url === 'string' ? l.url : null,
     imageUrl: thumb && isEtsyCdnUrl(thumb) ? thumb : null,
+    imageFullUrl: full && isEtsyCdnUrl(full) ? full : null,
     updatedAt: l.updated_timestamp ?? l.last_modified_timestamp ?? null,
     endingAt: l.ending_timestamp ?? null
   }

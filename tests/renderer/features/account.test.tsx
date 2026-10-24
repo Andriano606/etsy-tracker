@@ -92,3 +92,24 @@ describe('Мій магазин → Акаунт', () => {
     expect(screen.getByTestId('missing-scopes')).toHaveTextContent('видалення товарів, замовлення й фінанси')
   })
 })
+
+describe('Мій магазин → Акаунт: фото профілю', () => {
+  it('the avatar opens in the image viewer (Etsy gives only 75×75 — that is what opens)', async () => {
+    const avatar = 'https://i.etsystatic.com/iusa/abc/75x75.jpg'
+    mockFeature({ 'account.summary': { ...summary, avatarUrl: avatar } })
+    await openTab()
+    const tab = screen.getByTestId('account-tab')
+    await act(async () => {
+      fireEvent.click(within(tab).getByRole('button', { name: 'Відкрити на весь розмір: Фото профілю: Andrii K' }))
+    })
+    expect(useStore.getState().viewer).toEqual({ images: [{ src: avatar, alt: 'Фото профілю: Andrii K', caption: undefined }], index: 0 })
+    // the modal stays open
+    expect(useStore.getState().showMyShop).toBe(true)
+  })
+
+  it('no avatar: a placeholder icon, nothing to open', async () => {
+    mockFeature({ 'account.summary': summary })
+    await openTab()
+    expect(within(screen.getByTestId('account-tab')).queryByRole('button', { name: /на весь розмір/ })).toBeNull()
+  })
+})

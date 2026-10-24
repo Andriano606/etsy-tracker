@@ -7,6 +7,34 @@ const path = require('path')
 
 const mcpStatusBase = () => ({ enabled: true, allowWrites: false, port: 9102, url: 'http://127.0.0.1:9102/mcp', token: 'tok_demo-1234567890', tokenEncrypted: true, running: true, error: null, requests: 12, lastRequestAt: Date.now() - 60000, lastClient: 'claude-code' })
 
+// Drafts for the drafts scenes when the fixtures' db has none: one Claude prepared
+// (photos + buyer files), one sent and published, one sent as an Etsy draft.
+// A photo's media id IS a fixture image id, so main.cjs serves etsyimg://draft/{id} from it.
+function sampleDrafts(fx, sample) {
+  const ls = (fx.perShop[sample.id]?.listings ?? []).filter((l) => l.images.length)
+  const photos = (l, n) =>
+    l.images.slice(0, n).map((im, i) => ({ id: Number(im.id), kind: 'photo', position: i + 1, name: `photo-${i + 1}-${l.listingId}.jpg`, mime: 'image/jpeg', size: 180000 + i * 37000 }))
+  const files = (base, names) => names.map((name, i) => ({ id: base + i, kind: 'file', position: i + 1, name, mime: 'application/pdf', size: 420000 + i * 913000 }))
+  const fields = (l, over = {}) => ({
+    type: 'download', title: l.title, description: l.description, price: '5.99', quantity: 999, taxonomyId: 2,
+    taxonomyPath: 'Paper & Party Supplies › Paper › Calendars & Planners', whoMade: 'i_did', whenMade: 'made_to_order', isSupply: false,
+    tags: (l.tags ?? []).slice(0, 13), materials: [], shouldAutoRenew: true, shippingProfileId: null, readinessStateId: null, ...over
+  })
+  const now = Date.now()
+  const base = { createdAt: now - 3 * 86400000, updatedAt: now - 3600000, sentAt: null, sentListingId: null, sentPublished: null, lastError: null, problems: [] }
+  const out = []
+  if (ls[0])
+    out.push({ ...base, id: 901, source: 'mcp', status: 'draft', fields: fields(ls[0]), photos: photos(ls[0], 4),
+      files: files(7001, ['Budget-Planner-2027-Google-Sheets-instructions-and-link-to-the-template-copy.pdf', 'Budget Planner — Excel.xlsx']) })
+  if (ls[1])
+    out.push({ ...base, id: 902, source: 'app', status: 'sent', updatedAt: now - 7200000, sentAt: now - 7200000, sentListingId: 4512345678, sentPublished: true,
+      fields: fields(ls[1]), photos: photos(ls[1], 3), files: files(7101, ['Planner-A4.pdf', 'Planner-US-Letter.pdf', 'How-to-print-and-use-this-planner-at-home.pdf']) })
+  if (ls[2])
+    out.push({ ...base, id: 903, source: 'mcp', status: 'sent', updatedAt: now - 86400000, sentAt: now - 86400000, sentListingId: 4512349999, sentPublished: false,
+      fields: fields(ls[2]), photos: photos(ls[2], 2), files: files(7201, ['Template.xlsx']) })
+  return out
+}
+
 module.exports = function fakeApi(fx, opts = {}) {
   const allListings = Object.values(fx.perShop).flatMap((p) => p.listings)
   const own = fx.shops.find((s) => s.shopName === 'TidyFoxSheets') ?? fx.shops[0]
@@ -51,6 +79,7 @@ module.exports = function fakeApi(fx, opts = {}) {
   for (const f of fs.existsSync(dir) ? fs.readdirSync(dir) : []) {
     if (f.endsWith('.cjs')) features[f.replace(/\.cjs$/, '')] = require(path.join(dir, f))
   }
+  const drafts = fx.drafts?.length ? fx.drafts : sampleDrafts(fx, sample)
   const ctx = { fx, own, sample, myListings, allListings }
   let mcp = { enabled: true, allowWrites: false }
   return {
@@ -114,8 +143,9 @@ module.exports = function fakeApi(fx, opts = {}) {
       ]),
     getShippingProfiles: async () => ok([{ id: 11, label: 'Standard (з UA)' }]),
     getProcessingProfiles: async () => ok([{ id: 21, label: '1–3 дн.' }]),
-    listDrafts: async () => fx.drafts ?? [],
-    saveDraft: async (input) => ok({ ...(fx.drafts?.[0] ?? {}), id: input.id ?? 900, fields: input.fields, photos: [], files: [], status: 'draft', problems: [] }),
+    listDrafts: async () => drafts,
+    saveDraftMedia: async (id) => ok({ path: `/home/andrii/Завантаження/${[...drafts.flatMap((d) => d.files)].find((m) => m.id === id)?.name ?? 'file'}` }),
+    saveDraft: async (input) => ok({ ...(drafts[0] ?? {}), id: input.id ?? 900, fields: input.fields, photos: [], files: [], status: 'draft', problems: [] }),
     deleteDraft: async () => true,
     sendDraft: async () => ({ ok: false, error: '(стенд) надсилання вимкнено' }),
     onDraftsChanged: nop,

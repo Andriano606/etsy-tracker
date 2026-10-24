@@ -264,6 +264,52 @@ Badge tones: `neutral` `accent` `info` `warn` `danger`, `solid`. Stat: a number 
 colour (growth green unless `lowerIsBetter`), a node delta is shown as is; `compact`, `icon`, `info`.
 `.ui-stat-grid` lays tiles out responsively. EmptyState `compact` for a section inside a card.
 
+### Pictures: ZoomImage, ZoomButton and the full-size viewer
+
+**Every picture in the app opens in full size.** `<ImageViewer />` is mounted once, last in `App`, over
+every modal; it is opened through the store — `openImage(images, index?)` / `closeImage()`, where
+`ViewerImage = {src, alt?, caption?}` and **`src` is the biggest URL there is** (`imageSrc(img, 'fullxfull')`,
+`reviewImageSrc(r)`, `etsyimg://draft/{id}`, a shop's `iconUrl`) — never the thumbnail you show. A picture
+that is one of several (a listing's photos, a draft's photos, a review's photos) opens **the whole set** at
+the clicked index. You rarely call `openImage` yourself — use one of the two components:
+
+```tsx
+// The picture itself is the button (magnifier badge on hover/focus):
+<ZoomImage src={imageSrc(img, '570xN')} full={imageSrc(img, 'fullxfull')} alt={title} caption={title} imgClassName="thumb" />
+<ZoomImage src={thumb(i)} gallery={images.map(toViewer)} index={i} alt={`Фото ${i + 1}`} />
+
+// A picture inside something clickable (a card that is a <button>, a clickable row):
+<div className="card-wrap ui-zoom-host">
+  <button className="card" onClick={openListing}><img src={thumb} alt="" />…</button>
+  <ZoomButton images={gallery} index={0} label="Відкрити фото на весь розмір" className="ui-zoom-corner" />
+</div>
+```
+
+| Situation | Use |
+| --- | --- |
+| A picture that does nothing else on click (a gallery's main photo, review/draft photos, a logo) | `ZoomImage` |
+| A picture inside a `<button>`, an `<a>` or a row/card whose click does something else | `ZoomButton` as a **sibling** in a `.ui-zoom-host` |
+
+- **Never nest `ZoomImage` (a `<button>`) inside another `<button>`/`<a>`** — invalid HTML, and the outer
+  control steals the click. Put a `ZoomButton` next to the clickable element instead.
+- **`.ui-zoom-host` pattern:** the wrapper gets `position: relative`; a `ZoomButton` with
+  `className="ui-zoom-corner"` sits in its bottom-right corner, shown on hover and on `:focus-within`
+  (keyboard users see it when they tab to it). The wrapper must be the picture's box (or the card) so the
+  corner lands on the picture. The card's own click keeps working.
+- Both components stop the click (and Enter/Space keydown) from reaching a clickable parent, so a parent's
+  "open the listing" never fires together with the viewer.
+- Names: `ZoomImage` is named "Відкрити на весь розмір: {alt}" (give a meaningful `alt`); `ZoomButton`
+  takes `label` (default "Відкрити на весь розмір"; say what opens: "Відкрити фото на весь розмір").
+- The viewer: fit to the window; "1:1" button or a click on the image for the real size (scrolls; disabled
+  until the image loaded and after a failure — "Не вдалося завантажити зображення."); galleries get side
+  buttons, ←/→ (wrapping) and a "2 / 7" counter; Escape closes **only the viewer** (it is the top of the
+  `useEscape` stack), a click on the dark area closes it, a click on the image doesn't. Focus moves in,
+  Tab stays inside, focus returns to the opener. Its ←/→/Tab are caught by a window capture-phase listener,
+  so document-level arrow handlers under it (the listing gallery) never also fire.
+- Tests: `screen.getByRole('dialog', {name: 'Перегляд зображення'})` and its `img.ui-viewer-img` `src`, or
+  `useStore.getState().viewer` (`{images, index}`); assert the parent's action was **not** called.
+  Reference: `tests/renderer/ui/ImageViewer.test.tsx`.
+
 ## 4. Glossary workflow
 
 - `src/shared/glossary/core.ts` — shared concepts (Etsy, listing, scan, favourites, VAT, API key…). Look

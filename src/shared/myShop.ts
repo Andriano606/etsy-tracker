@@ -348,3 +348,13 @@ export function missingScopes(have: readonly string[] | null | undefined, need: 
   const h = new Set(have ?? [])
   return need.filter((s) => !h.has(s))
 }
+
+/** A listing's public page on Etsy (only works once it is published). */
+export function etsyListingUrl(listingId: number): string {
+  return `https://www.etsy.com/listing/${listingId}`
+}
+
+/** A listing in the seller's own Etsy listing editor (drafts too) — opens for the signed-in owner. */
+export function etsyListingEditUrl(listingId: number): string {
+  return `https://www.etsy.com/your/shops/me/listing-editor/edit/${listingId}`
+}

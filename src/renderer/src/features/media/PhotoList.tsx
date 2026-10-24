@@ -6,8 +6,21 @@
 import { useRef, useState } from 'react'
 import { MAX_ALT_TEXT, type MediaPhoto } from '@shared/features/media'
 import { MAX_IMAGES } from '@shared/myShop'
-import { Badge, Button, EmptyState, GLOSSARY, InfoTip, Toggle } from '../../ui'
+import type { ViewerImage } from '../../store'
+import { Badge, Button, EmptyState, GLOSSARY, InfoTip, Toggle, ZoomImage } from '../../ui'
 import type { MediaOps } from './MediaSection'
+
+/** The biggest URL Etsy gave for a photo (the viewer opens it), null when none. */
+const fullSrc = (p: MediaPhoto): string | null => p.urlFull ?? p.url570 ?? p.url170 ?? p.url75
+
+/** Every photo that has a picture, as a viewer gallery in rank order. */
+function photoGallery(photos: MediaPhoto[]): { viewable: MediaPhoto[]; gallery: ViewerImage[] } {
+  const viewable = photos.filter((p) => fullSrc(p) != null)
+  return {
+    viewable,
+    gallery: viewable.map((p) => ({ src: fullSrc(p) as string, alt: p.altText || `Фото №${p.position}`, caption: `Фото №${p.position}${p.altText ? ` — ${p.altText}` : ''}` }))
+  }
+}
 
 function AltText({ photo, ops, watermarked }: { photo: MediaPhoto; ops: MediaOps; watermarked: boolean }): JSX.Element {
   const [alt, setAlt] = useState(photo.altText)
@@ -118,6 +131,7 @@ export function PhotoList({ photos, ops }: { photos: MediaPhoto[]; ops: MediaOps
     )
   }
 
+  const { viewable, gallery } = photoGallery(photos)
   return (
     <section className="media-block" data-testid="media-photos" aria-labelledby="media-photos-title">
       <div className="media-block-head">
@@ -154,10 +168,21 @@ export function PhotoList({ photos, ops }: { photos: MediaPhoto[]; ops: MediaOps
           {photos.map((p) => {
             const src = p.url170 ?? p.url570 ?? p.url75
             const main = p.position === 1
+            const at = viewable.findIndex((v) => v.id === p.id)
             return (
               <li key={p.id} data-testid={`media-photo-${p.id}`} className={main ? 'is-main' : undefined}>
                 <div className="media-photo-img">
-                  {src ? <img src={src} alt={p.altText || `Фото №${p.position}`} /> : <div className="media-thumb-empty" />}
+                  {src ? (
+                    <ZoomImage
+                      className="media-photo-zoom"
+                      src={src}
+                      alt={p.altText || `Фото №${p.position}`}
+                      gallery={gallery}
+                      index={Math.max(0, at)}
+                    />
+                  ) : (
+                    <div className="media-thumb-empty" />
+                  )}
                   <span className="media-photo-pos num" aria-hidden="true">
                     {p.position}
                   </span>

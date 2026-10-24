@@ -156,6 +156,9 @@ const api = {
   /** Create (no id) or update a draft with its media (stored ids + picked tokens, in order). */
   saveDraft: (input: SaveDraftInput): Promise<MyShopResult<ListingDraft>> => ipcRenderer.invoke('drafts:save', input),
   deleteDraft: (id: number): Promise<boolean> => ipcRenderer.invoke('drafts:delete', id),
+  /** "Зберегти як" for a stored draft file/photo: value null = the user cancelled. */
+  saveDraftMedia: (mediaId: number): Promise<MyShopResult<{ path: string } | null>> =>
+    ipcRenderer.invoke('drafts:saveMedia', mediaId),
   /** Send to Etsy: as an Etsy draft, or published ($0.20). */
   sendDraft: (id: number, publish: boolean): Promise<CreateListingResult> => ipcRenderer.invoke('drafts:send', id, publish),
   onDraftsChanged: (cb: (d: ListingDraft[]) => void): (() => void) => subscribe('drafts:changed', cb),

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { mediaFeature } from '../../../src/main/features/media'
 import { MEDIA_TOOL_SUMMARY } from '../../../src/shared/features/media'
 import { NOT_SIGNED_IN, WRITES_OFF } from '../../../src/main/mcpStoreTools'
-import { OWN_SHOP, callTool, featureCtx, mcpDeps, runAction, signedIn, signedOut } from '../../helpers/features'
+import { OWN_SHOP, callTool, featureCtx, mcpDeps, routedFetch, runAction, signedIn, signedOut, testClient } from '../../helpers/features'
 import type { FakeCall } from '../../helpers/fakeFetch'
 
 const L = 4242
@@ -613,7 +613,12 @@ describe('media: MCP tools', () => {
     expect(tools.filter((t) => t.readOnly === false && !t.destructive).map((t) => t.name)).toEqual(['set_my_photo_alt_text'])
     for (const t of tools) {
       expect(t.inputSchema.additionalProperties).toBe(false)
-      if (t.readOnly === false) expect(t.description).toContain("Changes the user's live store — only call it when the user asked")
+      expect(t.description, t.name).toContain('Etsy')
+      expect(t.description, t.name).toMatch(/listings_[rw]/)
+      if (t.readOnly === false) {
+        expect(t.description).toContain("Changes the user's live Etsy shop (OAuth listings_r + listings_w")
+        expect(t.description).toContain('only call it when the user asked')
+      } else expect(t.description).toMatch(/^Live from the Etsy API/)
     }
   })
 
@@ -638,18 +643,18 @@ describe('media: MCP tools', () => {
     expect(fetch.calls.every((c) => c.method === 'GET')).toBe(true)
   })
 
-  it('list_my_product_media: a refused part is null with a neutral English note; signed out / no permission', async () => {
+  it('list_my_product_media: a refused part is null with an English note quoting Etsy; signed out / no permission', async () => {
     const { deps } = mcp({ [`GET ${OWN}/files`]: { status: 403, body: { error: 'Etsy says no: https://www.etsy.com/x' } } })
     const r = await callTool(mediaFeature, deps, 'list_my_product_media', { product_id: L })
     expect(r.json.files).toBeNull()
-    expect(r.json.notes).toEqual(['The files could not be read: The store refused this action (HTTP 403): marketplace says no: [link].'])
+    expect(r.json.notes).toEqual(['The files could not be read: Etsy refused this action (HTTP 403): Etsy says no: https://www.etsy.com/x.'])
     const out = await callTool(mediaFeature, mcp({}, { status: signedOut }).deps, 'list_my_product_media', { product_id: L })
     expect(out.isError).toBe(true)
     expect(out.text).toBe(NOT_SIGNED_IN)
     const scope = await callTool(mediaFeature, mcp({}, { status: signedIn({ scopes: ['listings_w'] }) }).deps, 'list_my_product_media', {
       product_id: L
     })
-    expect(scope.text).toContain('lacks a permission this needs (listings_r)')
+    expect(scope.text).toMatch(/Etsy sign-in lacks .*\(listings_r\)/)
   })
 
   it('delete_my_product_photo: DELETE, then the fresh media', async () => {
@@ -733,10 +738,11 @@ describe('media: MCP tools', () => {
     const q = mcp({ [`GET ${PUB}/videos`]: paged([]), [`POST ${OWN}/videos`]: { status: 429, headers: { 'retry-after': '3600' } } })
     const quota = await callTool(mediaFeature, q.deps, 'upload_my_product_video', { product_id: L, video: { data_base64: b64('MP4'), name: 'clip.mp4' } })
     expect(quota.isError).toBe(true)
-    expect(quota.text).toBe('At most 10 video uploads per product per day — try again tomorrow: Too many requests right now — try again in a minute.')
+    // The media-specific part; what follows the colon is mcpErrorText's generic 429 text (mcpStoreTools).
+    expect(quota.text).toMatch(/^Etsy allows at most 10 video uploads per listing per day — try again tomorrow: \S/)
     const kept = mcp({ [`POST ${OWN}/videos`]: { status: 429, headers: { 'retry-after': '3600' } } })
     const k = await callTool(mediaFeature, kept.deps, 'upload_my_product_video', { product_id: L, video: { data_base64: b64('MP4'), name: 'clip.mp4' } })
-    expect(k.text).toMatch(/^At most 10 video uploads per product per day — try again tomorrow; the current video was kept:/)
+    expect(k.text).toMatch(/^Etsy allows at most 10 video uploads per listing per day — try again tomorrow; the current video was kept:/)
     expect(writes(kept.fetch.calls)).toEqual([`POST ${OWN}/videos`])
     const bad = await callTool(mediaFeature, deps, 'upload_my_product_video', { product_id: L, video: { data_base64: b64('x'), name: 'clip.gif' } })
     expect(bad.text).toBe('"clip.gif": a video must be MP4, MOV, M4V, WEBM, AVI, MKV.')
@@ -757,7 +763,7 @@ describe('media: MCP tools', () => {
     expect(await parts(fetch.calls.find((c) => c.method === 'POST')!)).toEqual({ file: { name: 'v2.pdf', type: 'application/pdf', text: 'PDF' }, name: 'v2.pdf', rank: '1' })
     const f = mcp({ [`DELETE ${OWN}/files/{id}`]: { status: 404, body: { error: 'gone' } } })
     const half = await callTool(mediaFeature, f.deps, 'replace_my_product_file', { product_id: L, file_id: 51, file: { data_base64: b64('PDF'), name: 'v2.pdf' } })
-    expect(half.text).toBe('The new file was added, but the old file 51 could not be deleted: Not found (HTTP 404): gone.')
+    expect(half.text).toBe('The new file was added, but the old file 51 could not be deleted: Not found on Etsy (HTTP 404): gone.')
   })
 
   it('every write: changes off → WRITES_OFF, signed out → NOT_SIGNED_IN, no request', async () => {
@@ -784,16 +790,22 @@ describe('media: MCP tools', () => {
     }
   })
 
-  it('neutrality sweep: no marketplace name and no URL in anything a client gets', async () => {
-    const etsyText = 'Etsy &amp; https://www.etsy.com/listing/1 i.etsystatic.com'
-    const { deps } = mcp({
-      [`GET ${PUB}/images`]: paged([img(11, 1, { alt_text: etsyText }), img(12, 2)]),
+  it('honesty sweep: shop text reaches the client unchanged; no CDN URL, no raw_json, no token or key in anything a client gets', async () => {
+    const etsyText = 'Etsy &amp; https://www.etsy.com/listing/1'
+    const routes = {
+      [`GET ${PUB}/images`]: paged([img(11, 1, { alt_text: etsyText, raw_json: '{"x":1}' }), img(12, 2)]),
       [`GET ${PUB}/images/{id}`]: { body: img(11, 1, { alt_text: etsyText }) },
       [`GET ${OWN}/files`]: paged([file(51, 1, { filename: 'etsy-guide.pdf' })]),
       [`GET ${OWN}/files/{id}`]: { body: file(51, 1, { filename: 'etsy-guide.pdf' }) },
       [`POST ${OWN}/videos`]: { status: 400, body: { error: 'Etsy: see https://help.etsy.com' } },
       [`DELETE ${OWN}/images/{id}`]: { status: 403, body: { error: 'Not your Etsy shop' } }
-    })
+    }
+    const TOKEN = 'oauth-access-token-XYZ123'
+    const withToken = (over: Parameters<typeof mcpDeps>[1] = {}) => {
+      const r = mediaRoutes(routes)
+      return mcpDeps(r, { ...over, client: testClient(routedFetch(r), TOKEN) })
+    }
+    const { deps } = withToken()
     const tools = mediaFeature.mcpTools!(deps)
     const texts: string[] = [JSON.stringify(tools.map((t) => ({ n: t.name, t: t.title, d: t.description, s: t.inputSchema })))]
     const calls: Array<[string, Record<string, unknown>]> = [
@@ -807,23 +819,33 @@ describe('media: MCP tools', () => {
       ['replace_my_product_file', { product_id: L, file_id: 51, file: { data_base64: b64('x'), name: 'etsy-v2.pdf' } }]
     ]
     expect(calls.map(([n]) => n)).toEqual(tools.map((t) => t.name))
-    for (const [name, a] of calls) texts.push((await callTool(mediaFeature, deps, name, a)).text)
-    texts.push((await callTool(mediaFeature, mcp({}, { status: signedOut }).deps, 'list_my_product_media', { product_id: L })).text)
-    // A refused upload names the user's file — which may name the marketplace.
+    const results: Record<string, string> = {}
+    for (const [name, a] of calls) texts.push((results[name] = (await callTool(mediaFeature, deps, name, a)).text))
+    texts.push((await callTool(mediaFeature, withToken({ status: signedOut }).deps, 'list_my_product_media', { product_id: L })).text)
+    // (a) the shop's own text and Etsy's own error texts, unchanged (entities decoded)
+    const listed = JSON.parse(results.list_my_product_media)
+    expect(listed.photos[0].alt_text).toBe('Etsy & https://www.etsy.com/listing/1')
+    expect(listed.files[0].name).toBe('etsy-guide.pdf')
+    expect(results.delete_my_product_photo).toBe('Etsy refused this action (HTTP 403): Not your Etsy shop.')
+    expect(results.upload_my_product_video).toContain('Etsy: see https://help.etsy.com')
+    expect(JSON.parse(results.replace_my_product_file).done).toBe('file 51 replaced with "etsy-v2.pdf"')
+    // A refused upload names the user's file as it is.
     const badName = [
-      ['replace_my_product_photo', { product_id: L, position: 1, photo: { data_base64: b64('x'), name: 'etsy-listing.bmp' } }],
-      ['upload_my_product_video', { product_id: L, video: { data_base64: b64('x'), name: 'etsy-clip.gif' } }]
+      ['replace_my_product_photo', { product_id: L, position: 1, photo: { data_base64: b64('x'), name: 'etsy-listing.bmp' } }, '"etsy-listing.bmp": a photo must be JPG, JPEG, PNG, GIF.'],
+      ['upload_my_product_video', { product_id: L, video: { data_base64: b64('x'), name: 'etsy-clip.gif' } }, '"etsy-clip.gif": a video must be MP4, MOV, M4V, WEBM, AVI, MKV.']
     ] as const
-    for (const [name, a] of badName) {
+    for (const [name, a, said] of badName) {
       const r = await callTool(mediaFeature, deps, name, a)
       expect(r.isError).toBe(true)
-      expect(r.text).toContain('marketplace-')
+      expect(r.text).toBe(said)
       texts.push(r.text)
     }
+    // (b) never a CDN URL (every fixture photo and video has one), raw API data, the token or the API key
     for (const t of texts) {
-      expect(t).not.toMatch(/etsy/i)
-      expect(t).not.toMatch(/https?:\/\//)
+      expect(t).not.toMatch(/etsystatic\.com/i)
+      expect(t).not.toContain('raw_json')
+      expect(t).not.toContain(TOKEN)
+      expect(t).not.toContain('keystring')
     }
-    expect(texts.join(' ')).toContain('marketplace & [link]')
   })
 })

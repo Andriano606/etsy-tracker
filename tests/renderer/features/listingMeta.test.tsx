@@ -545,7 +545,7 @@ describe('Переклади', () => {
       'listingMeta.saveTranslation': (a: any) => ({ listingId: 1234, language: a.language, title: a.title, description: a.description, tags: a.tags })
     })
     await show('translations')
-    expect(calls('translation')).toEqual([{ listingId: 1234, language: 'en' }])
+    expect(calls('translation')).toEqual([{ listingId: 1234, language: 'en-US' }])
     expect(screen.getByText(/Перекладу цією мовою ще немає/)).toBeInTheDocument()
     const create = screen.getByRole('button', { name: 'Створити переклад' })
     expect(create).toBeDisabled()
@@ -555,7 +555,7 @@ describe('Переклади', () => {
     await change(screen.getByLabelText(/Теги через кому/), 'budget, planner,, budget')
     await click(create)
     expect(calls('saveTranslation')).toEqual([
-      { listingId: 1234, language: 'en', title: 'Budget planner', description: 'A planner', tags: ['budget', 'planner'], exists: false }
+      { listingId: 1234, language: 'en-US', title: 'Budget planner', description: 'A planner', tags: ['budget', 'planner'], exists: false }
     ])
     expect(screen.getByText('Переклад створено на Etsy.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Оновити переклад' })).toBeDisabled()
@@ -570,7 +570,7 @@ describe('Переклади', () => {
     await show('translations')
     await change(screen.getByLabelText('Мова'), 'de')
     expect(calls('translation')).toEqual([
-      { listingId: 1234, language: 'en' },
+      { listingId: 1234, language: 'en-US' },
       { listingId: 1234, language: 'de' }
     ])
     expect(screen.getByLabelText(/Назва/)).toHaveValue('Budgetplaner')
@@ -584,7 +584,7 @@ describe('Переклади', () => {
   })
 
   it('clearing the tags of a translation that has some warns that they stay (Etsy has no way to clear them)', async () => {
-    mockFeature({ 'listingMeta.translation': { listingId: 1234, language: 'en', title: 'T', description: 'D', tags: ['budget'] } })
+    mockFeature({ 'listingMeta.translation': { listingId: 1234, language: 'en-US', title: 'T', description: 'D', tags: ['budget'] } })
     await show('translations')
     expect(screen.queryByText(/Etsy не дозволяє прибрати всі теги перекладу/)).not.toBeInTheDocument()
     await change(screen.getByLabelText(/Теги через кому/), '')
@@ -594,7 +594,7 @@ describe('Переклади', () => {
   it('an existing translation is marked; a load error has "Спробувати ще"', async () => {
     let n = 0
     mockFeature({
-      'listingMeta.translation': () => (++n === 1 ? { ok: false, error: 'Увійдіть в Etsy' } : { listingId: 1234, language: 'en', title: 'T', description: 'D', tags: [] })
+      'listingMeta.translation': () => (++n === 1 ? { ok: false, error: 'Увійдіть в Etsy' } : { listingId: 1234, language: 'en-US', title: 'T', description: 'D', tags: [] })
     })
     await show('translations')
     expect(screen.queryByText('Переклад є на Etsy')).toBeNull()

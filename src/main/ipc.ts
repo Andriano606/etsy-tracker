@@ -1,9 +1,9 @@
 // Wires the pure per-concern modules (db, settings, etsyApi, scanner, shops) to
 // IPC channels. All Etsy traffic happens here in main — never in the renderer.
 
-import { BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
-import { readFile, stat } from 'fs/promises'
-import { basename } from 'path'
+import { BrowserWindow, app, clipboard, dialog, ipcMain, shell } from 'electron'
+import { readFile, stat, writeFile } from 'fs/promises'
+import { basename, join } from 'path'
 import type { WebContents } from 'electron'
 import type {
   BuyerCountryResult,
@@ -59,7 +59,7 @@ import {
 } from './db'
 import { EtsyApiError, type EtsyClient } from './etsyApi'
 import { type EtsyAuth, EtsyAuthError } from './etsyAuth'
-import { type DraftMediaSlot, DraftError, deleteDraft, listDrafts, saveDraft, sendDraft } from './drafts'
+import { type DraftMediaSlot, DraftError, deleteDraft, getDraftMediaData, listDrafts, saveDraft, sendDraft } from './drafts'
 import {
   type FileRegistry,
   createFileRegistry,
@@ -128,6 +128,12 @@ export interface IpcContext {
   accessToken?: () => Promise<string | null>
   /** The native "open file" dialog (tests inject one; else Electron's). */
   showOpenDialog?: (opts: Electron.OpenDialogOptions) => Promise<{ canceled: boolean; filePaths: string[] }>
+  /** The native "save file" dialog (tests inject one; else Electron's). */
+  showSaveDialog?: (opts: Electron.SaveDialogOptions) => Promise<{ canceled: boolean; filePath?: string }>
+  /** Writes a saved file (tests inject one; else fs). */
+  writeFile?: (path: string, data: Uint8Array) => Promise<void>
+  /** Where "Зберегти як" starts (tests inject one; else the Downloads folder). */
+  downloadsDir?: () => string
 }
 
 /**
@@ -529,6 +535,29 @@ export function registerIpc(ctx: IpcContext): void {
       return { ok: true, value: draft }
     } catch (e) {
       return { ok: false, error: e instanceof DraftError ? e.message : myShopErrorMessage(e) }
+    }
+  })
+  // "Завантажити" next to a draft's file (or photo): the stored bytes → a file the user picks.
+  const saveDialog =
+    ctx.showSaveDialog ??
+    ((opts: Electron.SaveDialogOptions) => {
+      const win = BrowserWindow.getFocusedWindow()
+      return win ? dialog.showSaveDialog(win, opts) : dialog.showSaveDialog(opts)
+    })
+  ipcMain.handle('drafts:saveMedia', async (_e, mediaId: unknown): Promise<MyShopResult<{ path: string } | null>> => {
+    const id = positiveId(mediaId)
+    const row = id == null ? null : getDraftMediaData(db, id)
+    if (!row) return { ok: false, error: 'Цього файлу в чернетці вже немає.' }
+    try {
+      const base = basename(row.name).trim()
+      const name = !base || base === '.' || base === '..' ? `file-${row.id}` : base
+      const dir = ctx.downloadsDir?.() ?? app.getPath('downloads')
+      const res = await saveDialog({ title: 'Зберегти файл', defaultPath: join(dir, name) })
+      if (res.canceled || !res.filePath) return { ok: true, value: null }
+      await (ctx.writeFile ?? ((p: string, d: Uint8Array) => writeFile(p, d)))(res.filePath, new Uint8Array(row.data))
+      return { ok: true, value: { path: res.filePath } }
+    } catch (e) {
+      return { ok: false, error: `Не вдалося зберегти файл: ${e instanceof Error ? e.message : String(e)}` }
     }
   })
   ipcMain.handle('drafts:delete', (_e, id: unknown): boolean => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { shopConfigFeature } from '../../../src/main/features/shopConfig'
 import { SHOP_CONFIG_TOOL_SUMMARY } from '../../../src/shared/features/shopConfig'
+import { NOT_SIGNED_IN, WRITES_OFF } from '../../../src/main/mcpStoreTools'
 
 import { ALL_SCOPES, OWN_SHOP, OWN_USER, callTool, featureCtx, mcpDeps, runAction, signedIn, signedOut } from '../../helpers/features'
 
@@ -637,11 +638,19 @@ describe('shopConfig MCP tools', () => {
     expect(TOOL_CALLS.map((t) => t.name)).toEqual(tools.map((t) => t.name))
     for (const t of tools) {
       expect(t.inputSchema.additionalProperties).toBe(false)
+      // every tool says it is a live Etsy call and which OAuth scope it needs
+      expect(t.description).toMatch(/Live Etsy API call \((OAuth scope (shops|listings)_[rw]|API key; requires the user's Etsy sign-in in the app)\)\./)
       if (t.readOnly === false) {
         expect(t.destructive).toBe(true)
-        expect(t.description).toContain("changes the user's live store")
+        expect(t.description).toContain("changes the user's live Etsy shop")
       }
     }
+    const desc = (name: string) => tools.find((t) => t.name === name)!.description
+    expect(desc('list_my_shipping_profiles')).toContain('OAuth scope shops_r')
+    expect(desc('create_my_section')).toContain('OAuth scope shops_w')
+    expect(desc('set_my_product_section')).toContain('OAuth scope listings_w')
+    expect(desc('list_products_by_return_policy')).toContain('OAuth scope listings_r')
+    expect(desc('list_my_return_policies')).toContain('API key;')
   })
 
   for (const tc of TOOL_CALLS) {
@@ -660,7 +669,7 @@ describe('shopConfig MCP tools', () => {
     })
   }
 
-  it('outputs: neutral shapes with decimal money', async () => {
+  it('outputs: snake_case shapes with decimal money', async () => {
     const { deps } = mcpDeps(ROUTES)
     const p = await callTool(shopConfigFeature, deps, 'list_my_shipping_profiles')
     expect(p.json.profiles[0]).toMatchObject({
@@ -693,7 +702,7 @@ describe('shopConfig MCP tools', () => {
       const tc = TOOL_CALLS.find((t) => t.name === name)!
       const r = await callTool(shopConfigFeature, deps, name, tc.args)
       expect(r.isError).toBe(true)
-      expect(r.text).toContain('Changes to the store are switched off')
+      expect(r.text).toBe(WRITES_OFF)
       expect(fetch.calls).toHaveLength(0)
     }
   })
@@ -703,11 +712,11 @@ describe('shopConfig MCP tools', () => {
       const { deps, fetch } = mcpDeps(ROUTES, { status: signedOut })
       const r = await callTool(shopConfigFeature, deps, tc.name, tc.args)
       expect(r.isError).toBe(true)
-      expect(r.text).toContain('has not connected their own store')
+      expect(r.text).toBe(NOT_SIGNED_IN)
       expect(fetch.calls).toHaveLength(0)
     }
     const noClient = await callTool(shopConfigFeature, mcpDeps(ROUTES, { client: null }).deps, 'list_my_sections')
-    expect(noClient.text).toContain('has not connected their own store')
+    expect(noClient.text).toBe(NOT_SIGNED_IN)
   })
 
   it('a missing permission is named; bad input comes back in English; schema checks', async () => {
@@ -753,7 +762,7 @@ describe('shopConfig MCP tools', () => {
     ).toBe('The source and destination policies must differ.')
   })
 
-  it('store errors are neutral (400 detail, 409, 500)', async () => {
+  it("Etsy errors come through with Etsy's detail (400, 409, 500)", async () => {
     const { deps } = mcpDeps({
       ...ROUTES,
       [`POST ${SHOP}/sections`]: { status: 400, body: { error: 'Etsy says: title invalid, see https://www.etsy.com/help' } },
@@ -763,7 +772,7 @@ describe('shopConfig MCP tools', () => {
       [`GET ${SHOP}/production-partners`]: { status: 500 }
     })
     const bad = await callTool(shopConfigFeature, deps, 'create_my_section', { title: 'x' })
-    expect(bad.text).toBe('The store rejected the request as invalid (HTTP 400): marketplace says: title invalid, see [link].')
+    expect(bad.text).toBe('Etsy rejected the request as invalid (HTTP 400): Etsy says: title invalid, see https://www.etsy.com/help.')
     const conflict = await callTool(shopConfigFeature, deps, 'create_my_processing_profile', {
       readiness_state: 'made_to_order',
       min_processing_time: 1,
@@ -781,34 +790,47 @@ describe('shopConfig MCP tools', () => {
     expect([policy.isError, policy.text]).toEqual([true, 'A return policy with these terms already exists; use consolidate_my_return_policies to merge them.'])
     const server = await callTool(shopConfigFeature, deps, 'list_my_production_partners')
     expect(server.isError).toBe(true)
-    expect(server.text).not.toMatch(/etsy/i)
+    expect(server.text).toContain('HTTP 500')
   })
 
-  it('neutrality sweep: no marketplace name, no URL in anything a client gets', async () => {
-    const leak = 'Etsy pick https://www.etsy.com/shop/x etsystatic.com/img'
+  it('honesty sweep: Etsy texts reach the client unchanged; no CDN URL, raw JSON or token in anything a client gets', async () => {
+    const text = 'Etsy pick https://www.etsy.com/shop/x'
+    const IMAGE = { listing_image_id: 1, rank: 1, url_170x135: 'https://i.etsystatic.com/1/il_170x135.jpg', url_fullxfull: 'https://i.etsystatic.com/1/il_full.jpg' }
     const routes = {
       ...ROUTES,
-      [`GET ${SHOP}/sections`]: { body: { count: 1, results: [{ ...SECTION, title: leak }] } },
+      [`GET ${SHOP}/sections`]: { body: { count: 1, results: [{ ...SECTION, title: text }] } },
       [`GET ${SHOP}/shipping-profiles`]: {
-        body: { count: 1, results: [{ ...PROFILE, title: leak, shipping_profile_upgrades: [{ ...UPGRADE, upgrade_name: leak }] }] }
+        body: { count: 1, results: [{ ...PROFILE, title: text, shipping_profile_upgrades: [{ ...UPGRADE, upgrade_name: text }] }] }
       },
-      [`GET ${SHOP}/readiness-state-definitions`]: { body: { count: 1, results: [{ ...READY, processing_days_display_label: leak }] } },
-      [`GET ${SHOP}/policies/return/{id}/listings`]: { body: { count: 1, results: [{ ...LISTING, title: leak }] } },
-      [`GET ${SHOP}/holiday-preferences`]: { body: [{ ...HOLIDAY, holiday_name: leak }] },
-      [`GET ${SHOP}/production-partners`]: { body: { count: 1, results: [{ ...PARTNER, partner_name: leak, location: leak }] } }
+      [`GET ${SHOP}/readiness-state-definitions`]: { body: { count: 1, results: [{ ...READY, processing_days_display_label: text }] } },
+      [`GET ${SHOP}/policies/return/{id}/listings`]: { body: { count: 1, results: [{ ...LISTING, title: text, images: [IMAGE] }] } },
+      [`PATCH ${SHOP}/listings/{id}`]: { body: { ...LISTING, title: text, images: [IMAGE] } },
+      [`GET ${SHOP}/holiday-preferences`]: { body: [{ ...HOLIDAY, holiday_name: text }] },
+      [`GET ${SHOP}/production-partners`]: { body: { count: 1, results: [{ ...PARTNER, partner_name: text, location: text }] } }
     }
     const texts: string[] = []
+    const ok: Record<string, any> = {}
     for (const tc of TOOL_CALLS) {
       for (const over of [{}, { writes: false }, { status: signedOut }]) {
         const r = await callTool(shopConfigFeature, mcpDeps(routes, over).deps, tc.name, tc.args)
         texts.push(r.text)
+        if (!Object.keys(over).length) ok[tc.name] = r.json
       }
     }
     texts.push(JSON.stringify(toolsOf().map(({ run: _run, ...t }) => t)))
-    expect(texts.join('\n')).toContain('marketplace pick [link]')
     for (const t of texts) {
-      expect(t).not.toMatch(/etsy/i)
-      expect(t).not.toMatch(/https?:\/\//)
+      expect(t).not.toMatch(/etsystatic\.com/i)
+      expect(t).not.toContain('raw_json')
+      expect(t).not.toContain('keystring')
+      expect(t).not.toMatch(/\btok\b/)
     }
+    // Etsy's texts as Etsy sent them.
+    expect(ok.list_my_sections.sections[0].title).toBe(text)
+    expect(ok.list_my_shipping_profiles.profiles[0]).toMatchObject({ title: text, upgrades: [{ name: text }] })
+    expect(ok.list_my_processing_profiles.profiles[0].label).toBe(text)
+    expect(ok.list_products_by_return_policy.products).toEqual([{ product_id: 900, title: text, state: 'active' }])
+    expect(ok.set_my_product_section).toMatchObject({ product_id: 900, title: text })
+    expect(ok.get_my_holidays.holidays[0].name).toBe(text)
+    expect(ok.list_my_production_partners.partners[0]).toMatchObject({ name: text, location: text })
   })
 })

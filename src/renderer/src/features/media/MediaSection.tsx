@@ -78,8 +78,9 @@ export function MediaSection({ listing, onChanged }: { listing: MyListing; onCha
   const show = (m: ListingMedia): void => {
     const before = media?.photos?.[0]?.url170 ?? null
     setMedia(m)
-    const first = m.photos?.[0]?.url170 ?? null
-    if (m.photos && first !== before) onChanged({ ...listing, imageUrl: first })
+    const top = m.photos?.[0]
+    const first = top?.url170 ?? null
+    if (m.photos && first !== before) onChanged({ ...listing, imageUrl: first, imageFullUrl: top?.urlFull ?? top?.url570 ?? first })
   }
 
   const ops: MediaOps = {

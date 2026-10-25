@@ -13,12 +13,13 @@ import { buyerPriceIncludes, discountLabel, formatMoney, hasActiveDiscount, show
 import { countryLabel } from '@shared/countries'
 import { whenMadeLabel } from '@shared/changes'
 import { GLOSSARY, type GlossaryKey } from '@shared/glossary'
+import { photoRef, reviewPhotoRef } from '@shared/claudeRef'
 import { ownShopId, useStore } from '../store'
 import { LazyDetails, panelMeta } from '../features/LazyDetails'
 import { LISTING_PANELS } from '../features/registry'
 import { imageSrc, reviewImageSrc } from '../imageUrl'
 import { Badge, Button, Callout, Icon, InfoTip, Loading, Modal, Stat, ZoomImage, buttonClass, type BadgeTone, type IconName } from '../ui'
-import { CopyLinkButton } from './CopyLinkButton'
+import { CopyForClaudeIcon, CopyLinkButton } from './CopyLinkButton'
 import { ExternalLink } from './ExternalLink'
 import { listingGallery } from './ListingCard'
 import { NowPrice, WasPrice } from './PriceParts'
@@ -647,6 +648,7 @@ function ReviewItem({ r }: { r: Review }): JSX.Element {
             src={reviewImageSrc(r)}
             alt="Фото покупця"
             caption={`Фото покупця · ${formatEtsyDate(r.createdAt)}`}
+            claudeRef={reviewPhotoRef(r.id)}
             loading="lazy"
           />
         )}
@@ -747,7 +749,7 @@ const OWNS_ARROWS =
   'input, textarea, select, [contenteditable=""], [contenteditable="true"], [role=radio], [role=radiogroup], [role=slider], [role=tab], [role=tablist], ' +
   '[role=menu], [role=menuitem], [role=listbox], [role=option], [role=combobox], [role=spinbutton], [role=grid], .lm-table-wrap, .lm-raw'
 
-function Gallery({ images, title }: { images: ListingImage[]; title: string }): JSX.Element {
+function Gallery({ images, title, listingId }: { images: ListingImage[]; title: string; listingId: number }): JSX.Element {
   const [idx, setIdx] = useState(0)
   const root = useRef<HTMLDivElement>(null)
   const strip = useRef<HTMLDivElement>(null)
@@ -789,7 +791,7 @@ function Gallery({ images, title }: { images: ListingImage[]; title: string }): 
             className="lm-gallery-zoom"
             src={imageSrc(img, 'fullxfull')}
             alt={img.alt || title}
-            gallery={listingGallery(images, title)}
+            gallery={listingGallery(images, title, listingId)}
             index={idx}
           />
         ) : (
@@ -797,6 +799,14 @@ function Gallery({ images, title }: { images: ListingImage[]; title: string }): 
             <Icon name="image" size={32} />
             <span className="no-img">без фото</span>
           </div>
+        )}
+        {/* Not keyed per photo (focus would drop to <body> on ←/→): its feedback resets with the reference. */}
+        {img && (
+          <CopyForClaudeIcon
+            className="lm-claude-copy"
+            text={photoRef(listingId, img.id)}
+            what={n > 1 ? `фото ${idx + 1} з ${n}` : 'фото товару'}
+          />
         )}
         {n > 1 && (
           <>
@@ -1018,7 +1028,7 @@ function ListingBody({ listing: l, mine }: { listing: Listing; mine: boolean }):
     <div className="lm-layout" ref={top}>
       <div className="lm-grid">
         <div className="lm-media">
-          <Gallery images={l.images} title={l.title} />
+          <Gallery images={l.images} title={l.title} listingId={l.listingId} />
         </div>
         <div className="lm-info listing-info">
           {l.removedAt != null && (

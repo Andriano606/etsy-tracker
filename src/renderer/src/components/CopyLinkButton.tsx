@@ -1,40 +1,22 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react'
+import type { KeyboardEvent, MouseEvent } from 'react'
 import { etsyListingUrl } from '@shared/myShop'
 import { Button, Icon } from '../ui'
+import {
+  COPY_DONE,
+  COPY_FAILED,
+  COPY_FEEDBACK_MS,
+  COPY_FOR_CLAUDE,
+  COPY_FOR_CLAUDE_HINT,
+  copyFeedbackText as feedbackText,
+  useCopyFeedback,
+  type CopyState
+} from '../ui/useCopyFeedback'
 
-// "Копіювати посилання": copies a listing's clean public link
-// (https://www.etsy.com/listing/<id>) so the user can paste it to Claude, which
-// finds the product over MCP. Two looks share one behaviour (`useCopyFeedback`):
-// a round icon over a listing card (a sibling of the card button, like the
-// photo magnifier) and a regular button in the listing window.
-
-export type CopyState = 'idle' | 'copied' | 'failed'
-
-/** How long "Скопійовано" / "Не вдалося скопіювати" stays before the button is back. */
-export const COPY_FEEDBACK_MS = 2000
+export { COPY_DONE, COPY_FAILED, COPY_FEEDBACK_MS, COPY_FOR_CLAUDE, COPY_FOR_CLAUDE_HINT, useCopyFeedback, type CopyState }
 
 export const COPY_LINK_LABEL = 'Копіювати посилання'
-export const COPY_DONE = 'Скопійовано'
-export const COPY_FAILED = 'Не вдалося скопіювати'
 export const COPY_LINK_HINT = 'Посилання на цей товар — вставте його Claude, і він знайде товар через MCP'
 
-/** Copy `text` through main's clipboard; the state says how it went for COPY_FEEDBACK_MS. */
-export function useCopyFeedback(): [CopyState, (text: string) => Promise<void>] {
-  const [state, setState] = useState<CopyState>('idle')
-  const timer = useRef<ReturnType<typeof setTimeout>>()
-  useEffect(() => () => clearTimeout(timer.current), [])
-  const copy = async (text: string): Promise<void> => {
-    const ok = await window.api.copyText(text).catch(() => false)
-    setState(ok ? 'copied' : 'failed')
-    clearTimeout(timer.current)
-    timer.current = setTimeout(() => setState('idle'), COPY_FEEDBACK_MS)
-  }
-  return [state, copy]
-}
-
-const feedbackText = (s: CopyState): string | null => (s === 'copied' ? COPY_DONE : s === 'failed' ? COPY_FAILED : null)
-
-// Enter/Space on the icon must not reach the card button around it in the DOM order.
 function stopActivationKeys(e: KeyboardEvent): void {
   if (e.key === 'Enter' || e.key === ' ') e.stopPropagation()
 }
@@ -85,5 +67,41 @@ export function CopyLinkButton({ listingId }: { listingId: number }): JSX.Elemen
     >
       {feedbackText(state) ?? COPY_LINK_LABEL}
     </Button>
+  )
+}
+
+/**
+ * A round "Копіювати для Claude" icon over a picture (the listing window's main
+ * photo): copies `text` — the picture's etsy-tracker:// reference — so the user
+ * can paste it to Claude, which opens exactly this picture over MCP. Same look
+ * and feedback as the card's copy-link icon. A sibling of the picture's button.
+ * `what` names the picture for screen readers ("фото 2 з 5"). The feedback
+ * resets when `text` changes (another photo shown) — the button stays mounted,
+ * so it keeps keyboard focus while ←/→ switch the photo.
+ */
+export function CopyForClaudeIcon({ text, what, className = '' }: { text: string; what?: string; className?: string }): JSX.Element {
+  const [state, copy] = useCopyFeedback(text)
+  const feedback = feedbackText(state)
+  return (
+    <span className={`card-copy claude-copy ${className}${state !== 'idle' ? ' is-flash' : ''}`} data-state={state}>
+      <button
+        type="button"
+        className={`card-copy-btn${state === 'copied' ? ' copied' : state === 'failed' ? ' copy-failed' : ''}`}
+        aria-label={what ? `${COPY_FOR_CLAUDE}: ${what}` : COPY_FOR_CLAUDE}
+        title={feedback ?? `${COPY_FOR_CLAUDE} — ${COPY_FOR_CLAUDE_HINT}`}
+        data-testid="copy-for-claude"
+        onClick={(e: MouseEvent) => {
+          e.stopPropagation()
+          e.preventDefault()
+          void copy(text)
+        }}
+        onKeyDown={stopActivationKeys}
+      >
+        <Icon name={state === 'copied' ? 'check' : state === 'failed' ? 'warning' : 'copy'} size={14} />
+      </button>
+      <span className={feedback ? 'card-copy-flash' : 'sr-only'} role="status">
+        {feedback ?? ''}
+      </span>
+    </span>
   )
 }

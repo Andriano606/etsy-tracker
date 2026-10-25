@@ -32,6 +32,12 @@ export interface ViewerImage {
   /** Read by screen readers; also the caption when there is no `caption`. */
   alt?: string
   caption?: string
+  /**
+   * The picture's etsy-tracker:// reference (shared/claudeRef.ts: photoRef, reviewPhotoRef, …):
+   * the viewer's "Копіювати для Claude" copies it. Absent = no such button (e.g. a picture
+   * the MCP tools can't address).
+   */
+  ref?: string
 }
 
 export interface ConfirmOptions {

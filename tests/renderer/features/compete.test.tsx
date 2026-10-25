@@ -729,9 +729,9 @@ describe('Відкрити на весь розмір (живі дані)', () =
     await click(within(photos[2]).getByRole('button', { name: 'Відкрити на весь розмір: Фото 3' }))
     expect(viewer()).toEqual({
       images: [
-        { src: 'https://i.etsystatic.com/1/501/full.jpg', alt: 'Planner on a desk', caption: 'Фото 1 — Planner on a desk' },
+        { src: 'https://i.etsystatic.com/1/501/full.jpg', alt: 'Planner on a desk', caption: 'Фото 1 — Planner on a desk', ref: 'etsy-tracker://product/5/photo/501' },
         // no fullxfull → the 570xN
-        { src: 'https://i.etsystatic.com/1/503/570.jpg', alt: 'Фото 3', caption: 'Фото 3' }
+        { src: 'https://i.etsystatic.com/1/503/570.jpg', alt: 'Фото 3', caption: 'Фото 3', ref: 'etsy-tracker://product/5/photo/503' }
       ],
       index: 1
     })
@@ -746,7 +746,7 @@ describe('Відкрити на весь розмір (живі дані)', () =
     })
     await renderListing('compete-media')
     await click(screen.getByRole('button', { name: 'Відкрити на весь розмір: Кадр відео' }))
-    expect(viewer()!.images).toEqual([expect.objectContaining({ src: 'https://v.etsystatic.com/t.jpg' })])
+    expect(viewer()!.images).toEqual([expect.objectContaining({ src: 'https://v.etsystatic.com/t.jpg', ref: 'etsy-tracker://product/5/video/601' })])
     expect(api.featureCall).not.toHaveBeenCalledWith('compete', 'video', expect.anything())
   })
 
@@ -763,8 +763,8 @@ describe('Відкрити на весь розмір (живі дані)', () =
     await click(screen.getByRole('button', { name: 'Відкрити на весь розмір: White' }))
     expect(viewer()).toEqual({
       images: [
-        { src: 'etsyimg://img/50/fullxfull', alt: 'Black', caption: 'Варіант: Black' },
-        { src: 'https://i.etsystatic.com/1/777/full.jpg', alt: 'White', caption: 'Варіант: White' }
+        { src: 'etsyimg://img/50/fullxfull', alt: 'Black', caption: 'Варіант: Black', ref: 'etsy-tracker://product/5/photo/50' },
+        { src: 'https://i.etsystatic.com/1/777/full.jpg', alt: 'White', caption: 'Варіант: White', ref: 'etsy-tracker://product/5/photo/777' }
       ],
       index: 1
     })

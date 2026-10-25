@@ -601,6 +601,8 @@ describe('Мій магазин: фото товару на весь розмі�
       fireEvent.click(screen.getByRole('button', { name: 'Відкрити на весь розмір: Головне фото: Budget Planner 3' }))
     })
     expect(useStore.getState().viewer!.images[0].src).toBe('https://i.etsystatic.com/1/il_170x135.3.jpg')
+    // main gives no image id for these rows: no "Копіювати для Claude" reference.
+    expect(useStore.getState().viewer!.images[0].ref).toBeUndefined()
   })
 
   it('the editor head thumbnail opens it too, and keeps the full-size URL after a save (Etsy answers without images)', async () => {

@@ -268,7 +268,7 @@ colour (growth green unless `lowerIsBetter`), a node delta is shown as is; `comp
 
 **Every picture in the app opens in full size.** `<ImageViewer />` is mounted once, last in `App`, over
 every modal; it is opened through the store — `openImage(images, index?)` / `closeImage()`, where
-`ViewerImage = {src, alt?, caption?}` and **`src` is the biggest URL there is** (`imageSrc(img, 'fullxfull')`,
+`ViewerImage = {src, alt?, caption?, ref?}` and **`src` is the biggest URL there is** (`imageSrc(img, 'fullxfull')`,
 `reviewImageSrc(r)`, `etsyimg://draft/{id}`, a shop's `iconUrl`) — never the thumbnail you show. A picture
 that is one of several (a listing's photos, a draft's photos, a review's photos) opens **the whole set** at
 the clicked index. You rarely call `openImage` yourself — use one of the two components:
@@ -306,6 +306,21 @@ the clicked index. You rarely call `openImage` yourself — use one of the two c
   `useEscape` stack), a click on the dark area closes it, a click on the image doesn't. Focus moves in,
   Tab stays inside, focus returns to the opener. Its ←/→/Tab are caught by a window capture-phase listener,
   so document-level arrow handlers under it (the listing gallery) never also fire.
+- **"Копіювати для Claude"** (`ref`): give every picture the MCP tools can address its etsy-tracker://
+  reference from `shared/claudeRef.ts` — a listing photo `photoRef(listingId, imageId)` (`listingGallery(images,
+  title, listingId)` does it), a video frame `videoRef(listingId, videoId)`, a stored review photo
+  `reviewPhotoRef(review.id)`, a shop logo `storeImageRef(shopId)`, a stored draft photo
+  `draftPhotoRef(draftId, mediaId)`. `ZoomImage` takes it as `claudeRef` for a single picture (a gallery's
+  items carry their own `ref`); `ShopIcon` as `claudeRef`. With a `ref`, the viewer's bar shows "Копіювати для
+  Claude" (icon + text; the icon alone below 1100 px, the text stays the button's name) — it copies the
+  **current** image's ref through `window.api.copyText` and says "Скопійовано" / "Не вдалося скопіювати" for
+  2 s (`ui/useCopyFeedback.ts`, the same hook as "Копіювати посилання"; pass the current picture as its
+  `resetKey` instead of keying the button per picture, so focus survives ←/→); tooltip "Вставте це Claude — він
+  відкриє саме цю картинку через MCP". No `ref` (both ids not known: a market result, a "Мій магазин" /
+  inventory thumbnail, a live Etsy review photo, a picked-but-unsaved draft photo, an avatar) = no button —
+  never invent one. The listing window's main photo also has a small `CopyForClaudeIcon`
+  (`CopyLinkButton.tsx`) left of the magnifier, copying the photo shown, so the viewer isn't needed; there
+  the magnifier stays dimly visible (like the ‹ › arrows), so the two read as one corner group.
 - Tests: `screen.getByRole('dialog', {name: 'Перегляд зображення'})` and its `img.ui-viewer-img` `src`, or
   `useStore.getState().viewer` (`{images, index}`); assert the parent's action was **not** called.
   Reference: `tests/renderer/ui/ImageViewer.test.tsx`.

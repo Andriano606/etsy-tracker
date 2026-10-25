@@ -311,11 +311,30 @@ label.check {
   height: 100%;
   object-fit: contain;
 }
-/* Magnifier top-right: the "2 / 7" counter sits bottom-right. */
+/* Magnifier top-right: the "2 / 7" counter sits bottom-right. Dimly visible all the
+   time (like the ‹ › arrows), so the "Копіювати для Claude" icon next to it never
+   floats alone in the corner; full on hover/focus. */
 .listing-modal .lm-gallery-zoom > .ui-zoom-badge {
   top: 8px;
   right: 8px;
   bottom: auto;
+  opacity: 0.75;
+}
+.listing-modal .gallery-main:hover .lm-gallery-zoom > .ui-zoom-badge,
+.listing-modal .lm-gallery-zoom:focus-visible > .ui-zoom-badge {
+  opacity: 1;
+}
+/* "Копіювати для Claude" on the main photo: left of the magnifier (CopyForClaudeIcon,
+   a sibling of the photo's button), always visible — the feedback bubble to its left. */
+.listing-modal .gallery-main > .lm-claude-copy {
+  position: absolute;
+  top: 8px;
+  right: 40px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  flex-direction: row-reverse;
+  gap: 6px;
 }
 .listing-modal .lm-noimg {
   display: flex;

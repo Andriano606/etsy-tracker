@@ -608,6 +608,8 @@ describe('Відкрити на весь розмір', () => {
       images: [{ src: 'https://i.etsystatic.com/1/s-full.jpg', alt: 'Головне фото: Sized planner', caption: 'Sized planner' }],
       index: 0
     })
+    // The overview doesn't know the photo's id: no "Копіювати для Claude" reference.
+    expect(viewer()!.images[0].ref).toBeUndefined()
     expect(api.featureCall).toHaveBeenCalledTimes(1)
     // no photo → no button
     expect(within(screen.getByTestId('prices-row-1002')).queryByRole('button', { name: /на весь розмір/ })).toBeNull()
@@ -625,8 +627,8 @@ describe('Відкрити на весь розмір', () => {
     })
     expect(viewer()).toEqual({
       images: [
-        { src: 'https://i.etsystatic.com/1/a-full.jpg', alt: 'Фото 1', caption: 'Фото 1' },
-        { src: 'https://i.etsystatic.com/1/b-full.jpg', alt: 'Blue', caption: 'Фото 2 — Blue' }
+        { src: 'https://i.etsystatic.com/1/a-full.jpg', alt: 'Фото 1', caption: 'Фото 1', ref: 'etsy-tracker://product/1001/photo/5001' },
+        { src: 'https://i.etsystatic.com/1/b-full.jpg', alt: 'Blue', caption: 'Фото 2 — Blue', ref: 'etsy-tracker://product/1001/photo/5002' }
       ],
       index: 1
     })

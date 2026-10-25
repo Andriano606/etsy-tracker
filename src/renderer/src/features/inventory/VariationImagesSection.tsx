@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import type { ListingPhoto, VariationImage, VariationImageInput, VariationImagesData } from '@shared/features/inventory'
 import type { MyListing } from '@shared/types'
+import { photoRef } from '@shared/claudeRef'
 import { useStore, type ViewerImage } from '../../store'
 import { Button, Callout, EmptyState, Icon, Loading, Segmented, Term, ZoomButton } from '../../ui'
 import { featureCall } from '../call'
@@ -23,32 +24,34 @@ const keepArrowsOnZoom = (e: KeyboardEvent<HTMLSpanElement>): void => {
 }
 
 /** The listing's photos that have a picture, as one viewer gallery (biggest URL first), + where each photo sits in it. */
-function photoGallery(photos: ListingPhoto[]): { images: ViewerImage[]; index: Map<number, number> } {
+function photoGallery(photos: ListingPhoto[], listingId: number): { images: ViewerImage[]; index: Map<number, number> } {
   const images: ViewerImage[] = []
   const index = new Map<number, number>()
   photos.forEach((ph, n) => {
     const src = ph.urlFull ?? ph.url
     if (!src) return
     index.set(ph.imageId, images.length)
-    images.push({ src, alt: ph.alt ?? `Фото ${n + 1}`, caption: `Фото ${n + 1}${ph.alt ? ` — ${ph.alt}` : ''}` })
+    images.push({ src, alt: ph.alt ?? `Фото ${n + 1}`, caption: `Фото ${n + 1}${ph.alt ? ` — ${ph.alt}` : ''}`, ref: photoRef(listingId, ph.imageId) })
   })
   return { images, index }
 }
 
 /** One value's photo choice: «без фото» + every photo, as radios with a roving tab stop. */
 function PhotoChoice({
+  listingId,
   value,
   photos,
   selected,
   onPick
 }: {
+  listingId: number
   value: string
   photos: ListingPhoto[]
   selected: number | null
   onPick: (imageId: number | null) => void
 }): JSX.Element {
   const refs = useRef<Array<HTMLButtonElement | null>>([])
-  const gallery = photoGallery(photos)
+  const gallery = photoGallery(photos, listingId)
   const ids: Array<number | null> = [null, ...photos.map((p) => p.imageId)]
   const at = ids.indexOf(selected)
   const stop = at < 0 ? 0 : at
@@ -232,7 +235,7 @@ export function VariationImagesSection({ listing }: { listing: MyListing }): JSX
             {v.valueId == null ? (
               <span className="inv-hint">Etsy не дав ідентифікатор цього значення — фото до нього не прив’язати.</span>
             ) : (
-              <PhotoChoice value={v.value} photos={data.photos} selected={choice[v.valueId] ?? null} onPick={(img) => pick(v.valueId as number, img)} />
+              <PhotoChoice listingId={listing.listingId} value={v.value} photos={data.photos} selected={choice[v.valueId] ?? null} onPick={(img) => pick(v.valueId as number, img)} />
             )}
           </li>
         ))}

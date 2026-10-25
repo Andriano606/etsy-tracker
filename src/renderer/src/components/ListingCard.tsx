@@ -3,6 +3,7 @@ import type { Listing, ListingImage } from '@shared/types'
 import { formatCount, formatPrice, formatRating, formatReviewCount } from '@shared/format'
 import { GLOSSARY, type GlossaryKey } from '@shared/glossary'
 import { buyerPriceIncludes, discountLabel, formatMoney, hasActiveDiscount, shownPrice } from '@shared/price'
+import { photoRef } from '@shared/claudeRef'
 import { imageSrc } from '../imageUrl'
 import { Icon, Tooltip, ZoomButton, type IconName } from '../ui'
 import type { ViewerImage } from '../store'
@@ -198,13 +199,15 @@ export function PopularityBadges({ listing }: { listing: Listing }): JSX.Element
 /**
  * A listing's photos for the image viewer, at their biggest size (fullxfull),
  * in the listing's order — the card's magnifier and the listing window's gallery.
+ * Each carries its "Копіювати для Claude" reference (photoRef).
  */
-export function listingGallery(images: ListingImage[], title: string): ViewerImage[] {
+export function listingGallery(images: ListingImage[], title: string, listingId: number): ViewerImage[] {
   const n = images.length
   return images.map((img, i) => ({
     src: imageSrc(img, 'fullxfull'),
     alt: img.alt || title,
-    caption: n > 1 ? `${title} — фото ${i + 1} з ${n}` : title
+    caption: n > 1 ? `${title} — фото ${i + 1} з ${n}` : title,
+    ref: photoRef(listingId, img.id)
   }))
 }
 
@@ -251,7 +254,7 @@ export function ListingCard({
       </button>
       {img && (
         <ZoomButton
-          images={listingGallery(listing.images, listing.title)}
+          images={listingGallery(listing.images, listing.title, listing.listingId)}
           label={`Відкрити фото на весь розмір: ${listing.title}`}
           className="ui-zoom-corner card-zoom"
         />

@@ -9,6 +9,7 @@ import type {
 } from '@shared/types'
 import type { GlossaryKey } from '@shared/glossary'
 import { formatCount, formatDelta, formatRating } from '@shared/format'
+import { photoRef } from '@shared/claudeRef'
 import { fullDate, fullDateTime, shortDate, timeDomain } from '../chartScale'
 import { plural } from './ChangeList'
 import { imageSrc } from '../imageUrl'
@@ -777,7 +778,7 @@ function TopTable({
                 {r.imageId != null && (
                   // Over the row's thumbnail, a sibling of the row button: the photo full size.
                   <ZoomButton
-                    images={{ src: imageSrc({ id: r.imageId }, 'fullxfull'), alt: r.title, caption: r.title }}
+                    images={{ src: imageSrc({ id: r.imageId }, 'fullxfull'), alt: r.title, caption: r.title, ref: photoRef(r.listingId, r.imageId) }}
                     label={`Відкрити фото на весь розмір: ${r.title}`}
                     className="ui-zoom-corner thumb-zoom top-zoom"
                   />

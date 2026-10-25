@@ -34,7 +34,9 @@ import { priceValue } from '../shared/format'
 import { filterListings, type SortMode } from '../shared/listingFilter'
 import { discountPercent, hasActiveDiscount, shownPrice } from '../shared/price'
 import { MCP_SERVER_NAME } from '../shared/mcpConfig'
-import { isAllowedExternalUrl } from '../shared/externalUrl'
+import { isAllowedExternalUrl, isEtsyCdnUrl } from '../shared/externalUrl'
+import { type ClaudeRef, hasEtsyShortLink, parseClaudeRef, photoRef } from '../shared/claudeRef'
+import { decodeHtmlEntities } from '../shared/html'
 import {
   type Db,
   getListing,
@@ -50,10 +52,14 @@ import {
   listScans,
   listShopSummaries
 } from './db'
-import { type McpServerInfo, type McpTool, ToolInputError, errorResult, textResult } from './mcpProtocol'
+import { EtsyApiError, type EtsyClient } from './etsyApi'
+import { type McpServerInfo, type McpTool, type McpToolResult, ToolInputError, errorResult, textResult } from './mcpProtocol'
 import { shopStatsPayload } from './shopStats'
-import { type OwnStoreDeps, createDraftTools, createStoreTools } from './mcpStoreTools'
+import { type OwnStoreDeps, createDraftTools, createStoreTools, draftOut, mcpErrorText } from './mcpStoreTools'
+import { getDraft } from './drafts'
 import { featureMcpTools } from './features'
+import { listingVideo } from './features/compete/api'
+import { byImageRank, optInt, optText, toImage, toListingRow } from './features/compete/map'
 
 export interface McpToolDeps {
   db: Db
@@ -63,8 +69,21 @@ export interface McpToolDeps {
    * — the image protocol handler in the app; null = not available.
    */
   readImage?: (url: string) => Promise<{ data: Buffer; mimeType: string } | null>
+  /**
+   * Bytes of an Etsy CDN image URL (https *.etsystatic.com only — the caller
+   * checks isEtsyCdnUrl first): open_link's live photos of listings the app
+   * doesn't store. index.ts: downloadImage over the app's CDN fetch. null /
+   * a throw = not available.
+   */
+  fetchCdnImage?: (url: string) => Promise<{ data: Buffer; mimeType: string } | null>
   /** The user's own store (signed in in the app): the store tools; absent = not available. */
   own?: OwnStoreDeps
+  /**
+   * Whether an Etsy API key is saved (index.ts: the key store). open_link reads
+   * Etsy live only with one; false = answer from the database or refuse without
+   * a request. Absent = assume a key whenever `own.client` exists.
+   */
+  hasApiKey?: () => boolean
   /** Drafts kept in the app changed (prepare_product …): tell the renderer. */
   onDraftsChanged?: () => void
   /**
@@ -616,6 +635,14 @@ const offsetArg = { type: 'integer' as const, minimum: 0, default: 0, descriptio
 
 const num = (v: unknown, def: number): number => (typeof v === 'number' ? v : def)
 
+/** open_link's answer when the text holds nothing it can open. */
+/** open_link's answer to an etsy.me share link (it hides the listing id behind a redirect). */
+export const OPEN_LINK_SHORT =
+  "That is a short etsy.me share link: it doesn't contain the listing id, and this tool doesn't follow redirects. Ask the user to open it in the browser and paste the full address from the address bar (https://www.etsy.com/listing/<id>/…), or to copy the reference with the app's \"Копіювати для Claude\" button on the picture."
+
+export const OPEN_LINK_FORMS =
+  "No link or reference found. open_link accepts: an app reference copied with the app's \"Копіювати для Claude\" buttons — etsy-tracker://product/<id>, etsy-tracker://product/<id>/photo/<image_id>, etsy-tracker://product/<id>/video/<video_id>, etsy-tracker://review/<review_id>/photo, etsy-tracker://store/<id>, etsy-tracker://store/<id>/logo, etsy-tracker://store/<id>/banner, etsy-tracker://draft/<id>, etsy-tracker://draft/<id>/photo/<photo_id> —, an Etsy listing link (https://www.etsy.com/listing/<id>), an Etsy shop link (https://www.etsy.com/shop/<Name>) or a bare Etsy listing id (6 digits or more, on its own). Ask the user to copy the reference again with the app's button."
+
 export const MCP_INSTRUCTIONS = `Etsy Tracker is the user's desktop app that watches Etsy shops through the official Etsy Open API v3 (competitor and market research) and manages the user's own Etsy shop. Names used by these tools: a "store" is an Etsy shop, a "product" is an Etsy listing, a "snapshot" is one scan the app made of a shop, a "discount" is an Etsy sale (promotion), "favorites" are Etsy favorers, the "customer price" is Etsy's buyer price.
 
 Local data — no Etsy request, no API quota: list_stores, get_store, search_products, get_product, get_product_history, list_snapshots, get_snapshot_changes, list_reviews, get_store_stats. They read the app's database, filled when the user scans the shops they track (you cannot start a scan; if latest_snapshot.finished_at is old, ask the user to rescan). A scan stores every active listing of the shop (title, description, price, tags, materials, photos, videos, attributes, views, favorers, featured rank) and records what changed since the previous scan: listings added, removed, returned and edited (which fields, old → new). After each scan the app also syncs the shop's Etsy reviews (the whole history first, then the new ones) and copies listing and review photos into a local image store. Text fields are Etsy's text with HTML entities decoded (&amp; → &); in the change records of get_snapshot_changes and get_product_history a description's old and new values are excerpts of at most 1000 characters (get_product has the full current text). url fields are the shops' and listings' Etsy pages.
@@ -628,7 +655,9 @@ Prices: "base" is the seller's price as the API reports it (no VAT, no sale). "c
 
 Popularity: favorites = Etsy favorers; views = total listing views (Etsy updates them about once a day); featured_position = the listing's place among the shop's featured listings (null = not featured). *_change fields compare the latest scan with the previous one. A shop's sales_count is Etsy's total for the whole shop; Etsy does not give other shops' sales per listing — review counts are the best proxy. Review counts cover the reviews the app has stored (complete: false = the history is still loading, the counts are lower bounds).
 
-Ids: store, product, image and video ids are Etsy's (shop_id, listing_id, …); review and snapshot ids are the app's own. Times are ISO 8601 UTC. Links the user pastes: an Etsy listing link https://www.etsy.com/listing/<id>[/…] (the app's "Копіювати посилання" button copies exactly that) means product_id = <id> — call get_product with it right away (for the user's own listings also the *_my_* tools); a shop link https://www.etsy.com/shop/<Name> means the store whose name is <Name> in list_stores.
+Ids: store, product, image and video ids are Etsy's (shop_id, listing_id, …); review and snapshot ids are the app's own. Times are ISO 8601 UTC. Links the user pastes: an Etsy listing link https://www.etsy.com/listing/<id>[/…] (the app's "Копіювати посилання" button copies exactly that) means product_id = <id> — call get_product with it right away (or open_link with the link, which also reads a listing the app doesn't store live; for the user's own listings also the *_my_* tools); a shop link https://www.etsy.com/shop/<Name> means the store whose name is <Name> in list_stores.
+
+References from the app: references like etsy-tracker://product/<id>/photo/<image_id> (also …/video/<video_id>, etsy-tracker://review/<review_id>/photo, etsy-tracker://store/<id>[/logo|/banner], etsy-tracker://draft/<id>[/photo/<photo_id>]) are copied from the app's "Копіювати для Claude" buttons on pictures: listing photos (cards and the listing window), video frames, buyers' review photos, the shop logo and draft photos — in the full-size picture viewer and next to the main photo of the listing window. For a listing itself the app's "Копіювати посилання" button copies its Etsy link. When the user pastes one — or an Etsy listing or shop link, alone or inside a sentence ("look at this picture: …") — call open_link with what they pasted right away: it finds the reference and answers in one call (the listing's data, or the picture itself as an image), so no list_stores / search_products round trip is needed.
 
 Live Etsy tools (Etsy API requests on the user's daily quota; the app's API key is enough, no Etsy sign-in needed): search_market, list_market_categories, get_market_category_properties search all of Etsy, not only the tracked shops; get_store_sections, get_store_featured, get_store_return_policies, get_product_live_details read any shop or listing now (only the shipping part of get_product_live_details needs the sign-in); list_shipping_carriers; find_categories (Etsy's seller categories, for a new listing's category_id) and get_category_attributes (the attributes a seller category supports). The two category trees (find_categories, list_market_categories) are read from Etsy once per app run and then matched locally, so repeated searches make no further requests.
 
@@ -647,6 +676,38 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
   }
 
   const tools: McpTool[] = [
+    {
+      name: 'open_link',
+      openWorld: true,
+      title: 'Open a link or reference from the app',
+      description:
+        "Opens whatever the user pasted — a whole sentence is fine — in one call: an app reference copied with the app's \"Копіювати для Claude\" buttons (etsy-tracker://product/<id>, etsy-tracker://product/<id>/photo/<image_id>, etsy-tracker://product/<id>/video/<video_id>, etsy-tracker://review/<review_id>/photo, etsy-tracker://store/<id>, etsy-tracker://store/<id>/logo or /banner, etsy-tracker://draft/<id>, etsy-tracker://draft/<id>/photo/<photo_id>), an Etsy listing link (https://www.etsy.com/listing/<id>…), an Etsy shop link (https://www.etsy.com/shop/<Name>), the owner's editor link (https://www.etsy.com/your/shops/me/listing-editor/edit/<id>) or a bare listing id sent on its own. Answers like the matching tool, with `opened` = what it was: a product → the same JSON as get_product (source local); a listing the app doesn't store → read live from Etsy (source live, 1 API request; compact, with its photos' image ids and links); a photo → the image (like get_product_image; a photo of a listing the app doesn't store, or one added since the latest scan, is read live: 1 API request + Etsy's image CDN); a video → its preview frame; a review photo → the image + the review's rating, text, date and listing; a store or shop link → like get_store (only tracked shops); a logo/banner → the image; a draft → as list_prepared_products shows it; a draft photo → the image. Nothing recognised → an error listing the accepted forms.",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          link: { type: 'string', minLength: 1, maxLength: 2000, description: 'What the user pasted: a reference, an Etsy link, a listing id, or a sentence containing one.' },
+          size: {
+            type: 'string',
+            enum: ['medium', 'full'],
+            default: 'medium',
+            description: 'For photos: medium (≈570 px, the default) or full (the original; over 5 MB is refused).'
+          }
+        },
+        required: ['link'],
+        additionalProperties: false
+      },
+      run: async (a) => {
+        const text = String(a.link ?? '')
+        const ref = parseClaudeRef(text)
+        if (!ref) throw new ToolInputError(hasEtsyShortLink(text) ? OPEN_LINK_SHORT : OPEN_LINK_FORMS)
+        try {
+          return await openRef(ref, a.size === 'full')
+        } catch (e) {
+          if (e instanceof ToolInputError) throw e
+          return errorResult(mcpErrorText(e))
+        }
+      }
+    },
     {
       name: 'list_stores',
       title: 'Tracked Etsy shops (local)',
@@ -1050,43 +1111,12 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
         required: ['product_id'],
         additionalProperties: false
       },
-      run: async (a) => {
-        const l = requireProduct(db, a.product_id)
-        if (!l.images.length) throw new ToolInputError(`Product ${l.listingId} has no photos.`)
-        const index =
-          a.image_id != null ? l.images.findIndex((i) => i.id === Number(a.image_id)) : num(a.position, 1) - 1
-        const img = l.images[index]
-        if (!img) {
-          throw new ToolInputError(
-            a.image_id != null
-              ? `Product ${l.listingId} has no photo ${String(a.image_id)}.`
-              : `Product ${l.listingId} has ${l.images.length} photo(s).`
-          )
-        }
-        // medium = the 570 px copy, else the original (a missing or AVIF copy).
-        const sizes = a.size === 'full' ? ['fullxfull'] : ['570xN', 'fullxfull']
-        const out = await readImage(sizes.map((size) => `etsyimg://img/${img.id}/${size}`), {
-          local: true,
-          tooLarge: a.size === 'full' ? `${TOO_LARGE} Ask for size "medium".` : TOO_LARGE
+      run: (a) =>
+        productPhoto(requireProduct(db, a.product_id), {
+          imageId: a.image_id != null ? Number(a.image_id) : undefined,
+          position: num(a.position, 1),
+          full: a.size === 'full'
         })
-        if ('error' in out) return errorResult(out.error)
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                product_id: l.listingId,
-                title: l.title,
-                image_id: img.id,
-                position: index + 1,
-                of: l.images.length,
-                alt_text: img.alt
-              })
-            },
-            { type: 'image', data: out.data.toString('base64'), mimeType: out.mimeType }
-          ]
-        }
-      }
     },
     {
       name: 'get_store_logo',
@@ -1103,20 +1133,7 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
         required: ['store_id'],
         additionalProperties: false
       },
-      run: async (a) => {
-        const s = requireStore(db, a.store_id)
-        const banner = a.kind === 'banner'
-        const has = banner ? !!s.profile?.bannerUrl : !!s.iconUrl
-        if (!has) throw new ToolInputError(`Store ${s.id} has no ${banner ? 'banner' : 'logo'}.`)
-        const out = await readImage([`etsyimg://shop/${s.id}/${banner ? 'banner' : 'icon'}`], { local: false })
-        if ('error' in out) return errorResult(out.error)
-        return {
-          content: [
-            { type: 'text', text: JSON.stringify({ store_id: s.id, name: s.shopName, kind: banner ? 'banner' : 'logo' }) },
-            { type: 'image', data: out.data.toString('base64'), mimeType: out.mimeType }
-          ]
-        }
-      }
+      run: (a) => storePicture(requireStore(db, a.store_id), a.kind === 'banner')
     },
     {
       name: 'get_product_video_preview',
@@ -1134,39 +1151,11 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
         required: ['product_id'],
         additionalProperties: false
       },
-      run: async (a) => {
-        const l = requireProduct(db, a.product_id)
-        const videos = l.videos ?? []
-        if (!videos.length) throw new ToolInputError(`Product ${l.listingId} has no videos.`)
-        const index =
-          a.video_id != null ? videos.findIndex((v) => v.id === Number(a.video_id)) : num(a.position, 1) - 1
-        const v = videos[index]
-        if (!v) {
-          throw new ToolInputError(
-            a.video_id != null
-              ? `Product ${l.listingId} has no video ${String(a.video_id)}.`
-              : `Product ${l.listingId} has ${videos.length} video(s).`
-          )
-        }
-        if (!v.thumbnailUrl) throw new ToolInputError(`Video ${v.id} has no preview.`)
-        const out = await readImage([`etsyimg://video/${v.id}/thumbnail`], { local: false })
-        if ('error' in out) return errorResult(out.error)
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                product_id: l.listingId,
-                title: l.title,
-                video_id: v.id,
-                position: index + 1,
-                of: videos.length
-              })
-            },
-            { type: 'image', data: out.data.toString('base64'), mimeType: out.mimeType }
-          ]
-        }
-      }
+      run: (a) =>
+        videoPreview(requireProduct(db, a.product_id), {
+          videoId: a.video_id != null ? Number(a.video_id) : undefined,
+          position: num(a.position, 1)
+        })
     },
     {
       name: 'get_review_photo',
@@ -1180,22 +1169,7 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
         required: ['review_id'],
         additionalProperties: false
       },
-      run: async (a) => {
-        const id = Number(a.review_id)
-        const r = db
-          .prepare('SELECT id, image_url_fullxfull IS NOT NULL AS has_photo FROM reviews WHERE id = ?')
-          .get(id) as { id: number; has_photo: number } | undefined
-        if (!r) throw new ToolInputError(`No review with id ${id}.`)
-        if (!r.has_photo) throw new ToolInputError(`Review ${id} has no photo.`)
-        const out = await readImage([`etsyimg://review/${id}/fullxfull`], { local: true })
-        if ('error' in out) return errorResult(out.error)
-        return {
-          content: [
-            { type: 'text', text: JSON.stringify({ review_id: id }) },
-            { type: 'image', data: out.data.toString('base64'), mimeType: out.mimeType }
-          ]
-        }
-      }
+      run: (a) => reviewPhoto(Number(a.review_id))
     }
   ]
 
@@ -1214,20 +1188,368 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
     })
   )
 
+  // ------------------------------------------------- images (shared by tools)
+
+  const imageResult = (info: Record<string, unknown>, img: { data: Buffer; mimeType: string }): McpToolResult => ({
+    content: [
+      { type: 'text', text: JSON.stringify(info) },
+      { type: 'image', data: img.data.toString('base64'), mimeType: img.mimeType }
+    ]
+  })
+
+  /** One photo of a stored listing, picked by id or position (get_product_image, open_link). */
+  async function productPhoto(
+    l: Listing,
+    pick: { imageId?: number; position?: number; full: boolean },
+    extra: Record<string, unknown> = {}
+  ): Promise<McpToolResult> {
+    if (!l.images.length) throw new ToolInputError(`Product ${l.listingId} has no photos.`)
+    const index = pick.imageId != null ? l.images.findIndex((i) => i.id === pick.imageId) : (pick.position ?? 1) - 1
+    const img = l.images[index]
+    if (!img) {
+      throw new ToolInputError(
+        pick.imageId != null
+          ? `Product ${l.listingId} has no photo ${pick.imageId}.`
+          : `Product ${l.listingId} has ${l.images.length} photo(s).`
+      )
+    }
+    // medium = the 570 px copy, else the original (a missing or AVIF copy).
+    const sizes = pick.full ? ['fullxfull'] : ['570xN', 'fullxfull']
+    const out = await readImage(sizes.map((size) => `etsyimg://img/${img.id}/${size}`), {
+      local: true,
+      tooLarge: pick.full ? `${TOO_LARGE} Ask for size "medium".` : TOO_LARGE
+    })
+    if ('error' in out) return errorResult(out.error)
+    return imageResult(
+      { ...extra, product_id: l.listingId, title: l.title, image_id: img.id, position: index + 1, of: l.images.length, alt_text: img.alt },
+      out
+    )
+  }
+
+  /** A tracked shop's logo or banner (get_store_logo, open_link). */
+  async function storePicture(s: ShopSummary, banner: boolean, extra: Record<string, unknown> = {}): Promise<McpToolResult> {
+    const has = banner ? !!s.profile?.bannerUrl : !!s.iconUrl
+    if (!has) throw new ToolInputError(`Store ${s.id} has no ${banner ? 'banner' : 'logo'}.`)
+    const out = await readImage([`etsyimg://shop/${s.id}/${banner ? 'banner' : 'icon'}`], { local: false })
+    if ('error' in out) return errorResult(out.error)
+    return imageResult({ ...extra, store_id: s.id, name: s.shopName, kind: banner ? 'banner' : 'logo' }, out)
+  }
+
+  /** The preview frame of a stored listing's video (get_product_video_preview, open_link). */
+  async function videoPreview(
+    l: Listing,
+    pick: { videoId?: number; position?: number },
+    extra: Record<string, unknown> = {}
+  ): Promise<McpToolResult> {
+    const videos = l.videos ?? []
+    if (!videos.length) throw new ToolInputError(`Product ${l.listingId} has no videos.`)
+    const index = pick.videoId != null ? videos.findIndex((v) => v.id === pick.videoId) : (pick.position ?? 1) - 1
+    const v = videos[index]
+    if (!v) {
+      throw new ToolInputError(
+        pick.videoId != null
+          ? `Product ${l.listingId} has no video ${pick.videoId}.`
+          : `Product ${l.listingId} has ${videos.length} video(s).`
+      )
+    }
+    if (!v.thumbnailUrl) throw new ToolInputError(`Video ${v.id} has no preview.`)
+    const out = await readImage([`etsyimg://video/${v.id}/thumbnail`], { local: false })
+    if ('error' in out) return errorResult(out.error)
+    return imageResult({ ...extra, product_id: l.listingId, title: l.title, video_id: v.id, position: index + 1, of: videos.length }, out)
+  }
+
+  /** A stored review's buyer photo + what the review says (get_review_photo, open_link). */
+  async function reviewPhoto(id: number, extra: Record<string, unknown> = {}): Promise<McpToolResult> {
+    const r = db
+      .prepare(
+        `SELECT r.id, r.shop_id, r.listing_id, r.rating, r.review, r.created_timestamp,
+                r.image_url_fullxfull IS NOT NULL AS has_photo, l.title AS listing_title
+         FROM reviews r LEFT JOIN listings l ON l.listing_id = r.listing_id WHERE r.id = ?`
+      )
+      .get(id) as
+      | {
+          id: number
+          shop_id: number
+          listing_id: number | null
+          rating: number | null
+          review: string | null
+          created_timestamp: number | null
+          has_photo: number
+          listing_title: string | null
+        }
+      | undefined
+    if (!r) throw new ToolInputError(`No review with id ${id}.`)
+    if (!r.has_photo) throw new ToolInputError(`Review ${id} has no photo.`)
+    const out = await readImage([`etsyimg://review/${id}/fullxfull`], { local: true })
+    if ('error' in out) return errorResult(out.error)
+    return imageResult(
+      {
+        ...extra,
+        review_id: id,
+        store_id: r.shop_id,
+        product_id: r.listing_id,
+        product_title: r.listing_title,
+        rating: r.rating,
+        text: r.review || null,
+        created_at: isoSec(r.created_timestamp)
+      },
+      out
+    )
+  }
+
+  /** A photo of a draft kept in the app (open_link). */
+  async function draftPhoto(draftId: number, mediaId: number): Promise<McpToolResult> {
+    const d = getDraft(db, draftId)
+    if (!d) throw new ToolInputError(`No draft ${draftId} in the app (deleted?). list_prepared_products lists the drafts.`)
+    const index = d.photos.findIndex((p) => p.id === mediaId)
+    if (index < 0) {
+      throw new ToolInputError(
+        d.files.some((f) => f.id === mediaId)
+          ? `Item ${mediaId} of draft ${draftId} is a buyer file, not a photo.`
+          : `Draft ${draftId} has no photo ${mediaId} (it has ${d.photos.length} photo(s)).`
+      )
+    }
+    const photo = d.photos[index]
+    const out = await readImage([`etsyimg://draft/${photo.id}`], {
+      local: true,
+      missing: "The draft's photo could not be read from the app's database right now."
+    })
+    if ('error' in out) return errorResult(out.error)
+    return imageResult(
+      { opened: 'draft_photo', draft_id: d.id, title: d.fields.title, photo_id: photo.id, position: index + 1, of: d.photos.length, name: photo.name },
+      out
+    )
+  }
+
+  // ---------------------------------------------------- open_link: live reads
+
+  /** Live Etsy reads are possible: a client and a saved API key. */
+  const canLive = (): boolean => !!deps.own?.client && (deps.hasApiKey?.() ?? true)
+
+  /** The Etsy client for live reads, or the "not in the database" refusal (no request made). */
+  function liveClient(what: string): EtsyClient {
+    const client = deps.own?.client
+    if (!client || !canLive()) {
+      throw new ToolInputError(
+        `${what} is not in the app's database (its shop isn't tracked, or the app hasn't scanned it yet), and the app cannot read Etsy live right now (no API key). The user can add the shop in the app ("+ Додати магазин") and scan it.`
+      )
+    }
+    return client
+  }
+
   /**
-   * The first of `urls` that reads as a showable image of an acceptable size.
-   * `local`: the app may have its own copy (listing and review photos); else
-   * the image only ever comes from Etsy's CDN. `tooLarge`: the tool's own
-   * message for an image over MCP_MAX_IMAGE_BYTES.
+   * A live read with the API key; when Etsy answers 404 / 403 and the user is
+   * signed in, once more as the owner (OAuth): the user's own drafts, inactive
+   * and expired listings are only visible that way (they are never in the
+   * database — scans store active listings). The retry's failure keeps the
+   * first answer unless the retry says 404 too.
+   */
+  async function ownerRetry<T>(client: EtsyClient, read: (c: EtsyClient) => Promise<T>): Promise<T> {
+    try {
+      return await read(client)
+    } catch (e) {
+      const hidden = e instanceof EtsyApiError && (e.kind === 'not_found' || (e.kind === 'auth' && e.status === 403))
+      if (!hidden || !deps.own?.status().loggedIn) throw e
+      const owner: EtsyClient = { ...client, call: (path, o = {}) => client.call(path, { ...o, oauth: true }) }
+      try {
+        return await read(owner)
+      } catch (e2) {
+        throw e2 instanceof EtsyApiError && e2.kind === 'not_found' ? e2 : e
+      }
+    }
+  }
+
+  /**
+   * GET /listings/{id}?includes=Images (API key, 1 request; as the owner once
+   * more for a hidden own listing); a 404 → a ToolInputError.
+   */
+  async function liveListing(client: EtsyClient, id: number) {
+    let body: unknown
+    try {
+      body = await ownerRetry(client, (c) => c.call(`/v3/application/listings/${id}`, { query: { includes: 'Images' } }))
+    } catch (e) {
+      if (e instanceof EtsyApiError && e.kind === 'not_found') {
+        throw new ToolInputError(`Etsy has no listing ${id} (deleted, or not public), and the app's database doesn't have it either.`)
+      }
+      throw e
+    }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      throw new EtsyApiError('bad_response', 'Etsy повернув неочікувану відповідь.')
+    }
+    const raw = body as Record<string, unknown>
+    const images = (Array.isArray(raw.images) ? raw.images : []).map(toImage).filter((i) => i.id > 0).sort(byImageRank)
+    return { raw, row: toListingRow(raw), images }
+  }
+
+  const strings = (v: unknown): string[] =>
+    Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string').map(decodeHtmlEntities) : []
+
+  async function liveProduct(id: number) {
+    const { raw, row, images } = await liveListing(liveClient(`Product ${id}`), id)
+    const storeId = optInt(raw.shop_id)
+    return textResult({
+      opened: 'product',
+      source: 'live',
+      note: "Not in the app's database — read live from Etsy now (1 API request on the daily quota); not tracked, so there is no history. get_product_live_details reads more of it; to track its shop, the user adds the shop in the app.",
+      id: row.listingId || id,
+      store_id: storeId,
+      store_tracked: storeId != null && !!getShopSummary(db, storeId),
+      title: row.title,
+      url: row.url,
+      state: row.state,
+      price: row.price ? { base: priceValue(row.price.amount, row.price.divisor), base_currency: row.price.currency } : null,
+      quantity: row.quantity,
+      favorites: row.numFavorers,
+      views: optInt(raw.views),
+      featured_position: row.featuredRank,
+      description: optText(raw.description),
+      tags: strings(raw.tags),
+      materials: strings(raw.materials),
+      product_type: productType(typeof raw.listing_type === 'string' ? raw.listing_type : null),
+      created_at: isoSec(optInt(raw.original_creation_timestamp) ?? optInt(raw.created_timestamp)),
+      listed_at: isoSec(optInt(raw.created_timestamp)),
+      updated_at: isoSec(optInt(raw.updated_timestamp)),
+      images: images.map((i, n) => ({
+        image_id: i.id,
+        position: n + 1,
+        width: i.width,
+        height: i.height,
+        alt_text: i.altText,
+        /** open_link with this shows the photo. */
+        link: photoRef(row.listingId || id, i.id)
+      }))
+    })
+  }
+
+  /** `stored` = the listing as the app's database has it (the photo isn't among its photos). */
+  async function livePhoto(productId: number, imageId: number, full: boolean, stored?: Listing): Promise<McpToolResult> {
+    const client = liveClient(`Product ${productId}`)
+    let live: Awaited<ReturnType<typeof liveListing>>
+    try {
+      live = await liveListing(client, productId)
+    } catch (e) {
+      if (stored && e instanceof ToolInputError) {
+        throw new ToolInputError(
+          `Product ${productId} is in the app's database but has no photo ${imageId} there (it has ${stored.images.length} photo(s): ${stored.images.map((i) => i.id).join(', ') || 'none'}), and Etsy has no listing ${productId} now (deleted, or not public), so the photo can't be read live either.`
+        )
+      }
+      throw e
+    }
+    const { row, images } = live
+    const index = images.findIndex((i) => i.id === imageId)
+    const img = images[index]
+    if (!img) {
+      throw new ToolInputError(
+        `Etsy listing ${productId} has no photo ${imageId} now (it has ${images.length} photo(s): ${images.map((i) => i.id).join(', ') || 'none'}).`
+      )
+    }
+    const urls = (full ? [img.urlFull] : [img.url570, img.urlFull]).filter((u) => !!u)
+    const out = await readImage(urls, {
+      local: false,
+      tooLarge: full ? `${TOO_LARGE} Ask for size "medium".` : TOO_LARGE
+    })
+    if ('error' in out) return errorResult(out.error)
+    return imageResult(
+      { opened: 'photo', source: 'live', product_id: productId, title: row.title, image_id: img.id, position: index + 1, of: images.length, alt_text: img.altText },
+      out
+    )
+  }
+
+  async function liveVideo(productId: number, videoId: number, stored?: Listing): Promise<McpToolResult> {
+    const client = liveClient(`Product ${productId}`)
+    let v: Awaited<ReturnType<typeof listingVideo>>
+    try {
+      v = await ownerRetry(client, (c) => listingVideo(c, productId, videoId))
+    } catch (e) {
+      if (e instanceof EtsyApiError && e.kind === 'not_found') {
+        const had = stored ? ` The app's database has listing ${productId} without that video (its videos: ${(stored.videos ?? []).map((x) => x.id).join(', ') || 'none'}).` : ''
+        throw new ToolInputError(`Etsy has no video ${videoId} of listing ${productId} (or no such listing now).${had}`)
+      }
+      throw e
+    }
+    if (!v.thumbnailUrl) throw new ToolInputError(`Video ${videoId} has no preview.`)
+    const out = await readImage([v.thumbnailUrl], { local: false })
+    if ('error' in out) return errorResult(out.error)
+    return imageResult({ opened: 'video_preview', source: 'live', product_id: productId, video_id: v.id || videoId }, out)
+  }
+
+  /** open_link: one reference → what it points at. */
+  async function openRef(ref: ClaudeRef, full: boolean): Promise<McpToolResult> {
+    const local = { source: 'local' }
+    switch (ref.kind) {
+      case 'product': {
+        const l = getListing(db, ref.productId)
+        if (!l) return liveProduct(ref.productId)
+        const shop = getShopSummary(db, l.shopId)
+        return textResult({ opened: 'product', ...local, ...productFull(l, newProductIds(db, shop), shop?.shopName ?? null) })
+      }
+      case 'photo': {
+        const l = getListing(db, ref.productId)
+        // Not stored, or a photo added since the latest scan: Etsy live (when the app can).
+        if (l && (l.images.some((i) => i.id === ref.imageId) || !canLive())) {
+          return productPhoto(l, { imageId: ref.imageId, full }, { opened: 'photo', ...local })
+        }
+        return livePhoto(ref.productId, ref.imageId, full, l ?? undefined)
+      }
+      case 'video': {
+        const l = getListing(db, ref.productId)
+        if (l && ((l.videos ?? []).some((v) => v.id === ref.videoId) || !canLive())) {
+          return videoPreview(l, { videoId: ref.videoId }, { opened: 'video_preview', ...local })
+        }
+        return liveVideo(ref.productId, ref.videoId, l ?? undefined)
+      }
+      case 'reviewPhoto':
+        return reviewPhoto(ref.reviewId, { opened: 'review_photo' })
+      case 'store': {
+        const s = getShopSummary(db, ref.storeId)
+        if (!s) throw new ToolInputError(`No tracked store with id ${ref.storeId}. list_stores lists the tracked shops.`)
+        return textResult({ opened: 'store', ...storeFull(s, mine()) })
+      }
+      case 'storeImage': {
+        const s = getShopSummary(db, ref.storeId)
+        if (!s) throw new ToolInputError(`No tracked store with id ${ref.storeId}. list_stores lists the tracked shops.`)
+        return storePicture(s, ref.image === 'banner', { opened: ref.image === 'banner' ? 'store_banner' : 'store_logo' })
+      }
+      case 'storeName': {
+        const name = ref.name.toLowerCase()
+        const s = listShopSummaries(db).find((x) => x.shopName.toLowerCase() === name)
+        if (!s) {
+          throw new ToolInputError(
+            `The Etsy shop "${ref.name}" is not tracked in the app, so the app has no data about it. The live tools (search_market, get_store_sections, get_store_featured …) can read Etsy now; to track it, the user adds it in the app ("+ Додати магазин").`
+          )
+        }
+        return textResult({ opened: 'store', ...storeFull(s, mine()) })
+      }
+      case 'draft': {
+        const d = getDraft(db, ref.draftId)
+        if (!d) throw new ToolInputError(`No draft ${ref.draftId} in the app (deleted?). list_prepared_products lists the drafts.`)
+        return textResult({ opened: 'draft', ...draftOut(d) })
+      }
+      case 'draftPhoto':
+        return draftPhoto(ref.draftId, ref.mediaId)
+    }
+  }
+
+  /**
+   * The first of `urls` that reads as a showable image of an acceptable size:
+   * `etsyimg://…` through the app's image handler, an https Etsy CDN URL
+   * (isEtsyCdnUrl only) through fetchCdnImage. `local`: the app may have its
+   * own copy (listing and review photos); else the image only ever comes from
+   * Etsy's CDN. `tooLarge` / `missing`: the tool's own messages.
    */
   async function readImage(
     urls: string[],
-    opts: { local: boolean; tooLarge?: string }
+    opts: { local: boolean; tooLarge?: string; missing?: string }
   ): Promise<{ data: Buffer; mimeType: string } | { error: string }> {
     let unsupported: string | null = null
     let tooLarge = false
     for (const url of urls) {
-      const img = deps.readImage ? await deps.readImage(url).catch(() => null) : null
+      const read = url.startsWith('etsyimg://')
+        ? deps.readImage
+        : isEtsyCdnUrl(url)
+          ? deps.fetchCdnImage
+          : undefined
+      const img = read ? await read(url).catch(() => null) : null
       if (!img) continue
       const mimeType = imageMime(img.mimeType)
       if (!MCP_IMAGE_TYPES.includes(mimeType)) unsupported = mimeType
@@ -1237,9 +1559,11 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
     if (tooLarge) return { error: opts.tooLarge ?? TOO_LARGE }
     if (unsupported) return { error: `The image is only available as ${unsupported}, which cannot be returned as an image.` }
     return {
-      error: opts.local
-        ? "The image is not available right now (no local copy, and it could not be downloaded from Etsy's image CDN)."
-        : "The image could not be downloaded from Etsy's image CDN right now."
+      error:
+        opts.missing ??
+        (opts.local
+          ? "The image is not available right now (no local copy, and it could not be downloaded from Etsy's image CDN)."
+          : "The image could not be downloaded from Etsy's image CDN right now.")
     }
   }
 

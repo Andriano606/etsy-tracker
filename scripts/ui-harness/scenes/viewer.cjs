@@ -36,6 +36,12 @@ module.exports = [
   scene('viewer-from-card', "await __h.waitFor('.card-zoom'); document.querySelector('.card-zoom').click(); await loaded()"),
   scene('viewer-from-modal', "await openListing(); await __h.clickSel('.listing-modal .lm-gallery-zoom'); await loaded()"),
   scene('viewer-step', "await openListing(); await __h.clickSel('.listing-modal .lm-gallery-zoom'); await loaded(); key('ArrowRight'); await __h.sleep(100); key('ArrowRight'); await loaded()"),
+  scene('viewer-copy-ref', "await openListing(); await __h.clickSel('.listing-modal .lm-gallery-zoom'); await loaded(); await __h.clickSel('[data-testid=viewer-copy-ref]'); await __h.sleep(300)"),
+  scene('viewer-copy-ref-failed', "await window.api.__setCopyFail(true); await openListing(); await __h.clickSel('.listing-modal .lm-gallery-zoom'); await loaded(); await __h.clickSel('[data-testid=viewer-copy-ref]'); await __h.sleep(300)"),
+  scene('viewer-copy-ref-single', "await __h.clickSel('.shop-icon-zoom'); await loaded()"),
+  scene('viewer-modal-photo-icons', "await openListing(); const st = document.createElement('style'); st.textContent = '.listing-modal .lm-gallery-zoom .ui-zoom-badge, .listing-modal .lm-gallery-nav { opacity: 1 !important }'; document.head.append(st); await __h.sleep(300)"),
+  scene('viewer-modal-photo-copied', "await openListing(); const st = document.createElement('style'); st.textContent = '.listing-modal .lm-gallery-zoom .ui-zoom-badge, .listing-modal .lm-gallery-nav { opacity: 1 !important }'; document.head.append(st); await __h.clickSel('.listing-modal [data-testid=copy-for-claude]'); await __h.sleep(300)"),
+  scene('viewer-modal-photo-failed', "await window.api.__setCopyFail(true); await openListing(); await __h.clickSel('.listing-modal [data-testid=copy-for-claude]'); await __h.sleep(300)"),
   scene('viewer-actual', "await openListing(); await __h.clickSel('.listing-modal .lm-gallery-zoom'); await loaded(); await __h.click(document.querySelector('.ui-viewer-bar .ui-viewer-btn')); await __h.sleep(500)"),
   scene(
     'viewer-actual-scrolled',

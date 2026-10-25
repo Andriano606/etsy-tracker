@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import type { Listing, Promotion, Review, ScanChange, ScanPromotions, ShopSummary } from '@shared/types'
 import { formatCount, formatDateTime, formatEtsyDate, formatPromoPeriod, ratingStars, textExcerpt } from '@shared/format'
 import { GLOSSARY } from '@shared/glossary'
+import { photoRef, reviewPhotoRef } from '@shared/claudeRef'
 import { formatMoney } from '@shared/price'
 import { imageSrc, reviewImageSrc } from '../imageUrl'
 import { Callout, Icon, InfoTip, ZoomButton, ZoomImage, type IconName } from '../ui'
@@ -77,7 +78,7 @@ function ListingLink({
       </button>
       {imageId != null && (
         <ZoomButton
-          images={{ src: imageSrc({ id: imageId }, 'fullxfull'), alt: name, caption: name }}
+          images={{ src: imageSrc({ id: imageId }, 'fullxfull'), alt: name, caption: name, ref: photoRef(listingId, imageId) }}
           label={`Відкрити фото на весь розмір: ${name}`}
           className="ui-zoom-corner thumb-zoom"
         />
@@ -148,6 +149,7 @@ export function NewReviews({
                   src={reviewImageSrc(r)}
                   alt="Фото покупця"
                   caption={`Фото покупця · ${formatEtsyDate(r.createdAt)}`}
+                  claudeRef={reviewPhotoRef(r.id)}
                   loading="lazy"
                 />
               )}

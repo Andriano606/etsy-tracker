@@ -28,6 +28,7 @@ import {
 } from '@shared/myShop'
 import { formatDateTime } from '@shared/format'
 import { GLOSSARY, type GlossaryKey } from '@shared/glossary'
+import { draftPhotoRef } from '@shared/claudeRef'
 import { ownShopId, useStore, type ViewerImage } from '../store'
 import {
   Badge,
@@ -185,8 +186,22 @@ function BlockHead({ label, glossary, aside, heading }: { label: string; glossar
   )
 }
 
-/** Picked/stored photos as cards (the first is the main one; ↑ moves one up) with remove. */
-function PhotoList({ items, onChange, readOnly }: { items: Slot[]; onChange: (v: Slot[]) => void; readOnly: boolean }): JSX.Element | null {
+/**
+ * Picked/stored photos as cards (the first is the main one; ↑ moves one up) with remove.
+ * `draftId` = the stored draft they belong to: its stored photos carry a "Копіювати для Claude"
+ * reference in the viewer (a freshly picked one isn't in the app yet — none).
+ */
+function PhotoList({
+  items,
+  onChange,
+  readOnly,
+  draftId
+}: {
+  items: Slot[]
+  onChange: (v: Slot[]) => void
+  readOnly: boolean
+  draftId: number | null
+}): JSX.Element | null {
   if (!items.length) return null
   const move = (i: number): void => {
     const v = [...items]
@@ -195,7 +210,10 @@ function PhotoList({ items, onChange, readOnly }: { items: Slot[]; onChange: (v:
   }
   // Every photo with a preview opens in the viewer, as a gallery of the draft's photos.
   const shown = items.filter((f) => f.preview)
-  const gallery: ViewerImage[] = shown.map((f) => ({ src: f.preview!, alt: f.name, caption: f.name }))
+  const gallery: ViewerImage[] = shown.map((f) => {
+    const mediaId = storedId(f)
+    return { src: f.preview!, alt: f.name, caption: f.name, ref: draftId != null && mediaId != null ? draftPhotoRef(draftId, mediaId) : undefined }
+  })
   return (
     <ol className="my-photos picked-files">
       {items.map((f, i) => (
@@ -1186,7 +1204,7 @@ function DraftEditor({ draft, onBack }: { draft: ListingDraft | null; onBack: ()
             aside={<span className="num">{`${photos.length}/${MAX_IMAGES}`}</span>}
           />
           <div className="ui-field-hint">JPG, PNG або GIF. Перше фото — головне: його видно в пошуку. Стрілка ↑ піднімає фото вище.</div>
-          <PhotoList items={photos} onChange={(v) => (setPhotos(v), touched())} readOnly={false} />
+          <PhotoList items={photos} onChange={(v) => (setPhotos(v), touched())} readOnly={false} draftId={current?.id ?? null} />
           <div className="ui-row">
             <Button size="sm" icon="plus" disabled={photos.length >= MAX_IMAGES} onClick={() => void pick('images')}>
               Додати фото
@@ -1427,7 +1445,12 @@ function DraftList(): JSX.Element {
                   <ZoomImage
                     src={draftPhotoSrc(d.photos[0].id)}
                     alt={d.fields.title || d.photos[0].name}
-                    gallery={d.photos.map((m) => ({ src: draftPhotoSrc(m.id), alt: m.name, caption: d.fields.title ? `${d.fields.title} — ${m.name}` : m.name }))}
+                    gallery={d.photos.map((m) => ({
+                      src: draftPhotoSrc(m.id),
+                      alt: m.name,
+                      caption: d.fields.title ? `${d.fields.title} — ${m.name}` : m.name,
+                      ref: draftPhotoRef(d.id, m.id)
+                    }))}
                     className="draft-row-zoom"
                     imgClassName="my-thumb my-thumb--md"
                   />

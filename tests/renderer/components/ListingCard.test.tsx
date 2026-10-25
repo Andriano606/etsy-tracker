@@ -190,6 +190,12 @@ describe('ListingCard photo → the image viewer', () => {
     expect(viewer.index).toBe(0)
     expect(viewer.images.map((i) => i.src)).toEqual(['etsyimg://img/11/fullxfull', 'etsyimg://img/12/fullxfull', 'etsyimg://img/13/fullxfull'])
     expect(viewer.images[0].alt).toBe('Front')
+    // Each photo carries its "Копіювати для Claude" reference.
+    expect(viewer.images.map((i) => i.ref)).toEqual([
+      'etsy-tracker://product/1/photo/11',
+      'etsy-tracker://product/1/photo/12',
+      'etsy-tracker://product/1/photo/13'
+    ])
     expect(viewer.images[1].alt).toBe('Mug')
     const dlg = screen.getByRole('dialog', { name: 'Перегляд зображення' })
     expect(dlg.querySelector('img')).toHaveAttribute('src', 'etsyimg://img/11/fullxfull')

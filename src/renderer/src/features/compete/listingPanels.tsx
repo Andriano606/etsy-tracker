@@ -19,6 +19,7 @@ import {
 import { COMMON_COUNTRIES, ISO_COUNTRIES, countryLabel } from '@shared/countries'
 import { formatCount, formatEtsyDate, formatPrice, ratingStars } from '@shared/format'
 import { missingScopes } from '@shared/myShop'
+import { photoRef, videoRef } from '@shared/claudeRef'
 import type { Listing } from '@shared/types'
 import { imageSrc } from '../../imageUrl'
 import { useStore, type ViewerImage } from '../../store'
@@ -181,11 +182,14 @@ function VideoDetails({ listingId, videoId, onClose }: { listingId: number; vide
   )
 }
 
-/** The listing's live photos as one viewer gallery, biggest URL first. */
-function photoGallery(list: LiveImage[]): ViewerImage[] {
-  return list
-    .filter((i) => i.url570)
-    .map((i) => ({ src: i.urlFull || i.url570, alt: i.altText || `Фото ${i.rank ?? ''}`.trim(), caption: `Фото ${i.rank ?? '—'}${i.altText ? ` — ${i.altText}` : ''}` }))
+/** The listing's live photos as one viewer gallery, biggest URL first (each with its "Копіювати для Claude" reference). */
+function photoGallery(list: LiveImage[], listingId: number): ViewerImage[] {
+  return list.filter((i) => i.url570).map((i) => ({
+    src: i.urlFull || i.url570,
+    alt: i.altText || `Фото ${i.rank ?? ''}`.trim(),
+    caption: `Фото ${i.rank ?? '—'}${i.altText ? ` — ${i.altText}` : ''}`,
+    ref: photoRef(listingId, i.id)
+  }))
 }
 
 /** Where a photo sits in `photoGallery(list)`. */
@@ -222,7 +226,7 @@ function MediaPanel({ listing }: PanelProps): JSX.Element {
                         className="compete-zoom"
                         src={i.url570}
                         alt={i.altText || `Фото ${i.rank ?? ''}`.trim()}
-                        gallery={photoGallery(list)}
+                        gallery={photoGallery(list, listing.listingId)}
                         index={galleryIndex(list, i.id)}
                         loading="lazy"
                       />
@@ -276,7 +280,14 @@ function MediaPanel({ listing }: PanelProps): JSX.Element {
                 <li className={'compete-media-item' + (isOpen('video', v.id) ? ' is-open' : '')}>
                   <div className="compete-media-thumb">
                     {v.thumbnailUrl ? (
-                      <ZoomImage className="compete-zoom" src={v.thumbnailUrl} alt="Кадр відео" caption="Кадр відео (Etsy дає лише цей кадр)" loading="lazy" />
+                      <ZoomImage
+                        className="compete-zoom"
+                        src={v.thumbnailUrl}
+                        alt="Кадр відео"
+                        caption="Кадр відео (Etsy дає лише цей кадр)"
+                        claudeRef={videoRef(listing.listingId, v.id)}
+                        loading="lazy"
+                      />
                     ) : (
                       <Icon name="video" size={22} />
                     )}
@@ -508,7 +519,8 @@ function VariationImagesPanel({ listing }: PanelProps): JSX.Element {
               const gallery: ViewerImage[] = shown.map((r) => ({
                 src: variationFull(listing, live.data, r.imageId),
                 alt: r.value ?? `Значення #${r.valueId}`,
-                caption: `Варіант: ${r.value ?? `значення #${r.valueId}`}`
+                caption: `Варіант: ${r.value ?? `значення #${r.valueId}`}`,
+                ref: photoRef(listing.listingId, r.imageId)
               }))
               return (
                 <li key={`${v.propertyId}-${v.valueId}`} className="compete-variation" data-testid="compete-variation">

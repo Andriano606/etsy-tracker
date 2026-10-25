@@ -7,7 +7,7 @@ import { createEtsyClient } from './etsyApi'
 import { type EtsyAuth, createEtsyAuth } from './etsyAuth'
 import { IMAGE_SCHEME, createImageProtocolHandler } from './imageProtocol'
 import { type ImageStore, ImageStoreError, createMinioImageStore } from './imageStore'
-import { createImageSyncer } from './imageSync'
+import { createImageSyncer, downloadImage } from './imageSync'
 import {
   ensureOwnShopTracked,
   notifyDraftsChanged,
@@ -212,10 +212,23 @@ if (!app.requestSingleInstanceLock()) {
         taxonomy: createTaxonomyCache(client),
         accessToken: () => etsyAuth!.getAccessToken()
       },
+      // open_link reads Etsy live only with a saved key (else no request).
+      hasApiKey: () => !!keyStore.getKey(),
       onDraftsChanged: () => notifyDraftsChanged({ db, getWindow }),
       // One Etsy-drafts pull at a time, shared with the app's (scan, "Синхронізувати з Etsy").
       pullDrafts: () =>
         ctxRef ? pullEtsyDrafts(ctxRef) : Promise.resolve({ ok: false as const, error: 'The app is still starting.' }),
+      // open_link's live photos: only https *.etsystatic.com (downloadImage
+      // refuses anything else), through the same CDN fetch as the window.
+      fetchCdnImage: async (url) => {
+        const d = await downloadImage(url, {
+          fetch: cdnFetch,
+          sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+          timeoutMs: 30_000,
+          retries: 1
+        })
+        return { data: d.body, mimeType: d.contentType ?? 'image/jpeg' }
+      },
       readImage: async (url) => {
         const res = await imageHandler({ url } as Request)
         if (!res.ok) return null

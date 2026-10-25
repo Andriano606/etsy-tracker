@@ -188,7 +188,7 @@ export function ChangeRows({
             {img && l && (
               // Over the thumbnail, a sibling of the row button: the photo full size.
               <ZoomButton
-                images={listingGallery(l.images, l.title)}
+                images={listingGallery(l.images, l.title, l.listingId)}
                 label={`Відкрити фото на весь розмір: ${l.title}`}
                 className="ui-zoom-corner thumb-zoom change-zoom"
               />

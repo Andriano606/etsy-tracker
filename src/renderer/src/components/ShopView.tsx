@@ -5,6 +5,7 @@ import { GLOSSARY } from '@shared/glossary'
 import { ownShopId, useStore, type SortMode } from '../store'
 import { SHOP_PANELS } from '../features/registry'
 import { filterListings } from '@shared/listingFilter'
+import { storeImageRef } from '@shared/claudeRef'
 import { ActionBar, Badge, Button, Callout, EmptyState, Icon, InfoTip, Select, Spinner, Stat, Term, Toggle, type Action } from '../ui'
 import { countOf } from './ChangeList'
 import { ExternalLink } from './ExternalLink'
@@ -405,7 +406,7 @@ export function ShopView(): JSX.Element | null {
     <div className="shop-view">
       <header className="shop-header">
         <div className="shop-head-row">
-          <ShopIcon url={shop.iconUrl} name={shop.shopName} size={40} zoomable />
+          <ShopIcon url={shop.iconUrl} name={shop.shopName} size={40} zoomable claudeRef={storeImageRef(shop.id, 'logo')} />
           <h1 className="shop-name">
             <span className="truncate" title={shop.shopName}>
               {shop.shopName}

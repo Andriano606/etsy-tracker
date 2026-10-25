@@ -321,6 +321,7 @@ describe('📊 Статистика', () => {
     await act(async () => fireEvent.click(zoom))
     expect(api.getListing).not.toHaveBeenCalled()
     expect(useStore.getState().viewer?.images[0].src).toBe('etsyimg://img/70/fullxfull')
+    expect(useStore.getState().viewer?.images[0].ref).toBe('etsy-tracker://product/7/photo/70')
     const viewer = screen.getByRole('dialog', { name: 'Перегляд зображення' })
     expect(viewer.querySelector('img')).toHaveAttribute('src', 'etsyimg://img/70/fullxfull')
     // Escape closes the viewer first; the statistics stay open.

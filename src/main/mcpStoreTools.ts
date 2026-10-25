@@ -316,7 +316,8 @@ function etsyLinkOut(d: ListingDraft) {
   }
 }
 
-function draftOut(d: ListingDraft) {
+/** A draft as list_prepared_products shows it (also open_link). */
+export function draftOut(d: ListingDraft) {
   const f = d.fields
   return {
     draft_id: d.id,

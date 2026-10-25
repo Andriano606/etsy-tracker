@@ -88,6 +88,7 @@ export function claudeDesktopConfig(port: number, token: string): string {
  * tests/main/mcpTools.test.ts keeps the names in step with the real tools.
  */
 export const MCP_TOOL_SUMMARY: ReadonlyArray<{ name: string; text: string; write?: boolean }> = [
+  { name: 'open_link', text: 'відкрити посилання чи адресу з програми: товар, фото, відгук, магазин, чернетку' },
   { name: 'list_stores', text: 'відстежувані магазини Etsy з бази програми: посилання, головні цифри, останнє сканування та його помилка' },
   { name: 'get_store', text: 'профіль магазину з бази: оголошення, політики, відпустка, цифри та їх зміна, кількість і середня оцінка збережених відгуків' },
   { name: 'search_products', text: 'пошук товарів відстежуваних магазинів у базі (назва, теги, опис), сортування, фільтри «нові», «зі знижкою», «зниклі»' },

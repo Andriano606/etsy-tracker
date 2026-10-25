@@ -379,6 +379,8 @@ describe('Пошук по всьому Etsy', () => {
       fireEvent.click(within(b).getByRole('button', { name: 'Відкрити на весь розмір: Planner 2' }))
     })
     expect(useStore.getState().viewer!.images[0].src).toBe('https://i.etsystatic.com/1/il_570xN.2.jpg')
+    // A market result has no image id: no "Копіювати для Claude" reference.
+    expect(useStore.getState().viewer!.images[0].ref).toBeUndefined()
   })
 
   it('"Стежити за магазином": shop name → addShop → the result is shown on that shop\'s cards', async () => {

@@ -6,6 +6,7 @@
 import { useRef, useState } from 'react'
 import { MAX_ALT_TEXT, type MediaPhoto } from '@shared/features/media'
 import { MAX_IMAGES } from '@shared/myShop'
+import { photoRef } from '@shared/claudeRef'
 import type { ViewerImage } from '../../store'
 import { Badge, Button, EmptyState, GLOSSARY, InfoTip, Toggle, ZoomImage } from '../../ui'
 import type { MediaOps } from './MediaSection'
@@ -13,12 +14,17 @@ import type { MediaOps } from './MediaSection'
 /** The biggest URL Etsy gave for a photo (the viewer opens it), null when none. */
 const fullSrc = (p: MediaPhoto): string | null => p.urlFull ?? p.url570 ?? p.url170 ?? p.url75
 
-/** Every photo that has a picture, as a viewer gallery in rank order. */
-function photoGallery(photos: MediaPhoto[]): { viewable: MediaPhoto[]; gallery: ViewerImage[] } {
+/** Every photo that has a picture, as a viewer gallery in rank order (each with its "Копіювати для Claude" reference). */
+function photoGallery(photos: MediaPhoto[], listingId: number): { viewable: MediaPhoto[]; gallery: ViewerImage[] } {
   const viewable = photos.filter((p) => fullSrc(p) != null)
   return {
     viewable,
-    gallery: viewable.map((p) => ({ src: fullSrc(p) as string, alt: p.altText || `Фото №${p.position}`, caption: `Фото №${p.position}${p.altText ? ` — ${p.altText}` : ''}` }))
+    gallery: viewable.map((p) => ({
+      src: fullSrc(p) as string,
+      alt: p.altText || `Фото №${p.position}`,
+      caption: `Фото №${p.position}${p.altText ? ` — ${p.altText}` : ''}`,
+      ref: photoRef(listingId, p.id)
+    }))
   }
 }
 
@@ -131,7 +137,7 @@ export function PhotoList({ photos, ops }: { photos: MediaPhoto[]; ops: MediaOps
     )
   }
 
-  const { viewable, gallery } = photoGallery(photos)
+  const { viewable, gallery } = photoGallery(photos, ops.listing.listingId)
   return (
     <section className="media-block" data-testid="media-photos" aria-labelledby="media-photos-title">
       <div className="media-block-head">

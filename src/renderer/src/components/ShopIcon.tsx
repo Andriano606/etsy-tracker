@@ -12,12 +12,15 @@ export function ShopIcon({
   url,
   name,
   size = 28,
-  zoomable = false
+  zoomable = false,
+  claudeRef
 }: {
   url: string | null
   name: string
   size?: number
   zoomable?: boolean
+  /** The logo's etsy-tracker:// reference (storeImageRef) — the viewer's "Копіювати для Claude". */
+  claudeRef?: string
 }): JSX.Element {
   const [broken, setBroken] = useState(false)
   const openImage = useStore((s) => s.openImage)
@@ -44,7 +47,7 @@ export function ShopIcon({
         title={label}
         onClick={(e) => {
           e.stopPropagation()
-          openImage({ src: url, alt: `Логотип магазину ${name}`, caption: name })
+          openImage({ src: url, alt: `Логотип магазину ${name}`, caption: name, ref: claudeRef })
         }}
       >
         {img}

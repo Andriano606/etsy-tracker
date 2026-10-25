@@ -432,8 +432,8 @@ describe('pictures open in the full-size viewer', () => {
     await click(screen.getByRole('button', { name: 'Відкрити на весь розмір: b.jpg' }))
     expect(useStore.getState().viewer).toEqual({
       images: [
-        { src: 'etsyimg://draft/31', alt: 'a.jpg', caption: 'a.jpg' },
-        { src: 'etsyimg://draft/32', alt: 'b.jpg', caption: 'b.jpg' }
+        { src: 'etsyimg://draft/31', alt: 'a.jpg', caption: 'a.jpg', ref: 'etsy-tracker://draft/7/photo/31' },
+        { src: 'etsyimg://draft/32', alt: 'b.jpg', caption: 'b.jpg', ref: 'etsy-tracker://draft/7/photo/32' }
       ],
       index: 1
     })
@@ -461,6 +461,7 @@ describe('pictures open in the full-size viewer', () => {
     const v = useStore.getState().viewer!
     expect(v.index).toBe(0)
     expect(v.images.map((i) => i.src)).toEqual(['etsyimg://draft/41', 'etsyimg://draft/42'])
+    expect(v.images.map((i) => i.ref)).toEqual(['etsy-tracker://draft/3/photo/41', 'etsy-tracker://draft/3/photo/42'])
     expect(viewerImg()).toHaveAttribute('src', 'etsyimg://draft/41')
     expect(useStore.getState().draftsView).toBe('list')
     expect(screen.getByTestId('draft-list')).toBeInTheDocument()

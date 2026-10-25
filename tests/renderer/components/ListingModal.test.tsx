@@ -791,6 +791,11 @@ describe('ListingModal: photos open full size in the image viewer', () => {
     const viewer = useStore.getState().viewer!
     expect(viewer.index).toBe(2)
     expect(viewer.images.map((i) => i.src)).toEqual(['etsyimg://img/1/fullxfull', 'etsyimg://img/2/fullxfull', 'etsyimg://img/3/fullxfull'])
+    expect(viewer.images.map((i) => i.ref)).toEqual([
+      'etsy-tracker://product/2/photo/1',
+      'etsy-tracker://product/2/photo/2',
+      'etsy-tracker://product/2/photo/3'
+    ])
     expect(viewerImg()).toHaveAttribute('src', 'etsyimg://img/3/fullxfull')
     expect(useStore.getState().detailListing?.listingId).toBe(2)
     // Escape closes only the viewer; the listing window is still there.
@@ -831,6 +836,94 @@ describe('ListingModal: photos open full size in the image viewer', () => {
     const btn = within(item).getByRole('button', { name: /Відкрити на весь розмір: Фото покупця/ })
     await act(async () => fireEvent.click(btn))
     expect(useStore.getState().viewer?.images[0].src).toBe('etsyimg://review/5/fullxfull')
+    expect(useStore.getState().viewer?.images[0].ref).toBe('etsy-tracker://review/5/photo')
     expect(viewerImg()).toHaveAttribute('src', 'etsyimg://review/5/fullxfull')
+  })
+})
+
+describe('ListingModal: "Копіювати для Claude" on the main photo', () => {
+  const img = (id: number, rank: number) => ({ ...mkListing(1).images[0], id, rank })
+  const show = () => {
+    useStore.setState({ detailListing: mkListing(2, { title: 'Mug', images: [img(1, 1), img(2, 2), img(3, 3)] }) })
+    return render(<ListingModal />)
+  }
+  const btn = () => screen.getByTestId('copy-for-claude')
+  const main = (c: HTMLElement) => c.querySelector('.gallery-main .ui-zoom img')!.getAttribute('src')
+
+  it('copies the reference of the photo shown — and nothing else changes or closes', async () => {
+    const { container } = show()
+    expect(btn()).toHaveAccessibleName('Копіювати для Claude: фото 1 з 3')
+    expect(btn().getAttribute('title')).toContain('Вставте це Claude — він відкриє саме цю картинку через MCP')
+    await act(async () => fireEvent.click(btn()))
+    expect(api.copyText).toHaveBeenLastCalledWith('etsy-tracker://product/2/photo/1')
+    expect(btn()).toHaveClass('copied')
+    expect(btn().closest('.claude-copy')).toHaveTextContent('Скопійовано')
+    expect(main(container)).toBe('etsyimg://img/1/fullxfull')
+    expect(within(container.querySelector('.gallery-main') as HTMLElement).getByText('1 / 3')).toBeInTheDocument()
+    expect(useStore.getState().viewer).toBeNull()
+    expect(useStore.getState().detailListing?.listingId).toBe(2)
+    // Another photo: its own reference, the feedback of the previous one is gone.
+    await act(async () => fireEvent.click(screen.getByLabelText('Фото 3')))
+    expect(btn()).not.toHaveClass('copied')
+    await act(async () => fireEvent.click(btn()))
+    expect(api.copyText).toHaveBeenLastCalledWith('etsy-tracker://product/2/photo/3')
+    expect(main(container)).toBe('etsyimg://img/3/fullxfull')
+    expect(useStore.getState().viewer).toBeNull()
+    // The Etsy-link button stays as it was.
+    expect(screen.getByTestId('copy-listing-link')).toHaveTextContent('Копіювати посилання')
+  })
+
+  it('a refused copy says "Не вдалося скопіювати"; Enter on it never reaches the photo button', async () => {
+    show()
+    api.copyText.mockResolvedValueOnce(false)
+    await act(async () => fireEvent.click(btn()))
+    expect(btn()).toHaveClass('copy-failed')
+    expect(btn().closest('.claude-copy')).toHaveTextContent('Не вдалося скопіювати')
+    fireEvent.keyDown(btn(), { key: 'Enter' })
+    expect(useStore.getState().viewer).toBeNull()
+  })
+
+  it('keeps keyboard focus while ←/→ switch the photo; its name and feedback follow the photo', async () => {
+    const { container } = show()
+    btn().focus()
+    await act(async () => fireEvent.click(btn()))
+    expect(btn()).toHaveClass('copied')
+    const before = btn()
+    fireEvent.keyDown(btn(), { key: 'ArrowRight' })
+    expect(main(container)).toBe('etsyimg://img/2/fullxfull')
+    expect(btn()).toBe(before)
+    expect(btn()).toHaveFocus()
+    expect(btn()).toHaveAccessibleName('Копіювати для Claude: фото 2 з 3')
+    expect(btn()).not.toHaveClass('copied')
+    // the arrows keep working from it
+    fireEvent.keyDown(btn(), { key: 'ArrowRight' })
+    expect(main(container)).toBe('etsyimg://img/3/fullxfull')
+    expect(btn()).toHaveFocus()
+    await act(async () => fireEvent.click(btn()))
+    expect(api.copyText).toHaveBeenLastCalledWith('etsy-tracker://product/2/photo/3')
+  })
+
+  it('a copy still in flight when the photo changes leaves no "Скопійовано" on the next photo', async () => {
+    const { container } = show()
+    let resolve!: (ok: boolean) => void
+    api.copyText.mockImplementationOnce(() => new Promise<boolean>((r) => (resolve = r)))
+    fireEvent.click(btn())
+    fireEvent.keyDown(btn(), { key: 'ArrowRight' })
+    expect(main(container)).toBe('etsyimg://img/2/fullxfull')
+    await act(async () => resolve(true))
+    expect(btn()).not.toHaveClass('copied')
+    expect(btn()).toHaveAttribute('aria-label', 'Копіювати для Claude: фото 2 з 3')
+  })
+
+  it('a single photo is named as the listing photo', () => {
+    useStore.setState({ detailListing: mkListing(7, { images: [img(1, 1)] }) })
+    render(<ListingModal />)
+    expect(btn()).toHaveAccessibleName('Копіювати для Claude: фото товару')
+  })
+
+  it('no photo → no button', () => {
+    useStore.setState({ detailListing: mkListing(6, { images: [] }) })
+    render(<ListingModal />)
+    expect(screen.queryByTestId('copy-for-claude')).toBeNull()
   })
 })

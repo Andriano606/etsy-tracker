@@ -509,10 +509,10 @@ describe('Відкрити на весь розмір', () => {
     })
     expect(viewer()).toEqual({
       images: [
-        { src: cdn(11, 'fullxfull'), alt: 'Alt 11', caption: 'Фото №1 — Alt 11' },
+        { src: cdn(11, 'fullxfull'), alt: 'Alt 11', caption: 'Фото №1 — Alt 11', ref: `etsy-tracker://product/${L}/photo/11` },
         // no fullxfull → the next biggest
-        { src: cdn(12, '570xN'), alt: 'Alt 12', caption: 'Фото №2 — Alt 12' },
-        { src: cdn(13, 'fullxfull'), alt: 'Фото №3', caption: 'Фото №3' }
+        { src: cdn(12, '570xN'), alt: 'Alt 12', caption: 'Фото №2 — Alt 12', ref: `etsy-tracker://product/${L}/photo/12` },
+        { src: cdn(13, 'fullxfull'), alt: 'Фото №3', caption: 'Фото №3', ref: `etsy-tracker://product/${L}/photo/13` }
       ],
       index: 1
     })
@@ -538,7 +538,9 @@ describe('Відкрити на весь розмір', () => {
     await act(async () => {
       fireEvent.click(within(screen.getByTestId('media-video')).getByRole('button', { name: 'Відкрити на весь розмір: Кадр відео' }))
     })
-    expect(viewer()!.images).toEqual([expect.objectContaining({ src: 'https://v.etsystatic.com/video/31/thumb.jpg', alt: 'Кадр відео' })])
+    expect(viewer()!.images).toEqual([
+      expect.objectContaining({ src: 'https://v.etsystatic.com/video/31/thumb.jpg', alt: 'Кадр відео', ref: `etsy-tracker://product/${L}/video/31` })
+    ])
     expect(calls('video')).toHaveLength(0)
   })
 

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type 
 import { useEscape } from '../components/useEscape'
 import { useStore, type ViewerImage } from '../store'
 import { Icon } from './icons'
+import { COPY_FOR_CLAUDE, COPY_FOR_CLAUDE_HINT, copyFeedbackText, useCopyFeedback } from './useCopyFeedback'
 
 // The full-size image viewer: mounted once, last in App, over every modal.
 // Opened through the store (`openImage`), usually by ZoomImage / ZoomButton.
@@ -122,6 +123,8 @@ function ViewerDialog({ images, start }: { images: ViewerImage[]; start: number 
             {index + 1} / {n}
           </span>
         )}
+        {/* Not keyed per image (focus would jump to the dialog on ←/→): its feedback resets per picture. */}
+        {img.ref && <CopyRefButton text={img.ref} resetKey={`${index}:${img.ref}`} />}
         <ViewerButton
           icon={actual ? 'minimize' : 'maximize'}
           label={actual ? 'Вмістити у вікно' : 'Справжній розмір (1:1)'}
@@ -193,6 +196,37 @@ function ViewerButton({
   )
 }
 
+/**
+ * "Копіювати для Claude" in the viewer's bar: copies the current picture's
+ * etsy-tracker:// reference. Icon + text on wide windows, the icon alone on
+ * narrow ones (the feedback text still shows for its 2 s).
+ */
+function CopyRefButton({ text, resetKey }: { text: string; resetKey: string }): JSX.Element {
+  const [state, copy] = useCopyFeedback(resetKey)
+  const feedback = copyFeedbackText(state)
+  return (
+    <>
+      {/* The name stays "Копіювати для Claude"; the outcome is announced once, by the status below. */}
+      <button
+        type="button"
+        aria-label={COPY_FOR_CLAUDE}
+        className={`ui-viewer-copy${state === 'copied' ? ' copied' : state === 'failed' ? ' copy-failed' : ''}`}
+        data-state={state}
+        title={`${COPY_FOR_CLAUDE} — ${COPY_FOR_CLAUDE_HINT}`}
+        data-testid="viewer-copy-ref"
+        onClick={() => void copy(text)}
+      >
+        <Icon name={state === 'copied' ? 'check' : state === 'failed' ? 'warning' : 'copy'} size={18} />
+        {/* The button's name; on narrow windows only visually hidden while idle. */}
+        <span className="ui-viewer-copy-label">{feedback ?? COPY_FOR_CLAUDE}</span>
+      </button>
+      <span className="sr-only" role="status">
+        {feedback ?? ''}
+      </span>
+    </>
+  )
+}
+
 const OPEN_LABEL = 'Відкрити на весь розмір'
 
 /** Enter/Space on a zoom control must not also reach a clickable parent's own key handler. */
@@ -216,12 +250,15 @@ export function ZoomImage({
   className = '',
   imgClassName,
   loading,
+  claudeRef,
   children
 }: {
   src: string
   full?: string
   alt?: string
   caption?: string
+  /** The single picture's etsy-tracker:// reference (a gallery carries its own per image). */
+  claudeRef?: string
   gallery?: ViewerImage[]
   index?: number
   className?: string
@@ -240,7 +277,7 @@ export function ZoomImage({
       onClick={(e) => {
         e.stopPropagation()
         if (gallery?.length) openImage(gallery, index)
-        else openImage({ src: full ?? src, alt, caption })
+        else openImage({ src: full ?? src, alt, caption, ref: claudeRef })
       }}
       onKeyDown={stopActivationKeys}
     >

@@ -11,6 +11,16 @@ import type { ScanOutcome } from '../../src/shared/types'
 import { FakeEtsy, SHOP_ID, mkEtsyListing, mkEtsyReview } from '../helpers/fakeEtsy'
 import { cdnBytes, fakeCdn } from '../helpers/fakeImageStore'
 import { memDb, mkInput, seedShop } from '../helpers/db'
+import { routedFetch, signedIn, signedOut, testClient } from '../helpers/features'
+import { saveDraft } from '../../src/main/drafts'
+import { EMPTY_DRAFT_FIELDS } from '../../src/shared/myShop'
+import { draftPhotoRef, draftRef, photoRef, productRef, reviewPhotoRef, storeImageRef, storeRef, videoRef } from '../../src/shared/claudeRef'
+import { mkEtsyImage } from '../helpers/fakeEtsy'
+import { getListing as getDbListing, listListingReviews, listNewReviews, listScanPromotions, listShopSummaries } from '../../src/main/db'
+import { listDrafts } from '../../src/main/drafts'
+import { shopStatsPayload } from '../../src/main/shopStats'
+// The renderer's own gallery builder (cards and the listing window), so the test checks what is really copied.
+import { listingGallery } from '../../src/renderer/src/components/ListingCard'
 
 function ok(o: ScanOutcome) {
   if (!o.ok) throw new Error(`scan failed: ${o.error}`)
@@ -35,6 +45,7 @@ interface World {
   photoReviewId: number
   plainReviewId: number
   cdnCalls: string[]
+  readImage: (url: string) => Promise<{ data: Buffer; mimeType: string } | null>
 }
 
 async function buildWorld(): Promise<World> {
@@ -85,15 +96,12 @@ async function buildWorld(): Promise<World> {
 
   const cdn = fakeCdn()
   const handler = createImageProtocolHandler({ db, getStore: async () => null, fetch: cdn })
-  const tools = createMcpTools({
-    db,
-    now: () => t,
-    readImage: async (url) => {
-      const res = await handler(new Request(url))
-      if (!res.ok) return null
-      return { data: Buffer.from(await res.arrayBuffer()), mimeType: res.headers.get('content-type') ?? '' }
-    }
-  })
+  const readImage = async (url: string) => {
+    const res = await handler(new Request(url))
+    if (!res.ok) return null
+    return { data: Buffer.from(await res.arrayBuffer()), mimeType: res.headers.get('content-type') ?? '' }
+  }
+  const tools = createMcpTools({ db, now: () => t, readImage })
   const reviewIds = db.prepare('SELECT id, image_url_fullxfull FROM reviews ORDER BY id').all() as Array<{
     id: number
     image_url_fullxfull: string | null
@@ -104,7 +112,8 @@ async function buildWorld(): Promise<World> {
     scans,
     photoReviewId: reviewIds.find((r) => r.image_url_fullxfull)!.id,
     plainReviewId: reviewIds.find((r) => !r.image_url_fullxfull)!.id,
-    cdnCalls: cdn.calls
+    cdnCalls: cdn.calls,
+    readImage
   }
 }
 
@@ -163,7 +172,7 @@ describe('the tool set', () => {
     const ann = new Map(
       (res!.result as { tools: Array<{ name: string; annotations: Record<string, boolean> }> }).tools.map((t) => [t.name, t.annotations])
     )
-    const cdn = ['get_product_image', 'get_store_logo', 'get_product_video_preview', 'get_review_photo']
+    const cdn = ['open_link', 'get_product_image', 'get_store_logo', 'get_product_video_preview', 'get_review_photo']
     const local = ['list_stores', 'get_store', 'search_products', 'get_product', 'get_product_history', 'list_snapshots', 'get_snapshot_changes', 'list_reviews', 'get_store_stats']
     for (const n of cdn) expect(ann.get(n), n).toMatchObject({ readOnlyHint: true, openWorldHint: true })
     for (const n of local) expect(ann.get(n), n).toMatchObject({ readOnlyHint: true, openWorldHint: false })
@@ -613,6 +622,574 @@ describe('photos', () => {
   })
 })
 
+describe('open_link', () => {
+  /** An Etsy listing the app doesn't store, served live. */
+  const LIVE_ID = 777_000_111
+  const liveListing = (id: number, over: Record<string, unknown> = {}) => ({
+    listing_id: id,
+    shop_id: 4242,
+    title: 'Live &amp; well',
+    url: `https://www.etsy.com/listing/${id}/live-and-well`,
+    state: 'active',
+    price: { amount: 500, divisor: 100, currency_code: 'USD' },
+    quantity: 3,
+    num_favorers: 4,
+    views: 9,
+    featured_rank: -1,
+    description: 'Hand made &quot;live&quot;. https://www.etsy.com/shop/Other',
+    tags: ['a&amp;b', 'Etsy gift'],
+    materials: ['paper'],
+    listing_type: 'download',
+    created_timestamp: 1_760_000_000,
+    original_creation_timestamp: 1_750_000_000,
+    updated_timestamp: 1_760_100_000,
+    images: [mkEtsyImage(id, 2), mkEtsyImage(id, 1)],
+    ...over
+  })
+
+  function liveWorld(
+    opts: {
+      listings?: Record<number, Record<string, unknown>>
+      /** Listings Etsy shows only to their owner (a bearer token): drafts, inactive … */
+      ownerOnly?: Record<number, Record<string, unknown>>
+      /** How Etsy hides an owner-only listing from the API key alone (404, or 403). */
+      hiddenStatus?: number
+      signedIn?: boolean
+      hasApiKey?: boolean
+      client?: boolean
+      cdn?: boolean
+    } = {}
+  ) {
+    const listings: Record<number, Record<string, unknown>> = opts.listings ?? { [LIVE_ID]: liveListing(LIVE_ID) }
+    const ownerOnly = opts.ownerOnly ?? {}
+    const bearer = (init?: RequestInit) => !!new Headers(init?.headers as HeadersInit).get('authorization')
+    const hidden = () => ({ status: opts.hiddenStatus ?? 404, body: { error: 'Listing not found' } })
+    const fetch = routedFetch({
+      'GET /v3/application/listings/{id}': (url, init) => {
+        const id = Number(url.pathname.split('/').pop())
+        if (ownerOnly[id]) return bearer(init) ? { status: 200, body: ownerOnly[id] } : hidden()
+        const l = listings[id]
+        return l ? { status: 200, body: l } : { status: 404, body: { error: 'Listing not found' } }
+      },
+      'GET /v3/application/listings/{id}/videos/{video}': (url, init) => {
+        const id = Number(url.pathname.split('/')[4])
+        if (ownerOnly[id] && !bearer(init)) return hidden()
+        return url.pathname.endsWith('/videos/55')
+          ? {
+              status: 200,
+              body: { video_id: 55, width: 640, height: 360, video_state: 'active', thumbnail_url: 'https://v.etsystatic.com/video/thumb55.jpg' }
+            }
+          : { status: 404, body: { error: 'Video not found' } }
+      }
+    })
+    const cdn = fakeCdn()
+    const fetched: string[] = []
+    const tools = createMcpTools({
+      db: w.db,
+      readImage: w.readImage,
+      own: opts.client === false
+        ? undefined
+        : {
+            client: testClient(fetch, opts.signedIn ? 'tok' : null),
+            status: () => (opts.signedIn ? signedIn() : signedOut),
+            writesAllowed: () => false,
+            taxonomy: async () => []
+          },
+      ...(opts.hasApiKey === undefined ? {} : { hasApiKey: () => opts.hasApiKey! }),
+      fetchCdnImage:
+        opts.cdn === false
+          ? undefined
+          : async (url) => {
+              fetched.push(url)
+              const r = await cdn(url)
+              return { data: Buffer.from(await r.arrayBuffer()), mimeType: r.headers.get('content-type') ?? '' }
+            }
+    })
+    const open = async (args: Record<string, unknown>) => {
+      const res = await handleMcpMessage(
+        { info: mcpServerInfo('0.1.0'), tools },
+        { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'open_link', arguments: args } }
+      )
+      const r = res!.result as McpToolResult
+      for (const c of r.content) if (c.type === 'text') seen.push(c.text)
+      return r
+    }
+    return { open, fetch, fetched }
+  }
+  const json = (r: McpToolResult) => JSON.parse((r.content[0] as { text: string }).text)
+  const bytesOf = (r: McpToolResult) => Buffer.from((r.content[1] as { data: string }).data, 'base64')
+  const errText = (r: McpToolResult) => {
+    expect(r.isError).toBe(true)
+    return (r.content[0] as { text: string }).text
+  }
+
+  it('is the first tool', () => {
+    expect(w.tools[0].name).toBe('open_link')
+    expect(MCP_TOOL_SUMMARY[0]).toEqual({ name: 'open_link', text: 'відкрити посилання чи адресу з програми: товар, фото, відгук, магазин, чернетку' })
+  })
+
+  it('a product reference or an Etsy listing link → the same JSON as get_product', async () => {
+    const product = await data('get_product', { product_id: 2 })
+    expect(await data('open_link', { link: productRef(2) })).toEqual({ opened: 'product', source: 'local', ...product })
+    // inside a sentence, with a locale and a slug/query
+    const d = await data('open_link', { link: 'глянь цей товар https://www.etsy.com/uk/listing/2/renamed-2?ref=shop_home, що скажеш?' })
+    expect(d).toEqual({ opened: 'product', source: 'local', ...product })
+  })
+
+  it('a photo reference in a sentence → the image + where it is; full size; a second photo by id', async () => {
+    const p = await data('get_product', { product_id: 1 })
+    const second = p.images[1].image_id
+    const r = await call('open_link', { link: `подивись на цю картинку з товару: ${photoRef(1, second)} — що на ній?` })
+    expect(r.isError).toBeFalsy()
+    expect(json(r)).toEqual({
+      opened: 'photo',
+      source: 'local',
+      product_id: 1,
+      title: p.title,
+      image_id: second,
+      position: 2,
+      of: 2,
+      alt_text: p.images[1].alt_text
+    })
+    expect(r.content[1]).toMatchObject({ type: 'image', mimeType: 'image/jpeg' })
+    expect(w.cdnCalls[w.cdnCalls.length - 1]).toContain('570xN')
+    expect(bytesOf(r)).toEqual(cdnBytes(w.cdnCalls[w.cdnCalls.length - 1]))
+    await call('open_link', { link: photoRef(1, second), size: 'full' })
+    expect(w.cdnCalls[w.cdnCalls.length - 1]).toContain('fullxfull')
+  })
+
+  it('a photo the stored listing does not have, without a live client: the refusal names it', async () => {
+    expect(errText(await call('open_link', { link: photoRef(1, 5) }))).toContain('has no photo 5')
+  })
+
+  it('a video reference → its preview frame', async () => {
+    const r = await call('open_link', { link: videoRef(1, 91_234_567) })
+    expect(json(r)).toMatchObject({ opened: 'video_preview', source: 'local', product_id: 1, video_id: 91_234_567, position: 1, of: 1 })
+    expect(bytesOf(r)).toEqual(cdnBytes('https://v.etsystatic.com/video/upload/ac_none,so_0/thumb.jpg'))
+  })
+
+  it('a review photo → the image + the review (rating, text, date, listing)', async () => {
+    const row = w.db.prepare('SELECT listing_id, rating, review, created_timestamp FROM reviews WHERE id = ?').get(w.photoReviewId) as {
+      listing_id: number
+      rating: number
+      review: string
+      created_timestamp: number
+    }
+    const r = await call('open_link', { link: `this one: ${reviewPhotoRef(w.photoReviewId)}` })
+    expect(json(r)).toMatchObject({
+      opened: 'review_photo',
+      review_id: w.photoReviewId,
+      store_id: SHOP_ID,
+      product_id: row.listing_id,
+      rating: row.rating,
+      text: row.review,
+      created_at: new Date(row.created_timestamp * 1000).toISOString()
+    })
+    expect(bytesOf(r)).toEqual(cdnBytes('https://i.etsystatic.com/r/il_fullxfull.777.jpg'))
+    // get_review_photo carries the same review facts
+    const g = await call('get_review_photo', { review_id: w.photoReviewId })
+    expect(json(g)).toMatchObject({ review_id: w.photoReviewId, rating: row.rating, product_id: row.listing_id })
+    expect(json(g)).not.toHaveProperty('opened')
+    expect(errText(await call('open_link', { link: reviewPhotoRef(w.plainReviewId) }))).toContain('has no photo')
+    expect(errText(await call('open_link', { link: reviewPhotoRef(99_999) }))).toContain('No review')
+  })
+
+  it('a store reference, a shop link (any case) → like get_store; logo and banner → the image', async () => {
+    const store = await data('get_store', { store_id: SHOP_ID })
+    expect(await data('open_link', { link: storeRef(SHOP_ID) })).toEqual({ opened: 'store', ...store })
+    expect(await data('open_link', { link: 'що це за магазин? https://www.etsy.com/shop/ceramicstudioua?ref=x' })).toEqual({ opened: 'store', ...store })
+    const logo = await call('open_link', { link: storeImageRef(SHOP_ID) })
+    expect(json(logo)).toEqual({ opened: 'store_logo', store_id: SHOP_ID, name: 'CeramicStudioUA', kind: 'logo' })
+    expect(bytesOf(logo)).toEqual(cdnBytes('https://i.etsystatic.com/isla/bb22cc/12345678/isla_fullxfull.12345678_efgh.jpg'))
+    const banner = await call('open_link', { link: storeImageRef(SHOP_ID, 'banner') })
+    expect(json(banner)).toMatchObject({ opened: 'store_banner', kind: 'banner' })
+    expect(errText(await call('open_link', { link: storeRef(999) }))).toContain('No tracked store with id 999')
+    expect(errText(await call('open_link', { link: storeImageRef(999) }))).toContain('No tracked store with id 999')
+  })
+
+  it('a shop that is not tracked: says so and where to go', async () => {
+    const t = errText(await call('open_link', { link: 'https://www.etsy.com/shop/NobodyTracksMe' }))
+    expect(t).toContain('"NobodyTracksMe" is not tracked in the app')
+    expect(t).toContain('search_market')
+    expect(t).toContain('+ Додати магазин')
+  })
+
+  it('a draft → as list_prepared_products shows it; its photo → the image; a file or a foreign photo is refused', async () => {
+    const mk = (title: string) =>
+      saveDraft(
+        w.db,
+        {
+          source: 'mcp',
+          fields: { ...EMPTY_DRAFT_FIELDS, title },
+          photos: [
+            { name: 'cover.jpg', data: new Uint8Array(Buffer.from('COVER-BYTES')) },
+            { name: 'back.png', data: new Uint8Array(Buffer.from('BACK-BYTES')) }
+          ],
+          files: [{ name: 'planner.pdf', data: new Uint8Array(Buffer.from('PDF')) }]
+        },
+        1_760_000_000_000
+      )
+    const d = mk('Draft mug')
+    const other = mk('Other draft')
+    const listed = createMcpTools({ db: w.db }).find((t) => t.name === 'list_prepared_products')!
+    const all = JSON.parse(((await listed.run({})).content[0] as { text: string }).text)
+    const shown = all.drafts.find((x: { draft_id: number }) => x.draft_id === d.id)
+    expect(await data('open_link', { link: draftRef(d.id) })).toEqual({ opened: 'draft', ...shown })
+
+    const r = await call('open_link', { link: `ось фото чернетки ${draftPhotoRef(d.id, d.photos[1].id)}` })
+    expect(json(r)).toEqual({
+      opened: 'draft_photo',
+      draft_id: d.id,
+      title: 'Draft mug',
+      photo_id: d.photos[1].id,
+      position: 2,
+      of: 2,
+      name: 'back.png'
+    })
+    expect(r.content[1]).toMatchObject({ type: 'image', mimeType: 'image/png' })
+    expect(bytesOf(r).toString()).toBe('BACK-BYTES')
+
+    expect(errText(await call('open_link', { link: draftPhotoRef(d.id, d.files[0].id) }))).toContain('is a buyer file, not a photo')
+    expect(errText(await call('open_link', { link: draftPhotoRef(d.id, other.photos[0].id) }))).toContain(`Draft ${d.id} has no photo`)
+    expect(errText(await call('open_link', { link: draftRef(99_999) }))).toContain('No draft 99999')
+    expect(errText(await call('open_link', { link: draftPhotoRef(99_999, 1) }))).toContain('No draft 99999')
+  })
+
+  it('every reference the app\'s "Копіювати для Claude" buttons copy opens — built from the data the renderer gets', async () => {
+    // A draft with photos, as the drafts window lists it.
+    const draft = saveDraft(
+      w.db,
+      {
+        source: 'app',
+        fields: { ...EMPTY_DRAFT_FIELDS, title: 'Round-trip draft' },
+        photos: [
+          { name: 'a.jpg', data: new Uint8Array(Buffer.from('A-BYTES')) },
+          { name: 'b.png', data: new Uint8Array(Buffer.from('B-BYTES')) }
+        ]
+      },
+      1_760_000_000_000
+    )
+    const refs: Array<{ ref: string; opened: string; expect: Record<string, unknown> }> = []
+    // Shop header logo (ShopView: storeImageRef(shop.id, 'logo') while the shop has an icon).
+    for (const s of listShopSummaries(w.db))
+      if (s.iconUrl) refs.push({ ref: storeImageRef(s.id, 'logo'), opened: 'store_logo', expect: { store_id: s.id } })
+    // Every listing the app stores (active, removed, returned): the card / listing window gallery
+    // (the renderer's own listingGallery), the main-photo icon, and its videos.
+    const ids = (w.db.prepare('SELECT listing_id FROM listings ORDER BY listing_id').all() as Array<{ listing_id: number }>).map((r) => r.listing_id)
+    expect(ids.length).toBeGreaterThan(3)
+    for (const id of ids) {
+      const l = getDbListing(w.db, id)!
+      expect(l.images.length).toBeGreaterThan(0)
+      listingGallery(l.images, l.title, l.listingId).forEach((g, i) =>
+        refs.push({ ref: g.ref!, opened: 'photo', expect: { product_id: l.listingId, image_id: l.images[i].id, position: i + 1 } })
+      )
+      expect(listingGallery(l.images, l.title, l.listingId)[0].ref).toBe(photoRef(l.listingId, l.images[0].id))
+      for (const v of l.videos) refs.push({ ref: videoRef(l.listingId, v.id), opened: 'video_preview', expect: { product_id: l.listingId, video_id: v.id } })
+      // Review photos in the listing window.
+      for (const r of listListingReviews(w.db, id, 0, 100).reviews)
+        if (r.hasImage) refs.push({ ref: reviewPhotoRef(r.id), opened: 'review_photo', expect: { review_id: r.id } })
+    }
+    // Scan results: new reviews (listing thumbnail + buyer photo) and the "Акції" rows of every scan.
+    for (const scanId of w.scans) {
+      for (const r of listNewReviews(w.db, scanId)) {
+        if (r.listingId != null && r.listingImageId != null)
+          refs.push({ ref: photoRef(r.listingId, r.listingImageId), opened: 'photo', expect: { product_id: r.listingId, image_id: r.listingImageId } })
+        if (r.hasImage) refs.push({ ref: reviewPhotoRef(r.id), opened: 'review_photo', expect: { review_id: r.id } })
+      }
+      const promos = listScanPromotions(w.db, scanId)
+      for (const p of [...promos.started, ...promos.ended])
+        if (p.listingImageId != null)
+          refs.push({ ref: photoRef(p.listingId, p.listingImageId), opened: 'photo', expect: { product_id: p.listingId, image_id: p.listingImageId } })
+    }
+    // Statistics → "Топ товарів за ростом".
+    const stats = shopStatsPayload(w.db, SHOP_ID, 'all', Date.now())!
+    for (const r of [...stats.top.views, ...stats.top.favorers, ...stats.top.reviews])
+      if (r.imageId != null) refs.push({ ref: photoRef(r.listingId, r.imageId), opened: 'photo', expect: { product_id: r.listingId, image_id: r.imageId } })
+    // Drafts window: every saved photo of every draft.
+    for (const d of listDrafts(w.db))
+      for (const m of d.photos) refs.push({ ref: draftPhotoRef(d.id, m.id), opened: 'draft_photo', expect: { draft_id: d.id, photo_id: m.id } })
+
+    const kinds = new Set(refs.map((r) => r.opened))
+    expect([...kinds].sort()).toEqual(['draft_photo', 'photo', 'review_photo', 'store_logo', 'video_preview'])
+    expect(refs.some((r) => r.ref === draftPhotoRef(draft.id, draft.photos[1].id))).toBe(true)
+    for (const { ref, opened, expect: want } of refs) {
+      // the reference alone and pasted into a sentence
+      for (const link of [ref, `подивись на цю картинку: ${ref}, що скажеш?`]) {
+        const r = await call('open_link', { link })
+        expect(r.isError, `${link}: ${(r.content[0] as { text: string }).text}`).toBeFalsy()
+        expect(json(r)).toMatchObject({ opened, ...want })
+        expect(r.content[1]).toMatchObject({ type: 'image' })
+      }
+    }
+  })
+
+  it('nothing recognised: an error listing the accepted forms', async () => {
+    for (const link of ['подивись на це', 'etsy-tracker://product/abc', 'https://example.com/listing/123456', 'https://evil-etsy.com/listing/1234567']) {
+      const t = errText(await call('open_link', { link }))
+      expect(t).toContain('No link or reference found')
+      expect(t).toContain('etsy-tracker://product/<id>/photo/<image_id>')
+      expect(t).toContain('https://www.etsy.com/listing/<id>')
+    }
+    expect(await toolError('open_link', { link: '' })).toBeTruthy()
+    expect(await toolError('open_link', {})).toContain('link')
+    expect(await toolError('open_link', { link: 'x'.repeat(2001) })).toBeTruthy()
+  })
+
+  it('a listing the app does not store, without a live client: a clear refusal', async () => {
+    const t = errText(await call('open_link', { link: `https://www.etsy.com/listing/${LIVE_ID}` }))
+    expect(t).toContain(`Product ${LIVE_ID} is not in the app's database`)
+    expect(t).toContain('+ Додати магазин')
+    expect(errText(await call('open_link', { link: photoRef(LIVE_ID, 1) }))).toContain("is not in the app's database")
+  })
+
+  describe('live fallbacks (Etsy API key, the CDN)', () => {
+    it('a listing the app does not store → a compact live summary, one request with includes=Images', async () => {
+      const { open, fetch } = liveWorld()
+      const r = await open({ link: String(LIVE_ID) })
+      expect(r.isError).toBeFalsy()
+      const d = json(r)
+      expect(d).toMatchObject({
+        opened: 'product',
+        source: 'live',
+        id: LIVE_ID,
+        store_id: 4242,
+        store_tracked: false,
+        title: 'Live & well',
+        url: `https://www.etsy.com/listing/${LIVE_ID}/live-and-well`,
+        state: 'active',
+        price: { base: 5, base_currency: 'USD' },
+        quantity: 3,
+        favorites: 4,
+        views: 9,
+        featured_position: null,
+        description: 'Hand made "live". https://www.etsy.com/shop/Other',
+        tags: ['a&b', 'Etsy gift'],
+        materials: ['paper'],
+        product_type: 'digital',
+        created_at: new Date(1_750_000_000_000).toISOString(),
+        listed_at: new Date(1_760_000_000_000).toISOString()
+      })
+      // photos in rank order, each with the reference that opens it
+      expect(d.images.map((i: { image_id: number; position: number; link: string }) => [i.image_id, i.position, i.link])).toEqual([
+        [LIVE_ID * 10 + 1, 1, photoRef(LIVE_ID, LIVE_ID * 10 + 1)],
+        [LIVE_ID * 10 + 2, 2, photoRef(LIVE_ID, LIVE_ID * 10 + 2)]
+      ])
+      expect(d.note).toContain('read live from Etsy')
+      expect(fetch.calls).toHaveLength(1)
+      const u = new URL(fetch.calls[0].url)
+      expect(u.pathname).toBe(`/v3/application/listings/${LIVE_ID}`)
+      expect(u.searchParams.get('includes')).toBe('Images')
+      expect(fetch.calls[0].headers['x-api-key']).toBe('keystring:secret')
+      expect(fetch.calls[0].headers).not.toHaveProperty('authorization')
+    })
+
+    it('a stored listing never goes live', async () => {
+      const { open, fetch } = liveWorld()
+      expect(json(await open({ link: productRef(2) }))).toMatchObject({ source: 'local', id: 2 })
+      expect(fetch.calls).toHaveLength(0)
+    })
+
+    it('a listing Etsy does not have (404): a tool error saying so', async () => {
+      const { open } = liveWorld()
+      expect(errText(await open({ link: productRef(123_456_789) }))).toContain('Etsy has no listing 123456789')
+    })
+
+    it('another Etsy failure: the Etsy error text, not a crash', async () => {
+      const fetch = routedFetch({ 'GET /v3/application/listings/{id}': { status: 403, body: { error: 'nope' } } })
+      const tools = createMcpTools({
+        db: w.db,
+        own: { client: testClient(fetch, null), status: () => signedOut, writesAllowed: () => false, taxonomy: async () => [] }
+      })
+      const r = await tools[0].run({ link: productRef(LIVE_ID) })
+      expect(r.isError).toBe(true)
+      expect((r.content[0] as { text: string }).text).toMatch(/Etsy/)
+    })
+
+    it('a photo of a listing the app does not store → the image from the CDN (570 px, else full)', async () => {
+      const { open, fetch, fetched } = liveWorld()
+      const id = LIVE_ID * 10 + 2
+      const r = await open({ link: `what is in ${photoRef(LIVE_ID, id)}?` })
+      expect(json(r)).toEqual({
+        opened: 'photo',
+        source: 'live',
+        product_id: LIVE_ID,
+        title: 'Live & well',
+        image_id: id,
+        position: 2,
+        of: 2,
+        alt_text: expect.anything()
+      })
+      expect(fetched).toEqual([`https://i.etsystatic.com/1/il_570xN.${id}.jpg`])
+      expect(bytesOf(r)).toEqual(cdnBytes(fetched[0]))
+      expect(fetch.calls).toHaveLength(1)
+      await open({ link: photoRef(LIVE_ID, id), size: 'full' })
+      expect(fetched[1]).toBe(`https://i.etsystatic.com/1/il_fullxfull.${id}.jpg`)
+      expect(errText(await open({ link: photoRef(LIVE_ID, 5) }))).toContain(`Etsy listing ${LIVE_ID} has no photo 5 now (it has 2 photo(s)`)
+    })
+
+    it('a photo added after the latest scan of a stored listing → read live', async () => {
+      const added = mkEtsyImage(1, 3)
+      const { open, fetched } = liveWorld({ listings: { 1: liveListing(1, { images: [mkEtsyImage(1, 1), added] }) } })
+      const r = await open({ link: photoRef(1, added.listing_image_id) })
+      expect(json(r)).toMatchObject({ source: 'live', product_id: 1, image_id: added.listing_image_id, position: 2, of: 2 })
+      expect(fetched).toEqual([added.url_570xN])
+    })
+
+    it('never downloads a URL that is not on the Etsy CDN', async () => {
+      const id = LIVE_ID * 10 + 1
+      const img = mkEtsyImage(LIVE_ID, 1, { url_570xN: 'https://evil.example/il_570xN.jpg', url_fullxfull: 'file:///etc/passwd' })
+      const { open, fetched } = liveWorld({ listings: { [LIVE_ID]: liveListing(LIVE_ID, { images: [img] }) } })
+      const r = await open({ link: photoRef(LIVE_ID, id) })
+      expect(errText(r)).toBe("The image could not be downloaded from Etsy's image CDN right now.")
+      expect(fetched).toEqual([])
+
+      const half = mkEtsyImage(LIVE_ID, 1, { url_570xN: 'https://evil.example/il_570xN.jpg' })
+      const second = liveWorld({ listings: { [LIVE_ID]: liveListing(LIVE_ID, { images: [half] }) } })
+      expect((await second.open({ link: photoRef(LIVE_ID, id) })).isError).toBeFalsy()
+      expect(second.fetched).toEqual([half.url_fullxfull])
+    })
+
+    it('without a CDN reader: a clear error, not a crash', async () => {
+      const { open } = liveWorld({ cdn: false })
+      expect(errText(await open({ link: photoRef(LIVE_ID, LIVE_ID * 10 + 1) }))).toBe(
+        "The image could not be downloaded from Etsy's image CDN right now."
+      )
+    })
+
+    it('the same MIME and 5 MB rules as the other image tools', async () => {
+      const mk = (img: { data: Buffer; mimeType: string }) =>
+        createMcpTools({
+          db: w.db,
+          own: {
+            client: testClient(routedFetch({ 'GET /v3/application/listings/{id}': { status: 200, body: liveListing(LIVE_ID) } }), null),
+            status: () => signedOut,
+            writesAllowed: () => false,
+            taxonomy: async () => []
+          },
+          fetchCdnImage: async () => img
+        })[0]
+      const link = photoRef(LIVE_ID, LIVE_ID * 10 + 1)
+      const avif = await mk({ data: Buffer.from('x'), mimeType: 'image/avif' }).run({ link })
+      expect((avif.content[0] as { text: string }).text).toContain('image/avif')
+      const big = await mk({ data: Buffer.alloc(5 * 1024 * 1024 + 1), mimeType: 'image/jpeg' }).run({ link, size: 'full' })
+      expect((big.content[0] as { text: string }).text).toBe('The image is larger than 5 MB and cannot be returned. Ask for size "medium".')
+      const jpg = await mk({ data: Buffer.from('ok'), mimeType: 'Image/JPG' }).run({ link })
+      expect(jpg.content[1]).toMatchObject({ type: 'image', mimeType: 'image/jpeg' })
+    })
+
+    describe("the user's own listings Etsy shows only to the owner (drafts, inactive, expired)", () => {
+      const DRAFT_ID = 777_000_222
+      for (const hiddenStatus of [404, 403]) {
+        it(`signed in: a ${hiddenStatus} for the API key alone → read once more as the owner (OAuth)`, async () => {
+          const { open, fetch, fetched } = liveWorld({
+            ownerOnly: { [DRAFT_ID]: liveListing(DRAFT_ID, { state: 'draft' }) },
+            hiddenStatus,
+            signedIn: true
+          })
+          const id = DRAFT_ID * 10 + 2
+          const r = await open({ link: photoRef(DRAFT_ID, id) })
+          expect(r.isError, JSON.stringify(r.content[0])).toBeFalsy()
+          expect(json(r)).toMatchObject({ opened: 'photo', source: 'live', product_id: DRAFT_ID, image_id: id, position: 2 })
+          expect(fetched).toEqual([`https://i.etsystatic.com/1/il_570xN.${id}.jpg`])
+          expect(fetch.calls.map((c) => !!c.headers.authorization)).toEqual([false, true])
+          expect(fetch.calls[1].headers.authorization).toBe('Bearer tok')
+          expect(new URL(fetch.calls[1].url).searchParams.get('includes')).toBe('Images')
+
+          expect(json(await open({ link: productRef(DRAFT_ID) }))).toMatchObject({ opened: 'product', source: 'live', state: 'draft' })
+
+          const v = await open({ link: videoRef(DRAFT_ID, 55) })
+          expect(json(v)).toEqual({ opened: 'video_preview', source: 'live', product_id: DRAFT_ID, video_id: 55 })
+          expect(fetch.calls.slice(-2).map((c) => [new URL(c.url).pathname, !!c.headers.authorization])).toEqual([
+            [`/v3/application/listings/${DRAFT_ID}/videos/55`, false],
+            [`/v3/application/listings/${DRAFT_ID}/videos/55`, true]
+          ])
+        })
+      }
+
+      it('signed out: no owner retry, and the 404 text', async () => {
+        const { open, fetch } = liveWorld({ ownerOnly: { [DRAFT_ID]: liveListing(DRAFT_ID, { state: 'draft' }) } })
+        expect(errText(await open({ link: photoRef(DRAFT_ID, DRAFT_ID * 10 + 1) }))).toContain(`Etsy has no listing ${DRAFT_ID}`)
+        expect(fetch.calls).toHaveLength(1)
+      })
+
+      it('signed in, but not found as the owner either: the 404 text', async () => {
+        const { open, fetch } = liveWorld({ signedIn: true })
+        expect(errText(await open({ link: photoRef(123_456_789, 1) }))).toContain('Etsy has no listing 123456789')
+        expect(fetch.calls.map((c) => !!c.headers.authorization)).toEqual([false, true])
+        expect(errText(await open({ link: videoRef(123_456_789, 56) }))).toContain('Etsy has no video 56 of listing 123456789')
+      })
+
+      it('a listing Etsy shows publicly is never re-read with the token', async () => {
+        const { open, fetch } = liveWorld({ signedIn: true })
+        expect((await open({ link: photoRef(LIVE_ID, LIVE_ID * 10 + 1) })).isError).toBeFalsy()
+        expect(fetch.calls).toHaveLength(1)
+        expect(fetch.calls[0].headers).not.toHaveProperty('authorization')
+      })
+    })
+
+    it('a stored listing whose copied photo is gone, and Etsy no longer has the listing: says it is stored', async () => {
+      const { open, fetch } = liveWorld({ listings: {} })
+      const stored = getDbListing(w.db, 1)!
+      const t = errText(await open({ link: photoRef(1, 5) }))
+      expect(t).toContain("Product 1 is in the app's database but has no photo 5 there")
+      expect(t).toContain(`(it has ${stored.images.length} photo(s): ${stored.images.map((i) => i.id).join(', ')})`)
+      expect(t).toContain('Etsy has no listing 1 now')
+      expect(t).not.toContain("doesn't have it either")
+      expect(fetch.calls).toHaveLength(1)
+      const v = errText(await open({ link: videoRef(1, 56) }))
+      expect(v).toContain('Etsy has no video 56 of listing 1')
+      expect(v).toContain(`The app's database has listing 1 without that video (its videos: ${stored.videos.map((x) => x.id).join(', ')})`)
+    })
+
+    it('no API key saved: no live request — the database answers or a clear refusal', async () => {
+      const { open, fetch } = liveWorld({ hasApiKey: false })
+      const t = errText(await open({ link: `https://www.etsy.com/listing/${LIVE_ID}` }))
+      expect(t).toContain(`Product ${LIVE_ID} is not in the app's database`)
+      expect(t).toContain('no API key')
+      expect(errText(await open({ link: photoRef(LIVE_ID, 1) }))).toContain("is not in the app's database")
+      expect(errText(await open({ link: videoRef(LIVE_ID, 55) }))).toContain("is not in the app's database")
+      // a stored listing, a photo / video it doesn't have: the local answer
+      expect(errText(await open({ link: photoRef(1, 5) }))).toContain('has no photo 5')
+      expect((await open({ link: videoRef(1, 56) })).isError).toBe(true)
+      expect(fetch.calls).toHaveLength(0)
+      // with a key, the same tools go live
+      const keyed = liveWorld({ hasApiKey: true })
+      expect((await keyed.open({ link: String(LIVE_ID) })).isError).toBeFalsy()
+      expect(keyed.fetch.calls).toHaveLength(1)
+    })
+
+    it("the owner's Etsy editor link (\"Редагувати на Etsy\", edit_url) opens the listing", async () => {
+      const { open } = liveWorld()
+      expect(json(await open({ link: `https://www.etsy.com/your/shops/me/listing-editor/edit/${LIVE_ID}` }))).toMatchObject({
+        opened: 'product',
+        id: LIVE_ID
+      })
+      expect(json(await open({ link: '«https://www.etsy.com/your/shops/me/listing-editor/edit/2»' }))).toMatchObject({ source: 'local', id: 2 })
+    })
+
+    it('an etsy.me share link: says to paste the full address', async () => {
+      const { open, fetch } = liveWorld()
+      const t = errText(await open({ link: 'глянь https://etsy.me/3AbCdEf' }))
+      expect(t).toContain('short etsy.me share link')
+      expect(t).toContain('full address')
+      expect(t).not.toContain('No link or reference found')
+      expect(fetch.calls).toHaveLength(0)
+    })
+
+    it('a video of a listing the app does not store → its preview frame, live', async () => {
+      const { open, fetch, fetched } = liveWorld()
+      const r = await open({ link: videoRef(LIVE_ID, 55) })
+      expect(json(r)).toEqual({ opened: 'video_preview', source: 'live', product_id: LIVE_ID, video_id: 55 })
+      expect(fetched).toEqual(['https://v.etsystatic.com/video/thumb55.jpg'])
+      expect(new URL(fetch.calls[0].url).pathname).toBe(`/v3/application/listings/${LIVE_ID}/videos/55`)
+      expect(errText(await open({ link: videoRef(LIVE_ID, 56) }))).toContain(`Etsy has no video 56 of listing ${LIVE_ID}`)
+      // a stored video stays local
+      const local = await open({ link: videoRef(1, 91_234_567) })
+      expect(json(local)).toMatchObject({ source: 'local', video_id: 91_234_567 })
+    })
+  })
+})
+
 describe('honesty: data reaches a client as stored, secrets and CDN URLs never do', () => {
   it('every tool, the tool list and initialize: Etsy text unchanged; no etsystatic URL, raw_json or key', async () => {
     // Make sure the sweep covers every tool, whatever ran before.
@@ -634,6 +1211,9 @@ describe('honesty: data reaches a client as stored, secrets and CDN URLs never d
     await call('get_store_logo', { store_id: SHOP_ID, kind: 'banner' })
     await call('get_product_video_preview', { product_id: 1 })
     await call('get_product', { product_id: 0 })
+    for (const link of [productRef(1), photoRef(1, 11), videoRef(1, 91_234_567), reviewPhotoRef(w.photoReviewId), storeRef(SHOP_ID), storeImageRef(SHOP_ID, 'banner'), 'nothing here']) {
+      await call('open_link', { link })
+    }
 
     // (a) text from the data is passed through unchanged
     expect(store.announcement).toBe('Welcome to our Etsy shop!')
@@ -666,6 +1246,10 @@ describe('honesty: data reaches a client as stored, secrets and CDN URLs never d
     expect(MCP_INSTRUCTIONS).toContain('Etsy Open API v3')
     expect(MCP_INSTRUCTIONS).toContain('https://www.etsy.com/listing/<id>')
     expect(MCP_INSTRUCTIONS).toMatch(/means product_id = <id> — call get_product/)
+    const refs = MCP_INSTRUCTIONS.split('\n\n').find((p) => p.startsWith('References from the app'))!
+    expect(refs).toContain('etsy-tracker://product/<id>/photo/<image_id>')
+    expect(refs).toContain('"Копіювати для Claude"')
+    expect(refs).toContain('call open_link with what they pasted right away')
     expect(MCP_INSTRUCTIONS).toMatch(/Local data — no Etsy request/)
     expect(MCP_INSTRUCTIONS).toMatch(/Live Etsy tools/)
     expect(MCP_INSTRUCTIONS).toContain('is_mine')
@@ -674,7 +1258,7 @@ describe('honesty: data reaches a client as stored, secrets and CDN URLs never d
     expect(MCP_INSTRUCTIONS).not.toMatch(/marketplace/i)
     // every tool name the instructions use is a real tool
     const names = new Set(w.tools.map((t) => t.name))
-    const fields = new Set(['finished_at', 'latest_snapshot', 'customer_country', 'sales_count', 'featured_position', 'is_mine', 'shop_id', 'listing_id', 'category_id', 'also_on_etsy', 'overwrite_etsy_changes', 'product_id'])
+    const fields = new Set(['image_id', 'video_id', 'review_id', 'photo_id', 'finished_at', 'latest_snapshot', 'customer_country', 'sales_count', 'featured_position', 'is_mine', 'shop_id', 'listing_id', 'category_id', 'also_on_etsy', 'overwrite_etsy_changes', 'product_id'])
     const mentioned = (MCP_INSTRUCTIONS.match(/\b[a-z]+(?:_[a-z]+)+\b/g) ?? []).filter((m) => !fields.has(m))
     expect(mentioned.length).toBeGreaterThan(30)
     for (const m of mentioned) expect(names, m).toContain(m)

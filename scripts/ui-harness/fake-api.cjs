@@ -129,6 +129,7 @@ module.exports = function fakeApi(fx, opts = {}) {
   const drafts = fx.drafts?.length ? fx.drafts : sampleDrafts(fx, sample)
   const ctx = { fx, own, sample, myListings, allListings }
   let mcp = { enabled: true, allowWrites: false }
+  let copyFail = false
   // The last Etsy-drafts pull (after the latest scan of the own shop).
   const pull = {
     running: false,
@@ -260,7 +261,11 @@ module.exports = function fakeApi(fx, opts = {}) {
     },
     __unused2: async (i) => ({ ok: true, status: { enabled: true, allowWrites: !!i.allowWrites, port: 9102, url: 'http://127.0.0.1:9102/mcp', token: 'tok_demo-1234567890', tokenEncrypted: true, running: true, error: null, requests: 12, lastRequestAt: Date.now(), lastClient: 'claude-code' } }),
     regenerateMcpToken: async () => ({ enabled: true, allowWrites: false, port: 9102, url: 'http://127.0.0.1:9102/mcp', token: 'tok_new', tokenEncrypted: true, running: true, error: null, requests: 0, lastRequestAt: null, lastClient: null }),
-    copyText: async () => true,
+    // Scenes call __setCopyFail(true) to show the "Не вдалося скопіювати" feedback.
+    copyText: async () => !copyFail,
+    __setCopyFail: async (v) => {
+      copyFail = !!v
+    },
     openExternal: async () => true
   }
 }

@@ -5,10 +5,11 @@ import userEvent from '@testing-library/user-event'
 import { ImageViewer, Modal, ZoomButton, ZoomImage } from '../../../src/renderer/src/ui'
 import { ListingModal } from '../../../src/renderer/src/components/ListingModal'
 import { useStore, type ViewerImage } from '../../../src/renderer/src/store'
-import { mkListing, setupRenderer } from '../helpers'
+import { mkListing, setupRenderer, type Api } from '../helpers'
 
+let api: Api
 beforeEach(() => {
-  setupRenderer()
+  api = setupRenderer()
 })
 
 const A: ViewerImage = { src: 'etsyimg://img/1/fullxfull', alt: 'Чашка', caption: 'Фото 1' }
@@ -317,5 +318,113 @@ describe('ImageViewer over ListingModal', () => {
     // With the viewer closed the gallery's arrows work again.
     key(modal, 'ArrowRight')
     expect(galleryCount()).toBe('2 / 3')
+  })
+})
+
+describe('ImageViewer: "Копіювати для Claude"', () => {
+  const R1 = 'etsy-tracker://product/10/photo/1'
+  const R2 = 'etsy-tracker://product/10/photo/2'
+  const copyBtn = () => within(viewer()).getByTestId('viewer-copy-ref')
+  const queryCopy = () => within(viewer()).queryByTestId('viewer-copy-ref')
+
+  it('no reference → no button', () => {
+    render(<ImageViewer />)
+    open([A, B])
+    expect(queryCopy()).toBeNull()
+    expect(within(viewer()).queryByRole('button', { name: /Копіювати для Claude/ })).toBeNull()
+  })
+
+  it('copies the current image\'s reference; after stepping, the next one\'s; the viewer stays open', async () => {
+    render(<ImageViewer />)
+    open([{ ...A, ref: R1 }, { ...B, ref: R2 }, C])
+    const btn = within(viewer()).getByRole('button', { name: 'Копіювати для Claude' })
+    expect(btn).toHaveAttribute('title', 'Копіювати для Claude — Вставте це Claude — він відкриє саме цю картинку через MCP')
+    await act(async () => fireEvent.click(btn))
+    expect(api.copyText).toHaveBeenLastCalledWith(R1)
+    expect(copyBtn()).toHaveTextContent('Скопійовано')
+    expect(copyBtn()).toHaveClass('copied')
+    expect(within(viewer()).getByRole('status')).toHaveTextContent('Скопійовано')
+    expect(within(viewer()).getByText('1 / 3')).toBeInTheDocument()
+    // The next image: its own reference, and the feedback of the previous one is gone.
+    fireEvent.click(within(viewer()).getByRole('button', { name: 'Наступне (→)' }))
+    expect(copyBtn()).toHaveTextContent('Копіювати для Claude')
+    expect(copyBtn()).not.toHaveClass('copied')
+    await act(async () => fireEvent.click(copyBtn()))
+    expect(api.copyText).toHaveBeenLastCalledWith(R2)
+    // An image without a reference in the same gallery: no button.
+    key(viewer(), 'ArrowRight')
+    expect(queryCopy()).toBeNull()
+    expect(api.copyText).toHaveBeenCalledTimes(2)
+    expect(useStore.getState().viewer).not.toBeNull()
+  })
+
+  it('"Скопійовано" goes back after 2 s', async () => {
+    vi.useFakeTimers()
+    try {
+      render(<ImageViewer />)
+      open({ ...A, ref: R1 })
+      await act(async () => fireEvent.click(copyBtn()))
+      expect(copyBtn()).toHaveTextContent('Скопійовано')
+      await act(async () => void vi.advanceTimersByTime(2100))
+      expect(copyBtn()).toHaveTextContent('Копіювати для Claude')
+      expect(copyBtn()).toHaveAttribute('data-state', 'idle')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a refused copy (false or a rejection) says "Не вдалося скопіювати"', async () => {
+    render(<ImageViewer />)
+    open({ ...A, ref: R1 })
+    api.copyText.mockResolvedValueOnce(false)
+    await act(async () => fireEvent.click(copyBtn()))
+    expect(copyBtn()).toHaveTextContent('Не вдалося скопіювати')
+    expect(copyBtn()).toHaveClass('copy-failed')
+    api.copyText.mockRejectedValueOnce(new Error('no clipboard'))
+    await act(async () => fireEvent.click(copyBtn()))
+    expect(copyBtn()).toHaveTextContent('Не вдалося скопіювати')
+    expect(useStore.getState().viewer).not.toBeNull()
+  })
+
+  it('keeps focus on the button while ←/→ step; the name stays, the outcome is announced once', async () => {
+    render(<ImageViewer />)
+    open([{ ...A, ref: R1 }, { ...B, ref: R2 }])
+    copyBtn().focus()
+    const before = copyBtn()
+    await act(async () => fireEvent.click(copyBtn()))
+    expect(copyBtn()).toHaveAccessibleName('Копіювати для Claude')
+    expect(copyBtn()).toHaveTextContent('Скопійовано')
+    expect(within(viewer()).getAllByText('Скопійовано')).toHaveLength(2) // the visible label + the status
+    expect(within(viewer()).getByRole('status')).toHaveTextContent('Скопійовано')
+    fireEvent.keyDown(copyBtn(), { key: 'ArrowRight' })
+    expect(within(viewer()).getByText('2 / 2')).toBeInTheDocument()
+    expect(copyBtn()).toBe(before)
+    expect(copyBtn()).toHaveFocus()
+    expect(copyBtn()).toHaveAttribute('data-state', 'idle')
+    expect(within(viewer()).getByRole('status')).toHaveTextContent('')
+    await act(async () => fireEvent.click(copyBtn()))
+    expect(api.copyText).toHaveBeenLastCalledWith(R2)
+  })
+
+  it('the button is inside the focus trap (Tab reaches it)', () => {
+    render(<ImageViewer />)
+    open({ ...A, ref: R1 })
+    copyBtn().focus()
+    expect(copyBtn()).toHaveFocus()
+    key(viewer(), 'Tab', { shiftKey: true })
+    expect(viewer().contains(document.activeElement)).toBe(true)
+  })
+
+  it('ZoomImage passes its claudeRef; a gallery keeps each image\'s own', () => {
+    render(
+      <>
+        <ZoomImage src="s.jpg" alt="Лого" claudeRef="etsy-tracker://store/5/logo" />
+        <ZoomImage src="g.jpg" alt="Галерея" gallery={[{ ...A, ref: R1 }, { ...B, ref: R2 }]} index={1} claudeRef="ignored" />
+      </>
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Відкрити на весь розмір: Лого' }))
+    expect(useStore.getState().viewer!.images[0].ref).toBe('etsy-tracker://store/5/logo')
+    fireEvent.click(screen.getByRole('button', { name: 'Відкрити на весь розмір: Галерея' }))
+    expect(useStore.getState().viewer!.images.map((i) => i.ref)).toEqual([R1, R2])
   })
 })

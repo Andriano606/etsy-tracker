@@ -11,6 +11,11 @@ import type {
   Listing,
   ListingDetails,
   ListingImage,
+  ListingMark,
+  ListingMarkInput,
+  ListingMarkStatus,
+  MarkedListing,
+  MarkListFilter,
   ListingVideo,
   ListingStatsPoint,
   MoneyValue,
@@ -32,6 +37,7 @@ import type {
   ShopSummary,
   TrackedFields
 } from '../shared/types'
+import { MarkError, normalizeMarkInput } from '../shared/marks'
 
 export type Db = DatabaseSync
 
@@ -518,6 +524,22 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE listing_drafts ADD COLUMN etsy_gaps TEXT;                         -- JSON {photos?: id[] | "all", files?: "all"}: what the last pull couldn't fetch; NULL = none
   UPDATE listing_drafts SET unverified = 1
     WHERE sent_listing_id IS NOT NULL AND synced_at IS NULL AND etsy_updated_at IS NULL;
+  `,
+  // v8: the user's own marks on listings ("В роботі" / "Реалізовано": we already
+  // made our version of this example) — set in the app or by Claude over MCP.
+  // our_draft_id has no FK: a deleted draft leaves an id that reads as null.
+  `
+  CREATE TABLE listing_marks (
+    listing_id INTEGER PRIMARY KEY REFERENCES listings(listing_id) ON DELETE CASCADE,
+    status TEXT NOT NULL CHECK (status IN ('in_progress', 'done')),
+    note TEXT,
+    our_listing_id INTEGER,                -- the user's own Etsy listing made from this example
+    our_draft_id INTEGER,                  -- the draft in the app made from it (no FK)
+    source TEXT NOT NULL CHECK (source IN ('app', 'mcp')),
+    created_at INTEGER NOT NULL,           -- ms
+    updated_at INTEGER NOT NULL            -- ms
+  );
+  CREATE INDEX listing_marks_status ON listing_marks(status);
   `
 ]
 
@@ -893,6 +915,8 @@ interface ListingExtras {
   prevStats?: { views: number | null; num_favorers: number | null }
   /** Review aggregates of the listing; undefined = the shop's reviews were never synced. */
   reviews?: { count: number; avg: number | null; fresh: number; partial: boolean }
+  /** The listing's mark (listing_marks); undefined = none. */
+  mark?: ListingMark
 }
 
 function delta(cur: number | null | undefined, prev: number | null | undefined): number | null {
@@ -929,7 +953,8 @@ function toListing(r: ListingRow, x: ListingExtras): Listing {
     reviewAvg: x.reviews ? x.reviews.avg : null,
     reviewsNew: x.reviews ? x.reviews.fresh : null,
     reviewsPartial: x.reviews ? x.reviews.partial : false,
-    buyerPrice: buyerFromRow(r as unknown as Record<string, unknown>, listingBuyerCol, r.buyer_price_at ?? null)
+    buyerPrice: buyerFromRow(r as unknown as Record<string, unknown>, listingBuyerCol, r.buyer_price_at ?? null),
+    mark: x.mark ?? null
   }
 }
 
@@ -1354,12 +1379,14 @@ function listingsOfShop(db: Db, shopId: number, activeOnly: boolean): Listing[] 
   // Deltas compare with the previous successful scan (the latest one wrote the current values).
   const prev = statsOfScan(db, okScanIds(db, shopId, 2)[1])
   const reviews = reviewAggregates(db, shopId)
+  const marks = marksFor(db, 'l.shop_id = ?', shopId)
   return rows.map((r) =>
     toListing(r, {
       images: images.get(r.listing_id) ?? [],
       videos: videos.get(r.listing_id) ?? [],
       prevStats: prev.get(r.listing_id),
-      reviews: reviews?.(r.listing_id)
+      reviews: reviews?.(r.listing_id),
+      mark: marks.get(r.listing_id)
     })
   )
 }
@@ -1378,7 +1405,8 @@ export function getListing(db: Db, listingId: number): Listing | null {
     images: imagesFor(db, 'l.listing_id = ?', listingId).get(listingId) ?? [],
     videos: videosFor(db, 'l.listing_id = ?', listingId).get(listingId) ?? [],
     prevStats: prev.get(listingId),
-    reviews: reviewAggregates(db, r.shop_id, listingId)?.(listingId)
+    reviews: reviewAggregates(db, r.shop_id, listingId)?.(listingId),
+    mark: marksFor(db, 'l.listing_id = ?', listingId).get(listingId)
   })
 }
 
@@ -2772,4 +2800,154 @@ export function reviewImageCounts(db: Db, shopId?: number | null): ImageCounts {
     c.total += r.n
   }
   return c
+}
+
+// --------------------------------------------------------------------- marks
+
+interface MarkRow {
+  listing_id: number
+  status: ListingMarkStatus
+  note: string | null
+  our_listing_id: number | null
+  our_draft_id: number | null
+  source: 'app' | 'mcp'
+  created_at: number
+  updated_at: number
+  /** listing_drafts.id when the draft still exists (LEFT JOIN), else null. */
+  draft_id: number | null
+}
+
+/** The mark columns + whether its draft still exists (a deleted draft's id reads as null). */
+const MARK_SELECT = `m.listing_id, m.status, m.note, m.our_listing_id, m.our_draft_id, m.source, m.created_at,
+  m.updated_at, d.id AS draft_id FROM listing_marks m LEFT JOIN listing_drafts d ON d.id = m.our_draft_id`
+
+function toMark(r: MarkRow): ListingMark {
+  return {
+    status: r.status,
+    note: r.note,
+    ourListingId: r.our_listing_id,
+    ourDraftId: r.draft_id,
+    source: r.source,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at
+  }
+}
+
+function marksFor(db: Db, where: string, arg: number): Map<number, ListingMark> {
+  const rows = db
+    .prepare(`SELECT ${MARK_SELECT} JOIN listings l ON l.listing_id = m.listing_id WHERE ${where}`)
+    .all(arg) as unknown as MarkRow[]
+  return new Map(rows.map((r) => [r.listing_id, toMark(r)]))
+}
+
+export function getListingMark(db: Db, listingId: number): ListingMark | null {
+  const r = db.prepare(`SELECT ${MARK_SELECT} WHERE m.listing_id = ?`).get(listingId) as MarkRow | undefined
+  return r ? toMark(r) : null
+}
+
+/**
+ * Set (insert or update) a listing's mark; status null / 'none' removes it.
+ * For note / ourListingId / ourDraftId undefined keeps the stored value and
+ * null clears it. Only a listing stored in `listings` can be marked, and a
+ * draft id must name an existing draft — else MarkError (Ukrainian).
+ */
+export function setListingMark(
+  db: Db,
+  listingId: number,
+  input: ListingMarkInput & { source: 'app' | 'mcp' },
+  now: number
+): ListingMark | null {
+  const m = normalizeMarkInput(input)
+  if (m.status === null || m.status === 'none') {
+    db.prepare('DELETE FROM listing_marks WHERE listing_id = ?').run(listingId)
+    return null
+  }
+  if (!db.prepare('SELECT 1 FROM listings WHERE listing_id = ?').get(listingId)) {
+    throw new MarkError(`Товару № ${listingId} немає в базі програми — мітку можна поставити лише товару відстежуваного магазину.`)
+  }
+  if (m.ourDraftId != null && !db.prepare('SELECT 1 FROM listing_drafts WHERE id = ?').get(m.ourDraftId)) {
+    throw new MarkError(`Чернетки № ${m.ourDraftId} у програмі немає.`)
+  }
+  const prev = db
+    .prepare('SELECT note, our_listing_id, our_draft_id FROM listing_marks WHERE listing_id = ?')
+    .get(listingId) as { note: string | null; our_listing_id: number | null; our_draft_id: number | null } | undefined
+  const note = m.note !== undefined ? m.note : (prev?.note ?? null)
+  const ourListingId = m.ourListingId !== undefined ? m.ourListingId : (prev?.our_listing_id ?? null)
+  const ourDraftId = m.ourDraftId !== undefined ? m.ourDraftId : (prev?.our_draft_id ?? null)
+  db.prepare(
+    `INSERT INTO listing_marks (listing_id, status, note, our_listing_id, our_draft_id, source, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(listing_id) DO UPDATE SET status = excluded.status, note = excluded.note,
+       our_listing_id = excluded.our_listing_id, our_draft_id = excluded.our_draft_id,
+       source = excluded.source, updated_at = excluded.updated_at`
+  ).run(listingId, m.status, note, ourListingId, ourDraftId, input.source, now, now)
+  return getListingMark(db, listingId)
+}
+
+/** Every marked listing (optionally one status / one shop), the latest change first. */
+export function listMarkedListings(db: Db, filter: MarkListFilter = {}): MarkedListing[] {
+  const where: string[] = []
+  const args: SQLInputValue[] = []
+  if (filter.status) {
+    where.push('m.status = ?')
+    args.push(filter.status)
+  }
+  if (filter.shopId != null) {
+    where.push('l.shop_id = ?')
+    args.push(filter.shopId)
+  }
+  const rows = db
+    .prepare(
+      `SELECT ${MARK_SELECT}
+       JOIN listings l ON l.listing_id = m.listing_id JOIN shops s ON s.id = l.shop_id
+       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+       ORDER BY m.updated_at DESC, m.listing_id DESC`
+    )
+    .all(...args) as unknown as MarkRow[]
+  if (!rows.length) return []
+  const info = db.prepare(
+    `SELECT l.shop_id, s.shop_name, l.title, l.url, l.removed_at,
+       (SELECT i.listing_image_id FROM listing_images i WHERE i.listing_id = l.listing_id AND i.removed_at IS NULL
+        ORDER BY i.rank, i.listing_image_id LIMIT 1) AS image_id
+     FROM listings l JOIN shops s ON s.id = l.shop_id WHERE l.listing_id = ?`
+  )
+  return rows.map((r) => {
+    const x = info.get(r.listing_id) as {
+      shop_id: number
+      shop_name: string
+      title: string
+      url: string
+      removed_at: number | null
+      image_id: number | null
+    }
+    return {
+      listingId: r.listing_id,
+      shopId: x.shop_id,
+      shopName: x.shop_name,
+      title: x.title,
+      url: x.url,
+      imageId: x.image_id,
+      removedAt: x.removed_at,
+      mark: toMark(r)
+    }
+  })
+}
+
+/**
+ * A draft was published as Etsy listing `listingId`: every "in progress" mark
+ * made from that draft turns "done" with our listing set. Returns the marked
+ * (example) listing ids.
+ */
+export function completeDraftMarks(db: Db, draftId: number, listingId: number, now: number): number[] {
+  const ids = (
+    db
+      .prepare("SELECT listing_id FROM listing_marks WHERE our_draft_id = ? AND status = 'in_progress' ORDER BY listing_id")
+      .all(draftId) as Array<{ listing_id: number }>
+  ).map((r) => r.listing_id)
+  if (ids.length) {
+    db.prepare(
+      "UPDATE listing_marks SET status = 'done', our_listing_id = ?, updated_at = ? WHERE our_draft_id = ? AND status = 'in_progress'"
+    ).run(listingId, now, draftId)
+  }
+  return ids
 }

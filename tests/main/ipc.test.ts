@@ -1061,3 +1061,86 @@ describe('a scan of the own shop pulls its Etsy drafts (fire and forget)', () =>
     expect(importEtsyDrafts).not.toHaveBeenCalled()
   })
 })
+
+import { getListingMark, setListingMark as setMarkInDb, upsertListing } from '../../src/main/db'
+import { mkInput } from '../helpers/db'
+
+describe('marks over IPC', () => {
+  function marked() {
+    const base = ctx()
+    seedShop(base.c.db)
+    upsertListing(base.c.db, mkInput(1), 10)
+    upsertListing(base.c.db, mkInput(2), 10)
+    registerIpc(base.c)
+    return base
+  }
+
+  it('marks:set sets, updates and removes a mark (source app); the answer is what is stored', async () => {
+    const { c, sent } = marked()
+    const r = (await call('marks:set', 1, { status: 'in_progress', note: ' first ' })) as { ok: true; value: { status: string; note: string; source: string } }
+    expect(r).toMatchObject({ ok: true, value: { status: 'in_progress', note: 'first', source: 'app', ourListingId: null } })
+    expect(await call('marks:set', 1, { status: 'done', ourListingId: '4242' })).toMatchObject({ ok: true, value: { status: 'done', note: 'first', ourListingId: 4242 } })
+    expect(getListing(c.db, 1)!.mark).toMatchObject({ status: 'done', ourListingId: 4242 })
+    expect(await call('marks:set', 1, { status: null })).toEqual({ ok: true, value: null })
+    expect(getListingMark(c.db, 1)).toBeNull()
+    // The renderer applies its own answer: no push for its own change.
+    expect(sent.filter(([ch]) => ch === 'marks:changed')).toEqual([])
+  })
+
+  it('marks:set validates everything before writing', async () => {
+    const { c } = marked()
+    const bad = async (...a: unknown[]) => (await call('marks:set', ...a)) as { ok: false; error: string }
+    expect(await bad('x', { status: 'done' })).toEqual({ ok: false, error: 'Некоректний id товару.' })
+    expect(await bad(-1, { status: 'done' })).toEqual({ ok: false, error: 'Некоректний id товару.' })
+    expect((await bad(1, { status: 'maybe' })).error).toBe('Невідома мітка.')
+    expect((await bad(1, null)).error).toBe('Некоректні дані мітки.')
+    expect((await bad(1, 'done')).error).toBe('Некоректні дані мітки.')
+    expect((await bad(1, { status: 'done', note: 'x'.repeat(501) })).error).toMatch(/Нотатка задовга: 501 символів, можна до 500/)
+    expect((await bad(1, { status: 'done', note: 5 })).error).toBe('Нотатка має бути текстом.')
+    expect((await bad(1, { status: 'done', ourListingId: 0 })).error).toBe('Некоректний номер нашого товару.')
+    expect((await bad(1, { status: 'done', ourListingId: 1.5 })).error).toBe('Некоректний номер нашого товару.')
+    expect((await bad(1, { status: 'done', ourDraftId: 'abc' })).error).toBe('Некоректний номер чернетки.')
+    expect((await bad(1, { status: 'done', ourDraftId: 77 })).error).toBe('Чернетки № 77 у програмі немає.')
+    expect((await bad(999, { status: 'done' })).error).toMatch(/Товару № 999 немає в базі програми/)
+    expect(c.db.prepare('SELECT COUNT(*) AS n FROM listing_marks').get()).toEqual({ n: 0 })
+  })
+
+  it('marks:list lists every marked listing; filters by status and shop; ignores garbage filters', async () => {
+    const { c } = marked()
+    setMarkInDb(c.db, 1, { status: 'done', source: 'app' }, 100)
+    setMarkInDb(c.db, 2, { status: 'in_progress', source: 'mcp' }, 200)
+    const ids = async (f?: unknown) => ((await call('marks:list', f)) as Array<{ listingId: number }>).map((r) => r.listingId)
+    expect(await ids()).toEqual([2, 1])
+    expect(await ids({ status: 'done' })).toEqual([1])
+    expect(await ids({ shopId: SHOP_ID, status: 'in_progress' })).toEqual([2])
+    expect(await ids({ shopId: 5 })).toEqual([])
+    expect(await ids({ status: 'bogus', shopId: 'x' })).toEqual([2, 1])
+    expect(await ids('nope')).toEqual([2, 1])
+  })
+
+  it('drafts:send that publishes pushes marks:changed with the example listings it completed', async () => {
+    const base = ctx()
+    const e = ownEtsy()
+    base.c.client = e.client
+    base.c.etsyAuth = { status: () => ownSignedIn(), getAccessToken: async () => 'tok' } as never
+    seedShop(base.c.db)
+    upsertListing(base.c.db, mkInput(1), 10)
+    registerIpc(base.c)
+    const d = saveDraft(
+      base.c.db,
+      {
+        source: 'mcp',
+        fields: { ...EMPTY_DRAFT_FIELDS, title: 'Planner', description: 'Text', price: '5.99', taxonomyId: 2 },
+        photos: [{ name: 'a.jpg', data: new Uint8Array([0xff, 0xd8, 0xff, 1]) }],
+        files: [{ name: 'P.pdf', data: new Uint8Array([1]) }]
+      },
+      1
+    )
+    setMarkInDb(base.c.db, 1, { status: 'in_progress', ourDraftId: d.id, source: 'mcp' }, 5)
+    expect(await call('drafts:send', d.id, false)).toMatchObject({ ok: true, published: false })
+    expect(base.sent.filter(([ch]) => ch === 'marks:changed')).toEqual([])
+    expect(await call('drafts:send', d.id, true)).toMatchObject({ ok: true, published: true, marksCompleted: [1] })
+    expect(base.sent.filter(([ch]) => ch === 'marks:changed')).toEqual([['marks:changed', { listingIds: [1] }]])
+    expect(getListingMark(base.c.db, 1)).toMatchObject({ status: 'done', ourListingId: 4242 })
+  })
+})

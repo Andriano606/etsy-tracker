@@ -137,7 +137,34 @@ module.exports = function fakeApi(fx, opts = {}) {
     lastSummary: { imported: 1, updated: 1, removed: 0, conflicts: 1, errors: [] },
     error: null
   }
+  // Listing marks ("В роботі" / "Реалізовано"): a few sample ones on the sample shop, kept in memory.
+  const marks = new Map()
+  const stamp = Date.now() - 3600000
+  const sampleListings = fx.perShop[sample.id]?.listings ?? []
+  const seedMarks = [
+    { status: 'done', note: 'Зробили свою версію: інші кольори й формат A5', ourListingId: 1803602196, ourDraftId: null, source: 'app' },
+    { status: 'in_progress', note: 'Claude готує схожий товар', ourListingId: null, ourDraftId: drafts[0]?.id ?? null, source: 'mcp' },
+    { status: 'done', note: null, ourListingId: null, ourDraftId: null, source: 'mcp' }
+  ]
+  seedMarks.forEach((m, i) => {
+    const l = sampleListings[i * 2 + 1]
+    if (l) marks.set(l.listingId, { ...m, createdAt: stamp, updatedAt: stamp })
+  })
+  const withMark = (l) => (l ? { ...l, mark: marks.get(l.listingId) ?? null } : l)
   return {
+    setListingMark: async (id, input) => {
+      if (!input?.status || input.status === 'none') {
+        marks.delete(id)
+        return { ok: true, value: null }
+      }
+      const prev = marks.get(id)
+      const keep = (k) => (input[k] !== undefined ? input[k] : (prev?.[k] ?? null))
+      const m = { status: input.status, note: keep('note'), ourListingId: keep('ourListingId'), ourDraftId: keep('ourDraftId'), source: 'app', createdAt: prev?.createdAt ?? Date.now(), updatedAt: Date.now() }
+      marks.set(id, m)
+      return { ok: true, value: m }
+    },
+    listMarkedListings: async () => [],
+    onMarksChanged: nop,
     getKeyStatus: async () => ({ hasKey: true, masked: '1uix…gukx', encrypted: true }),
     setApiKey: async () => ({ ok: true, status: { hasKey: true, masked: '1uix…gukx', encrypted: true } }),
     clearApiKey: async () => ({ hasKey: false, masked: null, encrypted: false }),
@@ -146,8 +173,8 @@ module.exports = function fakeApi(fx, opts = {}) {
     addShop: async () => ({ ok: false, error: '(стенд) додавання вимкнено' }),
     removeShop: async () => ({ ok: true }),
     onShopsChanged: nop,
-    listListings: async (id) => fx.perShop[id]?.listings ?? [],
-    getListing: async (id) => allListings.find((l) => l.listingId === id) ?? null,
+    listListings: async (id) => (fx.perShop[id]?.listings ?? []).map(withMark),
+    getListing: async (id) => withMark(allListings.find((l) => l.listingId === id)) ?? null,
     getListingRaw: async (id) => fx.listingExtras[id]?.raw ?? null,
     getListingStats: async (id) => fx.listingExtras[id]?.stats ?? [],
     listScans: async (id) => fx.perShop[id]?.scans ?? [],

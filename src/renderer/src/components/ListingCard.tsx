@@ -9,6 +9,7 @@ import { Icon, Tooltip, ZoomButton, type IconName } from '../ui'
 import type { ViewerImage } from '../store'
 import { NowPrice, WasPrice } from './PriceParts'
 import { CardCopyLink } from './CopyLinkButton'
+import { CardMarkBadge, CardMarkMenu } from './ListingMark'
 
 /** A tooltip body: the glossary term in bold, its short text and an optional extra line. */
 function tipOf(key: GlossaryKey, extra?: ReactNode): JSX.Element {
@@ -222,7 +223,7 @@ export function ListingCard({
 }): JSX.Element {
   const img = listing.images[0]
   return (
-    // The card is a button; the magnifier over the photo's corner is its sibling (never nested).
+    // The card is a button; the magnifier, copy-link and mark icons over the photo are its siblings (never nested).
     <div className="listing-card-host ui-zoom-host">
       <button
         className={`listing-card${isNew ? ' is-new' : ''}`}
@@ -243,6 +244,7 @@ export function ListingCard({
               <span className="badge-new">Новий</span>
             </Tooltip>
           )}
+          <CardMarkBadge mark={listing.mark} />
         </div>
         <div className="card-body">
           <div className="card-title" title={listing.title}>
@@ -260,6 +262,7 @@ export function ListingCard({
         />
       )}
       <CardCopyLink listingId={listing.listingId} title={listing.title} solo={!img} />
+      <CardMarkMenu listing={listing} solo={!img} />
     </div>
   )
 }

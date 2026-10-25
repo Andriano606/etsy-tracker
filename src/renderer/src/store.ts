@@ -8,6 +8,9 @@ import type {
   KeyStatus,
   KeyTestResult,
   Listing,
+  ListingMark,
+  ListingMarkInput,
+  MarkFilter,
   McpStatus,
   MinioSettingsInput,
   MinioStatus,
@@ -102,6 +105,8 @@ interface AppState {
   sort: SortMode
   /** "Зі знижкою": only listings with an active discount in the grid. */
   discountOnly: boolean
+  /** The grid's mark filter (Усі / Без мітки / В роботі / Реалізовано). */
+  markFilter: MarkFilter
   /** Settings → "Країна покупця" (buyer prices; applies from the next scan). */
   buyerCountry: string | null
   /** MinIO copy state of the selected shop's images. */
@@ -155,6 +160,14 @@ interface AppState {
   setSearch: (s: string) => void
   setSort: (s: SortMode) => void
   setDiscountOnly: (v: boolean) => void
+  setMarkFilter: (v: MarkFilter) => void
+  /**
+   * Set / remove a listing's mark (marks:set); on success the open shop's
+   * listings and the open listing window show it at once.
+   */
+  setListingMark: (listingId: number, input: ListingMarkInput) => Promise<{ ok: true; mark: ListingMark | null } | { ok: false; error: string }>
+  /** Marks changed elsewhere (main pushes `marks:changed`: Claude, a published draft): refresh what shows them. */
+  marksChanged: (listingIds: number[]) => Promise<void>
   saveBuyerCountry: (country: string) => Promise<{ ok: boolean; error?: string }>
 
   saveKey: (keystring: string, sharedSecret: string) => Promise<{ ok: boolean; error?: string }>
@@ -213,6 +226,7 @@ export const useStore = create<AppState>((set, get) => ({
   search: '',
   sort: 'newest',
   discountOnly: false,
+  markFilter: 'any',
   buyerCountry: null,
   imageCounts: null,
   imageSync: null,
@@ -397,6 +411,36 @@ export const useStore = create<AppState>((set, get) => ({
   setSearch: (search) => set({ search }),
   setSort: (sort) => set({ sort }),
   setDiscountOnly: (discountOnly) => set({ discountOnly }),
+  setMarkFilter: (markFilter) => set({ markFilter }),
+  setListingMark: async (listingId, input) => {
+    let res
+    try {
+      res = await window.api.setListingMark(listingId, input)
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    }
+    if (!res.ok) return { ok: false, error: res.error }
+    const mark = res.value
+    set((s) => ({
+      listings: s.listings.map((l) => (l.listingId === listingId ? { ...l, mark } : l)),
+      detailListing: s.detailListing?.listingId === listingId ? { ...s.detailListing, mark } : s.detailListing
+    }))
+    return { ok: true, mark }
+  },
+  marksChanged: async (listingIds) => {
+    const ids = new Set(listingIds)
+    const shown = get().listings.some((l) => ids.has(l.listingId))
+    const open = get().detailListing
+    await Promise.all([
+      shown ? get().reloadShopData() : Promise.resolve(),
+      open && ids.has(open.listingId)
+        ? window.api.getListing(open.listingId).then((fresh) => {
+            const cur = get().detailListing
+            if (fresh && cur?.listingId === fresh.listingId) set({ detailListing: { ...cur, mark: fresh.mark ?? null } })
+          })
+        : Promise.resolve()
+    ])
+  },
   saveBuyerCountry: async (country) => {
     const res = await window.api.setBuyerCountry(country)
     if (!res.ok) return { ok: false, error: res.error }

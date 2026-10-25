@@ -901,3 +901,58 @@ describe('a draft changed while someone looks at it', () => {
     expect(getDraft(o.db, d.id)).toMatchObject({ status: 'changed', etsy: { dirty: true } })
   })
 })
+
+import { getListingMark, setListingMark, upsertListing } from '../../src/main/db'
+import { mkInput, seedShop } from '../helpers/db'
+
+describe('marks made from a draft ("В роботі" → "Реалізовано" on publishing)', () => {
+  /** A tracked competitor's listing (the example) marked in progress with draft `draftId`. */
+  function example(o: ReturnType<typeof own>, draftId: number, listingId = 1): void {
+    seedShop(o.db)
+    upsertListing(o.db, mkInput(listingId), 10)
+    setListingMark(o.db, listingId, { status: 'in_progress', note: 'our version', ourDraftId: draftId, source: 'mcp' }, 20)
+  }
+
+  it('publishing a new draft turns its example’s mark done with our listing; the caller hears which', async () => {
+    const o = own()
+    const d = saveDraft(o.db, { source: 'mcp', fields: fields(), photos: [photo('a.jpg')], files: [{ name: 'P.pdf', data: bytes('P') }] }, 1)
+    example(o, d.id)
+    const heard: number[][] = []
+    const res = await sendDraft({ ...o.deps, onMarksChanged: (ids) => heard.push(ids) }, d.id, true)
+    expect(res).toMatchObject({ ok: true, listingId: 4242, published: true, marksCompleted: [1] })
+    expect(heard).toEqual([[1]])
+    expect(getListingMark(o.db, 1)).toMatchObject({ status: 'done', ourListingId: 4242, ourDraftId: d.id, note: 'our version', source: 'mcp' })
+  })
+
+  it('sending as an Etsy draft (not published) leaves the mark in progress', async () => {
+    const o = own()
+    const d = saveDraft(o.db, { source: 'app', fields: fields(), photos: [photo('a.jpg')] }, 1)
+    example(o, d.id)
+    const res = await o.send(d.id, false)
+    expect(res).toMatchObject({ ok: true, published: false })
+    expect(res).not.toHaveProperty('marksCompleted')
+    expect(getListingMark(o.db, 1)).toMatchObject({ status: 'in_progress', ourListingId: null })
+  })
+
+  it('a linked draft updated with publish completes the mark too', async () => {
+    const o = own()
+    const d = await sentDraft(o)
+    example(o, d.id)
+    saveDraft(o.db, { id: d.id, source: 'app', fields: fields({ title: 'Ready' }), photos: d.photos.map((p) => ({ mediaId: p.id })), files: d.files.map((f) => ({ mediaId: f.id })) }, 60)
+    const res = await o.send(d.id, true)
+    expect(res).toMatchObject({ ok: true, updated: true, published: true, marksCompleted: [1] })
+    expect(getListingMark(o.db, 1)).toMatchObject({ status: 'done', ourListingId: 4242 })
+  })
+
+  it('a failed send touches no mark', async () => {
+    const o = own()
+    const d = saveDraft(o.db, { source: 'app', fields: fields(), photos: [photo('a.jpg')], files: [{ name: 'P.pdf', data: bytes('P') }] }, 1)
+    example(o, d.id)
+    o.failures.push({ match: `POST .*/shops/${OWN_SHOP}/listings$`, status: 400, times: 1 })
+    const heard = vi.fn()
+    const res = await sendDraft({ ...o.deps, onMarksChanged: heard }, d.id, true)
+    expect(res.ok).toBe(false)
+    expect(heard).not.toHaveBeenCalled()
+    expect(getListingMark(o.db, 1)).toMatchObject({ status: 'in_progress', ourListingId: null, updatedAt: 20 })
+  })
+})

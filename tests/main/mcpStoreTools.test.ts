@@ -620,6 +620,7 @@ describe('drafts linked to Etsy listings over MCP (edit → update the same list
     const e = ownEtsy()
     const db = memDb()
     const changed = vi.fn()
+    const marksChanged = vi.fn()
     let writes = over.writes ?? true
     const own: OwnStoreDeps = {
       client: e.client,
@@ -629,7 +630,7 @@ describe('drafts linked to Etsy listings over MCP (edit → update the same list
       accessToken: async () => TOKEN
     }
     let t = 1000
-    const tools = createDraftTools(own, { db, now: () => ++t, onChanged: changed, pull: over.pull })
+    const tools = createDraftTools(own, { db, now: () => ++t, onChanged: changed, onMarksChanged: marksChanged, pull: over.pull })
     const run = async (name: string, args: Record<string, unknown> = {}) => {
       const res = await handleMcpMessage(
         { info: mcpServerInfo('0.1.0'), tools },
@@ -653,8 +654,24 @@ describe('drafts linked to Etsy listings over MCP (edit → update the same list
       expect(r.json).toMatchObject({ action: 'created', product_id: 4242 })
       return p.json.draft_id as number
     }
-    return { ...e, db, changed, run, sent, setWrites: (v: boolean) => (writes = v) }
+    return { ...e, db, changed, marksChanged, run, sent, setWrites: (v: boolean) => (writes = v) }
   }
+
+  it('send_prepared_product that publishes completes the example marks made with that draft (examples_marked_done)', async () => {
+    const w = linked()
+    const id = await w.sent()
+    seedShop(w.db)
+    upsertListing(w.db, mkInput(1), 10)
+    setListingMark(w.db, 1, { status: 'in_progress', ourDraftId: id, source: 'mcp' }, 20)
+    // An update that doesn't publish leaves the mark as it is.
+    const r = await w.run('send_prepared_product', { draft_id: id })
+    expect(r.json).not.toHaveProperty('examples_marked_done')
+    expect(w.marksChanged).not.toHaveBeenCalled()
+    const p = await w.run('send_prepared_product', { draft_id: id, publish: true })
+    expect(p.json).toMatchObject({ action: 'updated', status: 'active', examples_marked_done: [1] })
+    expect(w.marksChanged).toHaveBeenCalledWith([1])
+    expect(getListingMark(w.db, 1)).toMatchObject({ status: 'done', ourListingId: 4242 })
+  })
 
   it('list_prepared_products shows the link: product, Etsy state, in sync, editor; the public page only while active', async () => {
     const w = linked()
@@ -1037,3 +1054,6 @@ describe('drafts linked to Etsy listings over MCP (edit → update the same list
     for (const u of all.match(/https?:\/\/[^\s"\\)]+/g) ?? []) expect(u).toMatch(/^https:\/\/(www\.)?etsy\.com\//)
   })
 })
+
+import { getListingMark, setListingMark, upsertListing } from '../../src/main/db'
+import { mkInput } from '../helpers/db'

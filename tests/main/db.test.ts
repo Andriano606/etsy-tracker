@@ -2,7 +2,8 @@ import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { getDraft } from '../../src/main/drafts'
+import { deleteDraft, getDraft, saveDraft } from '../../src/main/drafts'
+import { normalizeDraftFields } from '../../src/shared/myShop'
 import {
   MIGRATIONS,
   deleteShop,
@@ -53,6 +54,12 @@ import {
   getOpenPromotion,
   listListingPromotions,
   listScanPromotions,
+  setListingMark,
+  getListingMark,
+  listMarkedListings,
+  completeDraftMarks,
+  listAllListings,
+  markListingRemoved,
   type Db
 } from '../../src/main/db'
 import { mapReview, mapShop } from '../../src/main/mapEtsy'
@@ -714,6 +721,8 @@ describe('migration v4 (from a real v3 database)', () => {
     expect(indexes).toEqual(expect.arrayContaining(['promotions_open', 'promotions_listing', 'listing_price_stats_listing']))
 
     // v3 data reads back with "unknown" buyer prices — never a fake "no discount".
+    // (Today's read functions need the latest schema — e.g. v8's marks; the later migrations add no buyer-price data.)
+    migrate(db)
     expect(getListing(db, 1)).toMatchObject({ buyerPrice: null, priceAmount: 1001, reviewCount: 1 })
     expect(listScans(db, 20987654).map((s) => [s.buyerCountry, s.buyerPrices, s.promotionsStarted, s.promotionsEnded])).toEqual([
       [null, null, 0, 0],
@@ -980,7 +989,7 @@ describe('migration v7 (from a real v6 database)', () => {
     const before = db.prepare(`SELECT ${v6Cols.join(', ')} FROM listing_drafts ORDER BY id`).all()
     const mediaBefore = db.prepare('SELECT * FROM listing_draft_media').all()
 
-    migrate(db)
+    migrate(db, MIGRATIONS.slice(0, 7))
     expect(schemaVersion(db)).toBe(7)
     expect(cols('listing_drafts')).toEqual([...v6Cols, 'etsy_shop_id', 'unverified', 'etsy_gaps'])
     expect(db.prepare(`SELECT ${v6Cols.join(', ')} FROM listing_drafts ORDER BY id`).all()).toEqual(before)
@@ -994,5 +1003,146 @@ describe('migration v7 (from a real v6 database)', () => {
     expect(getDraft(db, 2)).toMatchObject({ status: 'sent', etsy: { listingId: 4242, shopId: null, unverified: true, incomplete: false } })
     expect(getDraft(db, 3)).toMatchObject({ etsy: { unverified: false, incomplete: false, shopId: null } })
     expect(getDraft(db, 1)!.etsy).toBeNull()
+  })
+})
+
+describe('migration v8 (from a real v7 database)', () => {
+  it('adds listing_marks (+ its status index); every v7 table stays as it was', () => {
+    const db = memDbAt(7)
+    seedShop(db)
+    db.prepare(
+      `INSERT INTO listings (listing_id, shop_id, title, description, price_amount, price_divisor, currency, url, tags, quantity,
+         etsy_created_at, etsy_updated_at, first_seen_at, last_seen_at) VALUES (1, 20987654, 'A', 'd', 100, 100, 'UAH', 'u', '[]', 1, 1, 1, 1, 1)`
+    ).run()
+    db.prepare("INSERT INTO listing_drafts (source, fields_json, created_at, updated_at) VALUES ('app', '{}', 1, 2)").run()
+    const tables = (): string[] =>
+      (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as Array<{ name: string }>).map((r) => r.name)
+    const v7Tables = tables()
+    const snapshot = (): Record<string, unknown[]> =>
+      Object.fromEntries(v7Tables.map((t) => [t, db.prepare(`SELECT * FROM "${t}"`).all()]))
+    const before = snapshot()
+
+    migrate(db)
+    expect(schemaVersion(db)).toBe(8)
+    expect(tables()).toEqual([...v7Tables, 'listing_marks'].sort())
+    expect(snapshot()).toEqual(before)
+    const cols = (db.prepare('PRAGMA table_info(listing_marks)').all() as Array<{ name: string }>).map((r) => r.name)
+    expect(cols).toEqual(['listing_id', 'status', 'note', 'our_listing_id', 'our_draft_id', 'source', 'created_at', 'updated_at'])
+    const idx = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'listing_marks'").all() as Array<{ name: string }>).map((r) => r.name)
+    expect(idx).toContain('listing_marks_status')
+    // Existing listings read back unmarked.
+    expect(getListing(db, 1)!.mark).toBeNull()
+    // The CHECKs hold.
+    expect(() =>
+      db.prepare("INSERT INTO listing_marks (listing_id, status, source, created_at, updated_at) VALUES (1, 'maybe', 'app', 1, 1)").run()
+    ).toThrow(/CHECK/)
+    expect(() =>
+      db.prepare("INSERT INTO listing_marks (listing_id, status, source, created_at, updated_at) VALUES (1, 'done', 'web', 1, 1)").run()
+    ).toThrow(/CHECK/)
+  })
+})
+
+describe('listing marks', () => {
+  const setup = (): Db => {
+    const db = memDb()
+    seedShop(db)
+    upsertListing(db, mkInput(1), 1000)
+    upsertListing(db, mkInput(2), 1000)
+    upsertListing(db, mkInput(3, { images: [img(30), { ...img(31), rank: 2 }] }), 1000)
+    return db
+  }
+  const draft = (db: Db): number => saveDraft(db, { source: 'mcp', fields: normalizeDraftFields({ title: 'Ours' }) }, 5).id
+
+  it('sets, updates (absent fields kept, null clears) and removes a mark', () => {
+    const db = setup()
+    const d = draft(db)
+    const m = setListingMark(db, 1, { status: 'in_progress', note: '  my take  ', ourDraftId: d, source: 'mcp' }, 2000)
+    expect(m).toEqual({ status: 'in_progress', note: 'my take', ourListingId: null, ourDraftId: d, source: 'mcp', createdAt: 2000, updatedAt: 2000 })
+    // Only the status given: the note and draft stay; who set it is the latest setter.
+    expect(setListingMark(db, 1, { status: 'done', source: 'app' }, 3000)).toEqual({ ...m, status: 'done', source: 'app', updatedAt: 3000 })
+    expect(setListingMark(db, 1, { status: 'done', note: null, ourListingId: 777, ourDraftId: null, source: 'app' }, 4000)).toMatchObject({
+      note: null,
+      ourListingId: 777,
+      ourDraftId: null,
+      createdAt: 2000,
+      updatedAt: 4000
+    })
+    expect(getListingMark(db, 1)).toMatchObject({ ourListingId: 777 })
+    expect(setListingMark(db, 1, { status: 'none', source: 'app' }, 5000)).toBeNull()
+    expect(getListingMark(db, 1)).toBeNull()
+    expect(setListingMark(db, 1, { status: null, source: 'app' }, 5000)).toBeNull()
+  })
+
+  it('refuses an unknown listing, an unknown draft, a long note, a bad status or id — nothing is written', () => {
+    const db = setup()
+    expect(() => setListingMark(db, 999, { status: 'done', source: 'app' }, 1)).toThrow(/Товару № 999 немає в базі програми/)
+    expect(() => setListingMark(db, 1, { status: 'done', ourDraftId: 42, source: 'app' }, 1)).toThrow(/Чернетки № 42/)
+    expect(() => setListingMark(db, 1, { status: 'done', note: 'x'.repeat(501), source: 'app' }, 1)).toThrow(/до 500/)
+    expect(() => setListingMark(db, 1, { status: 'maybe' as never, source: 'app' }, 1)).toThrow(/Невідома мітка/)
+    expect(() => setListingMark(db, 1, { status: 'done', ourListingId: -3, source: 'app' }, 1)).toThrow(/Некоректний номер нашого товару/)
+    expect(setListingMark(db, 1, { status: 'done', note: 'x'.repeat(500), source: 'app' }, 1)!.note).toHaveLength(500)
+    expect(db.prepare('SELECT COUNT(*) AS n FROM listing_marks').get()).toEqual({ n: 1 })
+  })
+
+  it('every listing read carries its mark — active, by id, removed ones too; a deleted draft reads as null', () => {
+    const db = setup()
+    const d = draft(db)
+    setListingMark(db, 2, { status: 'in_progress', ourDraftId: d, source: 'app' }, 10)
+    setListingMark(db, 3, { status: 'done', source: 'mcp' }, 11)
+    expect(listActiveListings(db, 20987654).map((l) => [l.listingId, l.mark?.status ?? null])).toEqual([
+      [3, 'done'],
+      [2, 'in_progress'],
+      [1, null]
+    ])
+    expect(getListing(db, 2)!.mark).toMatchObject({ status: 'in_progress', ourDraftId: d })
+    markListingRemoved(db, 3, 20)
+    expect(listActiveListings(db, 20987654).map((l) => l.listingId)).toEqual([2, 1])
+    expect(listAllListings(db, 20987654).find((l) => l.listingId === 3)!.mark).toMatchObject({ status: 'done', source: 'mcp' })
+    expect(getListing(db, 3)!.mark).toMatchObject({ status: 'done' })
+    // A rescan (upsert) keeps the mark.
+    upsertListing(db, mkInput(2, { title: 'Renamed' }), 30)
+    expect(getListing(db, 2)!.mark).toMatchObject({ status: 'in_progress' })
+    deleteDraft(db, d)
+    expect(getListing(db, 2)!.mark).toMatchObject({ status: 'in_progress', ourDraftId: null })
+  })
+
+  it('lists marked listings with title, shop and first image; filters by status and shop', () => {
+    const db = setup()
+    seedShop(db, { id: 5, shopName: 'Other' })
+    upsertListing(db, mkInput(50, { shopId: 5 }), 1000)
+    setListingMark(db, 3, { status: 'done', note: 'n', source: 'app' }, 10)
+    setListingMark(db, 1, { status: 'in_progress', source: 'mcp' }, 20)
+    setListingMark(db, 50, { status: 'done', source: 'app' }, 30)
+    const all = listMarkedListings(db)
+    expect(all.map((r) => r.listingId)).toEqual([50, 1, 3])
+    expect(all[2]).toMatchObject({ listingId: 3, shopId: 20987654, shopName: 'CeramicStudioUA', title: 'Listing 3', imageId: 30, removedAt: null, mark: { status: 'done', note: 'n' } })
+    expect(all[1].imageId).toBeNull()
+    expect(listMarkedListings(db, { status: 'done' }).map((r) => r.listingId)).toEqual([50, 3])
+    expect(listMarkedListings(db, { shopId: 20987654 }).map((r) => r.listingId)).toEqual([1, 3])
+    expect(listMarkedListings(db, { status: 'in_progress', shopId: 5 })).toEqual([])
+  })
+
+  it('a shop delete takes its listings\' marks with it (FK cascade); other shops keep theirs', () => {
+    const db = setup()
+    seedShop(db, { id: 5, shopName: 'Other' })
+    upsertListing(db, mkInput(50, { shopId: 5 }), 1000)
+    setListingMark(db, 1, { status: 'done', source: 'app' }, 10)
+    setListingMark(db, 50, { status: 'done', source: 'app' }, 10)
+    deleteShop(db, 20987654)
+    expect(db.prepare('SELECT listing_id FROM listing_marks').all()).toEqual([{ listing_id: 50 }])
+  })
+
+  it('completeDraftMarks: in-progress marks of that draft turn done with our listing; others untouched', () => {
+    const db = setup()
+    const d = draft(db)
+    const other = draft(db)
+    setListingMark(db, 1, { status: 'in_progress', ourDraftId: d, source: 'mcp' }, 10)
+    setListingMark(db, 2, { status: 'in_progress', ourDraftId: other, source: 'app' }, 10)
+    setListingMark(db, 3, { status: 'done', ourDraftId: d, ourListingId: 5, source: 'app' }, 10)
+    expect(completeDraftMarks(db, d, 4242, 99)).toEqual([1])
+    expect(getListingMark(db, 1)).toMatchObject({ status: 'done', ourListingId: 4242, ourDraftId: d, source: 'mcp', updatedAt: 99 })
+    expect(getListingMark(db, 2)).toMatchObject({ status: 'in_progress', ourListingId: null, updatedAt: 10 })
+    expect(getListingMark(db, 3)).toMatchObject({ ourListingId: 5, updatedAt: 10 })
+    expect(completeDraftMarks(db, d, 4242, 100)).toEqual([])
   })
 })

@@ -47,7 +47,8 @@ describe('all features together', () => {
     const writeInSummary = Object.fromEntries(MCP_TOOL_SUMMARY.map((s) => [s.name, !!s.write]))
     // Tools that change only the app's drafts (prepare, pull into the app, unlink, delete) — not marked as store writes.
     // (delete_prepared_product with also_on_etsy deletes the Etsy listing too; only that needs "allow changes".)
-    const appOnly = new Set(['prepare_product', 'sync_prepared_products', 'unlink_prepared_product', 'delete_prepared_product'])
+    // set_product_mark changes only the app's own marks (no Etsy request, no "allow changes").
+    const appOnly = new Set(['prepare_product', 'sync_prepared_products', 'unlink_prepared_product', 'delete_prepared_product', 'set_product_mark'])
     for (const t of tools) {
       if (appOnly.has(t.name)) continue
       expect({ name: t.name, write: t.readOnly === false }).toEqual({ name: t.name, write: writeInSummary[t.name] })

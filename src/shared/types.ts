@@ -279,6 +279,63 @@ export interface Listing {
    * it; null/absent = unknown (never fetched, or Etsy refused `BuyerPrice`).
    */
   buyerPrice?: BuyerPrice | null
+  /**
+   * The user's own bookkeeping mark ("В роботі" / "Реалізовано": we already
+   * made our version of this example listing); null/absent = no mark.
+   */
+  mark?: ListingMark | null
+}
+
+/** A listing mark: in_progress = we are making our version of it, done = we have it. */
+export type ListingMarkStatus = 'in_progress' | 'done'
+
+/** The grid's / MCP search's mark filter: any = every listing, none = unmarked ones. */
+export type MarkFilter = 'any' | 'none' | ListingMarkStatus
+
+/** A mark on a stored listing (table listing_marks, schema v8). */
+export interface ListingMark {
+  status: ListingMarkStatus
+  /** The user's (or Claude's) note, ≤ 500 chars; null = none. */
+  note: string | null
+  /** The user's own Etsy listing made from this example; null = not set. */
+  ourListingId: number | null
+  /** The draft in the app made from this example; null = not set or the draft is gone. */
+  ourDraftId: number | null
+  /** Who set it last: the app's UI or Claude over MCP. */
+  source: 'app' | 'mcp'
+  /** Epoch ms. */
+  createdAt: number
+  updatedAt: number
+}
+
+/**
+ * marks:set — status null / 'none' removes the mark; for the other fields
+ * undefined = keep the stored value, null = clear it.
+ */
+export interface ListingMarkInput {
+  status: ListingMarkStatus | 'none' | null
+  note?: string | null
+  ourListingId?: number | null
+  ourDraftId?: number | null
+}
+
+/** marks:list — every marked listing (any shop), newest mark first. */
+export interface MarkListFilter {
+  status?: ListingMarkStatus
+  shopId?: number
+}
+
+export interface MarkedListing {
+  listingId: number
+  shopId: number
+  shopName: string
+  title: string
+  url: string
+  /** First active image (etsyimg://img/{id}/…); null = none stored. */
+  imageId: number | null
+  /** Set when the listing is no longer active in its shop (ms). */
+  removedAt: number | null
+  mark: ListingMark
 }
 
 export type ScanStatus = 'running' | 'ok' | 'error'
@@ -946,6 +1003,11 @@ export type CreateListingResult =
       notes?: string[]
       /** The Etsy listing's state after the send (null/absent = not known). */
       state?: DraftEtsyState | null
+      /**
+       * Example listings whose "В роботі" mark pointed at this draft and turned
+       * "Реалізовано" because the send published it (listing ids; absent = none).
+       */
+      marksCompleted?: number[]
     }
   | {
       ok: false

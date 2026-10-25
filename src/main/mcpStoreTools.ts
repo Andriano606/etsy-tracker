@@ -75,6 +75,8 @@ export interface DraftDeps {
   now?: () => number
   /** A draft changed (the app refreshes its list). */
   onChanged?: () => void
+  /** Example listings' marks changed (a published draft completed them): the app refreshes them. */
+  onMarksChanged?: (listingIds: number[]) => void
   /**
    * Pull the user's Etsy drafts into the app (ipc.ts pullEtsyDrafts: one pull
    * at a time, shared with the app's own, and the drafts window's progress).
@@ -711,7 +713,7 @@ export function createDraftTools(own: OwnStoreDeps | undefined, drafts: DraftDep
           const w = writable(own)
           const id = Number(a.draft_id)
           const res = await sendDraft(
-            { client: w.client, auth: { status: w.status }, db: d.db, now: d.now, describe: mcpErrorText },
+            { client: w.client, auth: { status: w.status }, db: d.db, now: d.now, describe: mcpErrorText, onMarksChanged: d.onMarksChanged },
             id,
             !!a.publish,
             { overwrite: a.overwrite_etsy_changes === true }
@@ -745,7 +747,9 @@ export function createDraftTools(own: OwnStoreDeps | undefined, drafts: DraftDep
             // The public page exists only while active; the editor (drafts too) opens for the signed-in owner.
             url: state === 'active' ? etsyListingUrl(res.listingId) : null,
             edit_url: etsyListingEditUrl(res.listingId),
-            notes: [...res.warnings, ...(res.notes ?? [])]
+            notes: [...res.warnings, ...(res.notes ?? [])],
+            // Example listings marked in_progress with this draft: now done, our_product_id = this listing.
+            ...(res.marksCompleted?.length ? { examples_marked_done: res.marksCompleted } : {})
           })
         } catch (e) {
           return fail(e)

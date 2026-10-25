@@ -927,8 +927,79 @@ label.check {
 .card-copy[data-state='failed'] .card-copy-flash {
   color: var(--danger-text);
 }
+/* ---- The card's quick-mark icon (ListingMark.tsx CardMarkMenu) ----
+   Under the copy-link icon in the photo's right column (magnifier 8, copy 40,
+   mark 72; without a photo: copy 8, mark 40). Shown like the copy icon, and
+   kept while its menu is open. */
+.listing-card-host > .card-mark {
+  position: absolute;
+  top: 72px;
+  right: 8px;
+  z-index: 2;
+  display: flex;
+  opacity: 0;
+  transition: opacity 120ms var(--ease);
+}
+.listing-card-host > .card-mark--solo {
+  top: 40px;
+}
+.listing-card-host:hover > .card-mark,
+.listing-card-host:focus-within > .card-mark,
+.listing-card-host > .card-mark:has([data-open]) {
+  opacity: 1;
+}
+.card-copy-btn.card-mark-btn {
+  cursor: pointer;
+}
+.card-copy-btn.card-mark-btn.is-marked {
+  color: var(--accent);
+}
 @media (prefers-reduced-motion: reduce) {
-  .listing-card-host > .card-copy {
+  .listing-card-host > .card-copy,
+  .listing-card-host > .card-mark {
     transition: none;
   }
+}
+
+/* ---- The listing window's "Мітка" block (ListingMark.tsx MarkBlock) ---- */
+.listing-modal .lm-mark .ui-seg {
+  max-width: 100%;
+}
+.lm-mark-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+  min-width: 0;
+}
+.lm-mark-fields textarea {
+  min-height: 52px;
+  resize: vertical;
+}
+.lm-mark-count {
+  color: var(--text-dim);
+  font-size: var(--fs-2xs);
+}
+.lm-mark-count.over {
+  color: var(--danger-text);
+}
+.lm-mark-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+}
+.lm-mark-meta {
+  margin-left: auto;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+.lm-mark-error {
+  margin: var(--sp-2) 0 0;
+  color: var(--danger-text);
+  font-size: var(--fs-sm);
+}
+.mark-tip-note {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }

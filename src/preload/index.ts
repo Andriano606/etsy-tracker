@@ -27,7 +27,11 @@ import type {
   KeyStatus,
   KeyTestResult,
   Listing,
+  ListingMark,
+  ListingMarkInput,
   ListingStatsPoint,
+  MarkedListing,
+  MarkListFilter,
   McpSettingsInput,
   McpStatus,
   MinioSettingsInput,
@@ -82,6 +86,13 @@ const api = {
   /** One listing's popularity per successful scan, oldest first. */
   getListingStats: (listingId: number): Promise<ListingStatsPoint[]> =>
     ipcRenderer.invoke('listing:stats', listingId),
+  /** Set a listing's mark ("В роботі" / "Реалізовано"); status null/'none' removes it (value null). */
+  setListingMark: (listingId: number, input: ListingMarkInput): Promise<MyShopResult<ListingMark | null>> =>
+    ipcRenderer.invoke('marks:set', listingId, input),
+  /** Every marked listing (optionally one status / shop), the latest change first. */
+  listMarkedListings: (filter?: MarkListFilter): Promise<MarkedListing[]> => ipcRenderer.invoke('marks:list', filter),
+  /** Marks changed elsewhere (Claude over MCP, a published draft completing its example's mark). */
+  onMarksChanged: (cb: (e: { listingIds: number[] }) => void): (() => void) => subscribe('marks:changed', cb),
   listScans: (shopId: number): Promise<ScanSummary[]> => ipcRenderer.invoke('scans:list', shopId),
   getScanChanges: (scanId: number): Promise<ScanChange[]> =>
     ipcRenderer.invoke('scan:changes', scanId),

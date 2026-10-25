@@ -11,6 +11,7 @@ import { createImageSyncer, downloadImage } from './imageSync'
 import {
   ensureOwnShopTracked,
   notifyDraftsChanged,
+  notifyMarksChanged,
   notifyShopsChanged,
   onReviewSyncDone,
   pullEtsyDrafts,
@@ -215,6 +216,7 @@ if (!app.requestSingleInstanceLock()) {
       // open_link reads Etsy live only with a saved key (else no request).
       hasApiKey: () => !!keyStore.getKey(),
       onDraftsChanged: () => notifyDraftsChanged({ db, getWindow }),
+      onMarksChanged: (ids) => notifyMarksChanged({ getWindow }, ids),
       // One Etsy-drafts pull at a time, shared with the app's (scan, "Синхронізувати з Etsy").
       pullDrafts: () =>
         ctxRef ? pullEtsyDrafts(ctxRef) : Promise.resolve({ ok: false as const, error: 'The app is still starting.' }),

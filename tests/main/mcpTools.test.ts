@@ -1190,6 +1190,118 @@ describe('open_link', () => {
   })
 })
 
+describe('marks (set_product_mark, list_marked_products, mark in product output)', () => {
+  const annotations = async (name: string) => {
+    const res = await handleMcpMessage({ info: mcpServerInfo('0.1.0'), tools: w.tools }, { jsonrpc: '2.0', id: 1, method: 'tools/list' })
+    const t = (res!.result as { tools: Array<{ name: string; annotations: Record<string, boolean> }> }).tools.find((x) => x.name === name)!
+    return t.annotations
+  }
+
+  it('set_product_mark is a local write (no Etsy, no sign-in, no "allow changes"); list_marked_products a local read', async () => {
+    expect(await annotations('set_product_mark')).toMatchObject({ readOnlyHint: false, destructiveHint: false, openWorldHint: false })
+    expect(await annotations('list_marked_products')).toMatchObject({ readOnlyHint: true, openWorldHint: false })
+  })
+
+  it('products start unmarked: mark is null in get_product, search_products and open_link', async () => {
+    expect((await data('get_product', { product_id: 2 })).mark).toBeNull()
+    expect((await data('search_products', { store_id: SHOP_ID })).products.every((p: { mark: unknown }) => p.mark === null)).toBe(true)
+    expect((await data('open_link', { link: productRef(2) })).mark).toBeNull()
+  })
+
+  it('sets a mark with a draft, keeps absent fields, clears with null, removes with none; every product output shows it', async () => {
+    const draft = saveDraft(w.db, { source: 'mcp', fields: { ...EMPTY_DRAFT_FIELDS, title: 'Our mug' } }, 1)
+    const heard: number[][] = []
+    const tools = createMcpTools({ db: w.db, now: () => 1_760_500_000_000, onMarksChanged: (ids) => heard.push(ids) })
+    const run = async (args: Record<string, unknown>) => {
+      const r = await handleMcpMessage(
+        { info: mcpServerInfo('0.1.0'), tools },
+        { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'set_product_mark', arguments: args } }
+      )
+      const out = r!.result as McpToolResult
+      for (const c of out.content) if (c.type === 'text') seen.push(c.text)
+      return { isError: !!out.isError, json: JSON.parse((out.content[0] as { text: string }).text) }
+    }
+    const first = await run({ product_id: 2, status: 'in_progress', note: 'Our take on the Etsy bestseller', our_draft_id: draft.id })
+    expect(first).toEqual({
+      isError: false,
+      json: {
+        product_id: 2,
+        title: 'Renamed 2',
+        store_id: SHOP_ID,
+        mark: {
+          status: 'in_progress',
+          note: 'Our take on the Etsy bestseller',
+          our_product_id: null,
+          our_draft_id: draft.id,
+          set_by: 'assistant',
+          updated_at: new Date(1_760_500_000_000).toISOString()
+        }
+      }
+    })
+    expect(heard).toEqual([[2]])
+    const shown = { status: 'in_progress', note: 'Our take on the Etsy bestseller', our_draft_id: draft.id, set_by: 'assistant' }
+    expect((await data('get_product', { product_id: 2 })).mark).toMatchObject(shown)
+    expect((await data('open_link', { link: 'https://www.etsy.com/listing/2/renamed' })).mark).toMatchObject(shown)
+    expect((await data('search_products', { store_id: SHOP_ID, mark: 'in_progress' })).products.map((p: { id: number }) => p.id)).toEqual([2])
+
+    expect((await run({ product_id: 2, status: 'done', our_product_id: 4242 })).json.mark).toMatchObject({ status: 'done', note: 'Our take on the Etsy bestseller', our_product_id: 4242, our_draft_id: draft.id })
+    expect((await run({ product_id: 2, status: 'done', note: null, our_draft_id: null })).json.mark).toMatchObject({ note: null, our_product_id: 4242, our_draft_id: null })
+    expect((await run({ product_id: 5, status: 'in_progress', note: '' })).json.mark).toMatchObject({ status: 'in_progress', note: null })
+    expect((await run({ product_id: 5, status: 'none' })).json).toMatchObject({ product_id: 5, mark: null })
+    expect((await data('get_product', { product_id: 5 })).mark).toBeNull()
+    expect(heard).toHaveLength(5)
+  })
+
+  it('refuses an unknown product or draft, a bad status and a long note (nothing written)', async () => {
+    expect(await toolError('set_product_mark', { product_id: 999_999, status: 'done' })).toMatch(/No product with id 999999/)
+    expect(await toolError('set_product_mark', { product_id: 1, status: 'done', our_draft_id: 98_765 })).toMatch(/No draft 98765 in the app/)
+    expect(await toolError('set_product_mark', { product_id: 1, status: 'maybe' })).toMatch(/must be one of: in_progress, done, none/)
+    expect(await toolError('set_product_mark', { product_id: 1, status: 'done', note: 'x'.repeat(501) })).toMatch(/at most 500/)
+    expect(await toolError('set_product_mark', { product_id: 1 })).toMatch(/Missing required argument "status"/)
+    expect((await data('get_product', { product_id: 1 })).mark).toBeNull()
+  })
+
+  it('search_products: mark filter (any/none/in_progress/done) and sort marked_first (done, in progress, then the rest — each newest first)', async () => {
+    await data('set_product_mark', { product_id: 1, status: 'in_progress' })
+    // product 2 is done (above)
+    const ids = async (args: Record<string, unknown>) =>
+      (await data('search_products', { store_id: SHOP_ID, ...args })).products.map((p: { id: number }) => p.id)
+    const newest = await ids({})
+    expect(await ids({ mark: 'any' })).toEqual(newest)
+    expect(await ids({ mark: 'done' })).toEqual([2])
+    expect(await ids({ mark: 'in_progress' })).toEqual([1])
+    expect(await ids({ mark: 'none' })).toEqual(newest.filter((id: number) => id !== 1 && id !== 2))
+    expect(await ids({ sort: 'marked_first' })).toEqual([2, 1, ...newest.filter((id: number) => id !== 1 && id !== 2)])
+    expect(await toolError('search_products', { mark: 'yes' })).toMatch(/must be one of: any, none, in_progress, done/)
+  })
+
+  it('list_marked_products: newest change first, filters, paging; refuses an unknown store', async () => {
+    const all = await data('list_marked_products', {})
+    expect(all.total).toBe(2)
+    // Product 2's mark was set at 1_760_500_000_000 — later than product 1's (the world's clock).
+    expect(all.products.map((p: { id: number }) => p.id)).toEqual([2, 1])
+    expect(all.products[0]).toEqual({
+      id: 2,
+      store_id: SHOP_ID,
+      store_name: 'CeramicStudioUA',
+      title: 'Renamed 2',
+      url: expect.stringMatching(/^https:\/\/www\.etsy\.com\/listing\/2/),
+      status: 'active',
+      mark: expect.objectContaining({ status: 'done', our_product_id: 4242, set_by: 'assistant' })
+    })
+    expect((await data('list_marked_products', { status: 'done' })).products.map((p: { id: number }) => p.id)).toEqual([2])
+    expect((await data('list_marked_products', { store_id: SHOP_ID, limit: 1, offset: 1 })).products.map((p: { id: number }) => p.id)).toEqual([1])
+    expect(await toolError('list_marked_products', { store_id: 123 })).toMatch(/No store with id 123/)
+  })
+
+  it('a mark set in the app reads as set_by user', async () => {
+    const { setListingMark } = await import('../../src/main/db')
+    setListingMark(w.db, 3, { status: 'done', source: 'app' }, 1_760_600_000_000)
+    expect((await data('get_product', { product_id: 3 })).mark).toMatchObject({ status: 'done', set_by: 'user' })
+    setListingMark(w.db, 3, { status: null, source: 'app' }, 1)
+  })
+})
+
 describe('honesty: data reaches a client as stored, secrets and CDN URLs never do', () => {
   it('every tool, the tool list and initialize: Etsy text unchanged; no etsystatic URL, raw_json or key', async () => {
     // Make sure the sweep covers every tool, whatever ran before.
@@ -1258,7 +1370,7 @@ describe('honesty: data reaches a client as stored, secrets and CDN URLs never d
     expect(MCP_INSTRUCTIONS).not.toMatch(/marketplace/i)
     // every tool name the instructions use is a real tool
     const names = new Set(w.tools.map((t) => t.name))
-    const fields = new Set(['image_id', 'video_id', 'review_id', 'photo_id', 'finished_at', 'latest_snapshot', 'customer_country', 'sales_count', 'featured_position', 'is_mine', 'shop_id', 'listing_id', 'category_id', 'also_on_etsy', 'overwrite_etsy_changes', 'product_id'])
+    const fields = new Set(['image_id', 'video_id', 'review_id', 'photo_id', 'finished_at', 'latest_snapshot', 'customer_country', 'sales_count', 'featured_position', 'is_mine', 'shop_id', 'listing_id', 'category_id', 'also_on_etsy', 'overwrite_etsy_changes', 'product_id', 'in_progress', 'our_product_id', 'our_draft_id', 'set_by', 'marked_first', 'draft_id'])
     const mentioned = (MCP_INSTRUCTIONS.match(/\b[a-z]+(?:_[a-z]+)+\b/g) ?? []).filter((m) => !fields.has(m))
     expect(mentioned.length).toBeGreaterThan(30)
     for (const m of mentioned) expect(names, m).toContain(m)

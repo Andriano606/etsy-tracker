@@ -28,7 +28,11 @@ import type {
   KeyStatus,
   KeyTestResult,
   Listing,
+  ListingMark,
+  ListingMarkInput,
   ListingStatsPoint,
+  MarkedListing,
+  MarkListFilter,
   McpSettingsInput,
   McpStatus,
   MinioSettingsInput,
@@ -310,6 +314,18 @@ export const mkListing = (id: number, over: Partial<Listing> = {}): Listing => (
   ...over
 })
 
+/** A listing mark (default: "Реалізовано", set in the app). */
+export const mkMark = (over: Partial<ListingMark> = {}): ListingMark => ({
+  status: 'done',
+  note: null,
+  ourListingId: null,
+  ourDraftId: null,
+  source: 'app',
+  createdAt: 1_760_000_000_000,
+  updatedAt: 1_760_000_000_000,
+  ...over
+})
+
 export const mkChange = (
   id: number,
   kind: ScanChange['kind'],
@@ -417,6 +433,15 @@ export function makeApi() {
     onShopsChanged: vi.fn(() => () => {}),
     listListings: vi.fn(async (): Promise<Listing[]> => []),
     getListing: vi.fn(async (): Promise<Listing | null> => null),
+    // marks:set answers the stored mark (null = removed), like main.
+    setListingMark: vi.fn(
+      async (_listingId: number, input: ListingMarkInput): Promise<MyShopResult<ListingMark | null>> => ({
+        ok: true,
+        value: input.status && input.status !== 'none' ? mkMark({ status: input.status, note: input.note ?? null, ourListingId: input.ourListingId ?? null, ourDraftId: input.ourDraftId ?? null }) : null
+      })
+    ),
+    listMarkedListings: vi.fn(async (_filter?: MarkListFilter): Promise<MarkedListing[]> => []),
+    onMarksChanged: vi.fn(() => () => {}),
     listScans: vi.fn(async (): Promise<ScanSummary[]> => []),
     getScanChanges: vi.fn(async (): Promise<ScanChange[]> => []),
     getScanPromotions: vi.fn(async (_scanId: number): Promise<ScanPromotions> => noPromotions()),
@@ -592,6 +617,7 @@ export function resetStore(): void {
     search: '',
     sort: 'newest',
     discountOnly: false,
+    markFilter: 'any',
     buyerCountry: null,
     imageCounts: null,
     imageSync: null,

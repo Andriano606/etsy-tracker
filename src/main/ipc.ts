@@ -27,6 +27,9 @@ import type {
   ImageSyncState,
   KeyStatus,
   KeyTestResult,
+  ListingMark,
+  MarkedListing,
+  MarkListFilter,
   McpSettingsInput,
   McpStatus,
   MinioSettingsInput,
@@ -42,6 +45,7 @@ import type {
   ShopStatsPayload
 } from '../shared/types'
 import { isAllowedExternalUrl } from '../shared/externalUrl'
+import { MarkError, isMarkStatus, normalizeMarkInput } from '../shared/marks'
 import {
   type Db,
   deleteShop,
@@ -52,13 +56,15 @@ import {
   listListingPromotions,
   listListingReviews,
   listListingStats,
+  listMarkedListings,
   listNewReviews,
   listScanChanges,
   listScanPromotions,
   listScans,
   listShopObjectKeys,
   listShopSummaries,
-  resetStoredImages
+  resetStoredImages,
+  setListingMark
 } from './db'
 import { EtsyApiError, type EtsyClient } from './etsyApi'
 import { type EtsyAuth, EtsyAuthError } from './etsyAuth'
@@ -185,6 +191,14 @@ export function sendToRenderer(ctx: Pick<IpcContext, 'getWindow'>, channel: stri
 
 export function notifyShopsChanged(ctx: IpcContext): void {
   sendToRenderer(ctx, 'shops:changed', listShopSummaries(ctx.db))
+}
+
+/**
+ * Marks changed outside the renderer's own marks:set (Claude over MCP, a
+ * published draft completing its example's mark): the open shop refreshes them.
+ */
+export function notifyMarksChanged(ctx: Pick<IpcContext, 'getWindow'>, listingIds: number[]): void {
+  sendToRenderer(ctx, 'marks:changed', { listingIds })
 }
 
 /** The drafts changed (here, or a draft Claude prepared over MCP): the renderer's list. */
@@ -405,6 +419,24 @@ export function registerIpc(ctx: IpcContext): void {
   ipcMain.handle('listings:list', (_e, shopId: number) => listActiveListings(db, shopId))
   ipcMain.handle('listing:get', (_e, listingId: number) => getListing(db, listingId))
   ipcMain.handle('listing:raw', (_e, listingId: number) => getListingRaw(db, listingId))
+  // Marks ("В роботі" / "Реалізовано"): the renderer applies the answer itself (no push).
+  ipcMain.handle('marks:set', (_e, listingId: unknown, input: unknown): MyShopResult<ListingMark | null> => {
+    const id = positiveId(listingId)
+    if (id == null) return { ok: false, error: 'Некоректний id товару.' }
+    try {
+      return { ok: true, value: setListingMark(db, id, { ...normalizeMarkInput(input), source: 'app' }, Date.now()) }
+    } catch (e) {
+      return { ok: false, error: e instanceof MarkError ? e.message : `Не вдалося зберегти мітку: ${(e as Error).message}` }
+    }
+  })
+  ipcMain.handle('marks:list', (_e, filter?: unknown): MarkedListing[] => {
+    const f = filter && typeof filter === 'object' ? (filter as Record<string, unknown>) : {}
+    const out: MarkListFilter = {}
+    if (isMarkStatus(f.status)) out.status = f.status
+    const shopId = positiveId(f.shopId)
+    if (shopId != null) out.shopId = shopId
+    return listMarkedListings(db, out)
+  })
   ipcMain.handle('listing:stats', (_e, listingId: number) => listListingStats(db, listingId))
   ipcMain.handle('scans:list', (_e, shopId: number) => listScans(db, shopId))
   ipcMain.handle('reviews:listing', (_e, listingId: number, offset?: number, limit?: number): ReviewPage => {
@@ -687,7 +719,12 @@ export function registerIpc(ctx: IpcContext): void {
     const expected = typeof o.expectedUpdatedAt === 'number' && Number.isFinite(o.expectedUpdatedAt) ? o.expectedUpdatedAt : undefined
     try {
       return await sendDraft(
-        { ...own, db, onProgress: (p) => sendToRenderer(ctx, 'myShop:createProgress', p) },
+        {
+          ...own,
+          db,
+          onProgress: (p) => sendToRenderer(ctx, 'myShop:createProgress', p),
+          onMarksChanged: (ids) => notifyMarksChanged(ctx, ids)
+        },
         n,
         publish === true,
         { overwrite, ...(expected != null ? { expectedUpdatedAt: expected } : {}) }

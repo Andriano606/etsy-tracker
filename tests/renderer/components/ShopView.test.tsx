@@ -9,7 +9,7 @@ import { HistoryModal } from '../../../src/renderer/src/components/ScanHistory'
 import { useStore } from '../../../src/renderer/src/store'
 import { ImageViewer } from '../../../src/renderer/src/ui'
 import { GLOSSARY } from '../../../src/shared/glossary'
-import { etsyIn, idleReviews, idleSync, mkBuyerPrice, mkChange, mkListing, mkPromotion, mkReview, mkScan, mkShop, setupRenderer, withKey, type Api } from '../helpers'
+import { etsyIn, idleReviews, idleSync, mkBuyerPrice, mkChange, mkListing, mkMark, mkPromotion, mkReview, mkScan, mkShop, setupRenderer, withKey, type Api } from '../helpers'
 
 let api: Api
 beforeEach(() => {
@@ -1017,5 +1017,69 @@ describe('ShopView: every picture opens full size in the image viewer', () => {
     await act(async () => fireEvent.click(zooms[0]))
     expect(useStore.getState().detailListing).toBeNull()
     expect(viewerImg()).toHaveAttribute('src', 'etsyimg://img/30/fullxfull')
+  })
+})
+
+describe('ShopView: marks in the grid', () => {
+  const grid = () => screen.getAllByTestId('listing-card').map((c) => c.querySelector('.card-title')!.textContent)
+  const marked = () =>
+    show({
+      shops: [mkShop({ lastOkScan: mkScan() })],
+      listings: [
+        mkListing(1, { title: 'Old done', etsyCreatedAt: 10, mark: mkMark({ status: 'done' }) }),
+        mkListing(2, { title: 'Plain new', etsyCreatedAt: 50 }),
+        mkListing(3, { title: 'Working', etsyCreatedAt: 30, mark: mkMark({ status: 'in_progress' }) }),
+        mkListing(4, { title: 'New done', etsyCreatedAt: 40, mark: mkMark({ status: 'done' }) })
+      ]
+    })
+
+  it('the filter "Усі / Без мітки / В роботі / Реалізовано" (kept in the store) narrows the grid', () => {
+    marked()
+    const group = screen.getByRole('radiogroup', { name: 'Фільтр за міткою' })
+    expect(within(group).getByRole('radio', { name: 'Усі' })).toBeChecked()
+    expect(grid()).toEqual(['Plain new', 'New done', 'Working', 'Old done'])
+    fireEvent.click(within(group).getByRole('radio', { name: 'Реалізовано' }))
+    expect(useStore.getState().markFilter).toBe('done')
+    expect(grid()).toEqual(['New done', 'Old done'])
+    expect(screen.getByText('показано 2 з 4')).toBeInTheDocument()
+    fireEvent.click(within(group).getByRole('radio', { name: 'В роботі' }))
+    expect(grid()).toEqual(['Working'])
+    fireEvent.click(within(group).getByRole('radio', { name: 'Без мітки' }))
+    expect(grid()).toEqual(['Plain new'])
+    fireEvent.click(within(group).getByRole('radio', { name: 'Усі' }))
+    expect(grid()).toHaveLength(4)
+    expect(screen.getByRole('button', { name: 'Що таке «Фільтр за міткою»?' })).toHaveAccessibleDescription(GLOSSARY['shop.markFilter'].short)
+  })
+
+  it('"Спершу з міткою" sorts done first, then in progress, then the rest (each newest first)', () => {
+    marked()
+    fireEvent.change(screen.getByLabelText('Сортування'), { target: { value: 'marked' } })
+    expect(useStore.getState().sort).toBe('marked')
+    expect(grid()).toEqual(['New done', 'Old done', 'Working', 'Plain new'])
+  })
+
+  it('works with the search and "Зі знижкою"; nothing found says which mark and resets every filter', async () => {
+    marked()
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'done' } })
+    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Фільтр за міткою' })).getByRole('radio', { name: 'Реалізовано' }))
+    expect(grid()).toEqual(['New done', 'Old done'])
+    fireEvent.click(screen.getByLabelText('Зі знижкою'))
+    expect(screen.getByText(/Серед товарів з міткою «Реалізовано» таких немає/)).toBeInTheDocument()
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Скинути пошук і фільтри' })))
+    expect(useStore.getState()).toMatchObject({ search: '', discountOnly: false, markFilter: 'any' })
+    expect(grid()).toHaveLength(4)
+  })
+
+  it('no listing with that mark: says how to set one; the button shows all', async () => {
+    show({ shops: [mkShop({ lastOkScan: mkScan() })], listings: [mkListing(1)], markFilter: 'in_progress' })
+    expect(screen.getByText(/Жоден товар магазину не має мітки «В роботі»/)).toBeInTheDocument()
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Показати всі товари' })))
+    expect(useStore.getState().markFilter).toBe('any')
+  })
+
+  it('every card shows its mark; the quick-mark menu is on every card', () => {
+    marked()
+    expect(screen.getAllByTestId('card-mark').map((b) => b.textContent)).toEqual(['Реалізовано', 'В роботі', 'Реалізовано'])
+    expect(screen.getAllByTestId('card-mark-menu')).toHaveLength(4)
   })
 })

@@ -5,8 +5,9 @@ import { GLOSSARY } from '@shared/glossary'
 import { ownShopId, useStore, type SortMode } from '../store'
 import { SHOP_PANELS } from '../features/registry'
 import { filterListings } from '@shared/listingFilter'
+import { MARK_FILTERS } from '@shared/marks'
 import { storeImageRef } from '@shared/claudeRef'
-import { ActionBar, Badge, Button, Callout, EmptyState, Icon, InfoTip, Select, Spinner, Stat, Term, Toggle, type Action } from '../ui'
+import { ActionBar, Badge, Button, Callout, EmptyState, Icon, InfoTip, Segmented, Select, Spinner, Stat, Term, Toggle, type Action } from '../ui'
 import { countOf } from './ChangeList'
 import { ExternalLink } from './ExternalLink'
 import { ListingCard } from './ListingCard'
@@ -31,7 +32,8 @@ export const SORT_OPTIONS: ReadonlyArray<{ value: SortMode; label: string }> = [
   { value: 'favorites-growth', label: 'Найшвидше ростуть в обраному' },
   { value: 'reviews', label: 'Найбільше відгуків' },
   { value: 'reviews-growth', label: 'Найбільше нових відгуків' },
-  { value: 'discount', label: 'Найбільша знижка' }
+  { value: 'discount', label: 'Найбільша знижка' },
+  { value: 'marked', label: 'Спершу з міткою' }
 ]
 
 /**
@@ -301,6 +303,8 @@ export function ShopView(): JSX.Element | null {
     scanPromotions,
     discountOnly,
     setDiscountOnly,
+    markFilter,
+    setMarkFilter,
     buyerCountry,
     etsyAuth,
     setShowMyShop,
@@ -316,8 +320,8 @@ export function ShopView(): JSX.Element | null {
     [lastChanges]
   )
   const visible = useMemo(
-    () => filterListings(listings, search, sort, { discountOnly }),
-    [listings, search, sort, discountOnly]
+    () => filterListings(listings, search, sort, { discountOnly, mark: markFilter }),
+    [listings, search, sort, discountOnly, markFilter]
   )
 
   if (!shop) return null
@@ -329,10 +333,21 @@ export function ShopView(): JSX.Element | null {
   const pendingDrafts = drafts.filter((d) => d.status !== 'sent').length
   const hasKey = !!keyStatus?.hasKey
   const searching = !!search.trim()
-  const filtered = searching || discountOnly
+  const marking = markFilter !== 'any'
+  const filtered = searching || discountOnly || marking
   // "Nothing found": name only the filters that are really on.
-  const emptyHint =
-    searching && discountOnly
+  const markName = MARK_FILTERS.find((f) => f.value === markFilter)?.label ?? ''
+  const emptyHint = marking
+    ? searching || discountOnly
+      ? { text: `Серед товарів з міткою «${markName}» таких немає. Змініть пошук чи фільтри.`, reset: 'Скинути пошук і фільтри' }
+      : {
+          text:
+            markFilter === 'none'
+              ? 'Усі товари магазину вже мають мітку.'
+              : `Жоден товар магазину не має мітки «${markName}». Мітку ставлять у вікні товару або кнопкою на картці.`,
+          reset: 'Показати всі товари'
+        }
+    : searching && discountOnly
       ? { text: 'Зараз жоден такий товар не має знижки. Спробуйте інше слово або вимкніть «Зі знижкою».', reset: 'Скинути пошук і фільтр' }
       : discountOnly
         ? { text: 'Зараз жоден товар магазину не має знижки — вимкніть «Зі знижкою», щоб побачити всі.', reset: 'Вимкнути «Зі знижкою»' }
@@ -589,6 +604,16 @@ export function ShopView(): JSX.Element | null {
                   checked={discountOnly}
                   onChange={setDiscountOnly}
                 />
+                <span className="grid-mark">
+                  <Segmented
+                    options={MARK_FILTERS}
+                    value={markFilter}
+                    onChange={setMarkFilter}
+                    label="Фільтр за міткою"
+                    size="sm"
+                  />
+                  <InfoTip glossary="shop.markFilter" size={13} />
+                </span>
               </div>
               {visible.length === 0 ? (
                 <EmptyState
@@ -601,6 +626,7 @@ export function ShopView(): JSX.Element | null {
                       onClick={() => {
                         setSearch('')
                         setDiscountOnly(false)
+                        setMarkFilter('any')
                       }}
                     >
                       {emptyHint.reset}

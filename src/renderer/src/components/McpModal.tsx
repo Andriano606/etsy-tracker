@@ -46,7 +46,10 @@ export const MCP_LOCAL_TOOLS: ReadonlySet<string> = new Set([
   'get_product_image',
   'get_store_logo',
   'get_product_video_preview',
-  'get_review_photo'
+  'get_review_photo',
+  // Marks change only the app's own bookkeeping (no Etsy request).
+  'set_product_mark',
+  'list_marked_products'
 ])
 
 /** Drafts kept in the app (nothing reaches Etsy until one is sent); sending is a write tool. */
@@ -521,7 +524,8 @@ function McpDialog({ onClose }: { onClose: () => void }): JSX.Element {
             <p className="settings-note">
               Відповідають з бази програми — стан на останнє сканування; до Etsy API не звертаються. Фото товарів і
               відгуків беруться з вашого сховища MinIO (якщо копії там немає — з Etsy), логотипи, банери й кадри відео — з
-              Etsy; ліміт запитів на це не витрачається.
+              Etsy; ліміт запитів на це не витрачається. Ще Claude може ставити товарам мітки «В роботі» й
+              «Реалізовано» — це змінює лише програму, не Etsy.
             </p>
             <ToolList tools={localTools} testId="mcp-local-tools" />
           </div>

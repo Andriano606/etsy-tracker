@@ -31,7 +31,8 @@ export function App(): JSX.Element {
     setImageSync,
     setReviewSync,
     setEtsyAuth,
-    setDrafts
+    setDrafts,
+    marksChanged
   } = useStore()
 
   useEffect(() => {
@@ -44,10 +45,12 @@ export function App(): JSX.Element {
       window.api.onImageSync(setImageSync),
       window.api.onReviewSync(setReviewSync),
       window.api.onEtsyAuth(setEtsyAuth),
-      window.api.onDraftsChanged(setDrafts)
+      window.api.onDraftsChanged(setDrafts),
+      // Claude set a mark, or a published draft completed its example's mark.
+      window.api.onMarksChanged(({ listingIds }) => void marksChanged(listingIds))
     ]
     return () => offs.forEach((off) => off())
-  }, [load, setShops, setProgress, setScanning, setQuota, setImageSync, setReviewSync, setEtsyAuth, setDrafts])
+  }, [load, setShops, setProgress, setScanning, setQuota, setImageSync, setReviewSync, setEtsyAuth, setDrafts, marksChanged])
 
   let main: JSX.Element | null
   if (!loaded)

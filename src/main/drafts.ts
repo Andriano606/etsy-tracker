@@ -31,7 +31,7 @@ import {
 } from '../shared/myShop'
 import { formatDateTime } from '../shared/format'
 import { inventorySummary, inventoryToWrite, type InventoryWrite } from '../shared/features/inventory'
-import { type Db, transaction } from './db'
+import { type Db, completeDraftMarks, transaction } from './db'
 import { EtsyApiError, type EtsyClient, type EtsyListing } from './etsyApi'
 import {
   type MyShopDeps,
@@ -449,6 +449,8 @@ export interface SendDeps extends MyShopDeps {
   now?: () => number
   onProgress?: (p: CreateListingProgress) => void
   describe?: (e: unknown) => string
+  /** Marks of these example listings turned "done" (the send published the draft they point at). */
+  onMarksChanged?: (listingIds: number[]) => void
 }
 
 /** The signed-in user's shop id with the OAuth scopes `scopes` (else a Ukrainian refusal). */
@@ -511,10 +513,24 @@ export async function sendDraft(
   }
   busy.add(id)
   try {
-    return await (d.etsy ? pushLinked(deps, d, publish, opts) : createFromDraft(deps, d, publish))
+    const res = await (d.etsy ? pushLinked(deps, d, publish, opts) : createFromDraft(deps, d, publish))
+    return withCompletedMarks(deps, id, res)
   } finally {
     busy.delete(id)
   }
+}
+
+/**
+ * A send that left the listing published (active) completes the example marks
+ * made from this draft ("В роботі" → "Реалізовано", our listing = this one).
+ * A failed or draft-only send touches no mark.
+ */
+function withCompletedMarks(deps: SendDeps, draftId: number, res: CreateListingResult): CreateListingResult {
+  if (!res.ok || !res.published) return res
+  const done = completeDraftMarks(deps.db, draftId, res.listingId, (deps.now ?? Date.now)())
+  if (!done.length) return res
+  deps.onMarksChanged?.(done)
+  return { ...res, marksCompleted: done }
 }
 
 async function createFromDraft(deps: SendDeps, d: ListingDraft, publish: boolean): Promise<CreateListingResult> {

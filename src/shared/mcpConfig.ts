@@ -102,6 +102,8 @@ export const MCP_TOOL_SUMMARY: ReadonlyArray<{ name: string; text: string; write
   { name: 'get_store_logo', text: 'логотип або банер магазину як картинка (з CDN Etsy)' },
   { name: 'get_product_video_preview', text: 'кадр-прев’ю відео товару як картинка (з CDN Etsy)' },
   { name: 'get_review_photo', text: 'фото з відгуку як картинка (локальна копія, інакше з CDN Etsy)' },
+  { name: 'set_product_mark', text: 'поставити чи зняти мітку товару «В роботі» / «Реалізовано» з нотаткою й нашим товаром (лише в програмі, без дозволу на зміни)' },
+  { name: 'list_marked_products', text: 'усі товари з мітками «В роботі» й «Реалізовано»: що ми вже зробили за прикладом' },
   { name: 'list_my_products', text: 'мій магазин на Etsy наживо: товари в будь-якому стані (активні, чернетки, неактивні…)' },
   { name: 'find_categories', text: 'пошук категорії Etsy для нового товару (дерево категорій продавця)' },
   { name: 'get_product_options', text: 'допустимі значення й ліміти Etsy для нового товару, профілі доставки й обробки (наживо)' },

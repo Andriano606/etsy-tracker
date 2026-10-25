@@ -1,7 +1,8 @@
 // Shared by the renderer's grid and the MCP server's product search (main), so
 // relative imports only (main has no @shared alias).
-import type { Listing } from './types'
+import type { Listing, MarkFilter } from './types'
 import { discountPercent, hasActiveDiscount, shownPriceValue } from './price'
+import { markRank, matchesMark } from './marks'
 
 export type SortMode =
   | 'newest'
@@ -19,12 +20,16 @@ export type SortMode =
   | 'reviews-growth'
   /** Biggest active discount (buyer price) first. */
   | 'discount'
+  /** "Спершу з міткою": done first, then in progress, then unmarked (each newest first). */
+  | 'marked'
 
 export interface FilterOptions {
   /** "Зі знижкою": only listings whose buyer price has an active discount. */
   discountOnly?: boolean
   /** Search the description too (the MCP product search; the grid searches title/tags). */
   searchDescription?: boolean
+  /** Only listings with this mark ('none' = unmarked; 'any'/absent = all). */
+  mark?: MarkFilter
 }
 
 /**
@@ -49,7 +54,11 @@ export function filterListings(
       )
     : [...listings]
   if (opts.discountOnly) hit = hit.filter((l) => hasActiveDiscount(l.buyerPrice))
+  const mark = opts.mark
+  if (mark && mark !== 'any') hit = hit.filter((l) => matchesMark(l.mark, mark))
   const price = (l: Listing): number => shownPriceValue(l)
+  const newest = (a: Listing, b: Listing): number =>
+    (b.etsyCreatedAt ?? 0) - (a.etsyCreatedAt ?? 0) || b.listingId - a.listingId
   // Unknown popularity (null) sorts last; ties fall back to the newest listing.
   const num = (v: number | null | undefined): number => (v == null ? -Infinity : v)
   const byNum = (f: (l: Listing) => number | null | undefined) => (a: Listing, b: Listing) =>
@@ -72,9 +81,9 @@ export function filterListings(
       return hit.sort((a, b) => price(a) - price(b) || b.listingId - a.listingId)
     case 'price-desc':
       return hit.sort((a, b) => price(b) - price(a) || b.listingId - a.listingId)
+    case 'marked':
+      return hit.sort((a, b) => markRank(b) - markRank(a) || newest(a, b))
     default:
-      return hit.sort(
-        (a, b) => (b.etsyCreatedAt ?? 0) - (a.etsyCreatedAt ?? 0) || b.listingId - a.listingId
-      )
+      return hit.sort(newest)
   }
 }

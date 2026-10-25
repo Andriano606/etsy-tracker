@@ -14,6 +14,7 @@ import type {
   Listing,
   ListingDetails,
   ListingImage,
+  ListingMark,
   MoneyValue,
   MyShopResult,
   Promotion,
@@ -37,6 +38,7 @@ import { MCP_SERVER_NAME } from '../shared/mcpConfig'
 import { isAllowedExternalUrl, isEtsyCdnUrl } from '../shared/externalUrl'
 import { type ClaudeRef, hasEtsyShortLink, parseClaudeRef, photoRef } from '../shared/claudeRef'
 import { decodeHtmlEntities } from '../shared/html'
+import { MARK_NOTE_MAX, isMarkFilter, isMarkStatus } from '../shared/marks'
 import {
   type Db,
   getListing,
@@ -46,11 +48,13 @@ import {
   listAllListings,
   listListingPromotions,
   listListingStats,
+  listMarkedListings,
   listNewReviews,
   listScanChanges,
   listScanPromotions,
   listScans,
-  listShopSummaries
+  listShopSummaries,
+  setListingMark
 } from './db'
 import { EtsyApiError, type EtsyClient } from './etsyApi'
 import { type McpServerInfo, type McpTool, type McpToolResult, ToolInputError, errorResult, textResult } from './mcpProtocol'
@@ -86,6 +90,8 @@ export interface McpToolDeps {
   hasApiKey?: () => boolean
   /** Drafts kept in the app changed (prepare_product …): tell the renderer. */
   onDraftsChanged?: () => void
+  /** Listing marks changed (set_product_mark, a published draft completing its example's mark): tell the renderer. */
+  onMarksChanged?: (listingIds: number[]) => void
   /**
    * The app's own Etsy-drafts pull (ipc.ts pullEtsyDrafts: one at a time, shared
    * with the scan-time pull, pushes the drafts window's progress). Absent:
@@ -169,6 +175,19 @@ function reviewsOf(l: Listing) {
   }
 }
 
+/** The user's mark on a listing (their own bookkeeping); null = none. */
+function markOut(m: ListingMark | null | undefined) {
+  if (!m) return null
+  return {
+    status: m.status,
+    note: m.note,
+    our_product_id: m.ourListingId,
+    our_draft_id: m.ourDraftId,
+    set_by: m.source === 'mcp' ? 'assistant' : 'user',
+    updated_at: isoMs(m.updatedAt)
+  }
+}
+
 function productSummary(l: Listing, newIds: ReadonlySet<number>) {
   return {
     id: l.listingId,
@@ -189,7 +208,8 @@ function productSummary(l: Listing, newIds: ReadonlySet<number>) {
     created_at: isoSec(l.details?.originalCreatedAt ?? l.etsyCreatedAt),
     first_seen_at: isoMs(l.firstSeenAt),
     removed_at: isoMs(l.removedAt),
-    new_in_latest_snapshot: newIds.has(l.listingId)
+    new_in_latest_snapshot: newIds.has(l.listingId),
+    mark: markOut(l.mark)
   }
 }
 
@@ -620,7 +640,8 @@ const SORTS: Record<string, SortMode> = {
   favorites_growth: 'favorites-growth',
   most_reviewed: 'reviews',
   new_reviews: 'reviews-growth',
-  biggest_discount: 'discount'
+  biggest_discount: 'discount',
+  marked_first: 'marked'
 }
 
 const idArg = (description: string) => ({ type: 'integer' as const, minimum: 1, description })
@@ -645,7 +666,7 @@ export const OPEN_LINK_FORMS =
 
 export const MCP_INSTRUCTIONS = `Etsy Tracker is the user's desktop app that watches Etsy shops through the official Etsy Open API v3 (competitor and market research) and manages the user's own Etsy shop. Names used by these tools: a "store" is an Etsy shop, a "product" is an Etsy listing, a "snapshot" is one scan the app made of a shop, a "discount" is an Etsy sale (promotion), "favorites" are Etsy favorers, the "customer price" is Etsy's buyer price.
 
-Local data — no Etsy request, no API quota: list_stores, get_store, search_products, get_product, get_product_history, list_snapshots, get_snapshot_changes, list_reviews, get_store_stats. They read the app's database, filled when the user scans the shops they track (you cannot start a scan; if latest_snapshot.finished_at is old, ask the user to rescan). A scan stores every active listing of the shop (title, description, price, tags, materials, photos, videos, attributes, views, favorers, featured rank) and records what changed since the previous scan: listings added, removed, returned and edited (which fields, old → new). After each scan the app also syncs the shop's Etsy reviews (the whole history first, then the new ones) and copies listing and review photos into a local image store. Text fields are Etsy's text with HTML entities decoded (&amp; → &); in the change records of get_snapshot_changes and get_product_history a description's old and new values are excerpts of at most 1000 characters (get_product has the full current text). url fields are the shops' and listings' Etsy pages.
+Local data — no Etsy request, no API quota: list_stores, get_store, search_products, get_product, get_product_history, list_snapshots, get_snapshot_changes, list_reviews, get_store_stats, list_marked_products. They read the app's database, filled when the user scans the shops they track (you cannot start a scan; if latest_snapshot.finished_at is old, ask the user to rescan). A scan stores every active listing of the shop (title, description, price, tags, materials, photos, videos, attributes, views, favorers, featured rank) and records what changed since the previous scan: listings added, removed, returned and edited (which fields, old → new). After each scan the app also syncs the shop's Etsy reviews (the whole history first, then the new ones) and copies listing and review photos into a local image store. Text fields are Etsy's text with HTML entities decoded (&amp; → &); in the change records of get_snapshot_changes and get_product_history a description's old and new values are excerpts of at most 1000 characters (get_product has the full current text). url fields are the shops' and listings' Etsy pages.
 
 Photos as images: get_product_image and get_review_photo return the app's local copy when there is one, else download the photo from Etsy's image CDN; get_store_logo and get_product_video_preview always download from Etsy's image CDN (those images are never copied locally). CDN downloads cost no API quota.
 
@@ -665,7 +686,9 @@ The user's own Etsy shop: once the user signed in to Etsy in the app ("Мій м
 
 Changing the shop: every tool that writes to Etsy — create_product, update_my_product, add_product_media, update_my_store, send_prepared_product, delete_prepared_product with also_on_etsy, mark_my_order_shipped, update_my_order, consolidate_my_return_policies and every create_/update_/set_/replace_/upload_/remove_/delete_ tool with "my" in its name — needs the Etsy sign-in and works only while "allow changes" is switched on in the app's MCP window; otherwise it answers how to enable it. The exception: prepare_product, unlink_prepared_product and delete_prepared_product (without also_on_etsy) change only drafts kept inside the app — they are annotated readOnlyHint: false too, but need neither the sign-in nor the switch; sync_prepared_products reads Etsy (sign-in needed) and writes only the app's drafts, so it needs no switch either. Change only what the user asked for, prefer Etsy drafts (publish=false) unless the user said to publish, and confirm with the user before publishing a draft (create_product / send_prepared_product with publish=true, or update_my_product status "active" on a draft) or renewing an expired or sold-out listing (update_my_product status "active"): Etsy charges a $0.20 listing fee for that. Reactivating an inactive listing costs no fee.
 
-New listings: prefer prepare_product — it saves a draft inside the app (nothing is sent to Etsy, no "allow changes" needed, incomplete drafts are fine); the user reviews, edits and sends it from the app's drafts window (the "Чернетки" button in their own shop's header, shown only while they are signed in to Etsy in the app). send_prepared_product sends one to Etsy (as an Etsy draft or published) only when the user asks you to. A sent draft stays linked to its Etsy listing, and drafts the user made on Etsy's site are pulled into the app after every scan of their shop (or now with sync_prepared_products). To change such a listing, prepare_product can edit its linked draft too — Etsy changes only when the draft is sent again, and send_prepared_product then updates that same listing, never a second one. When the listing was also changed on Etsy since the last sync, send_prepared_product answers conflict: true and writes nothing: ask the user before sending again with overwrite_etsy_changes. list_prepared_products shows every draft's link and state; unlink_prepared_product forgets the link (the next send creates a new listing); delete_prepared_product deletes a draft in the app — with also_on_etsy the Etsy listing too, which can't be undone, so confirm with the user first.`
+New listings: prefer prepare_product — it saves a draft inside the app (nothing is sent to Etsy, no "allow changes" needed, incomplete drafts are fine); the user reviews, edits and sends it from the app's drafts window (the "Чернетки" button in their own shop's header, shown only while they are signed in to Etsy in the app). send_prepared_product sends one to Etsy (as an Etsy draft or published) only when the user asks you to. A sent draft stays linked to its Etsy listing, and drafts the user made on Etsy's site are pulled into the app after every scan of their shop (or now with sync_prepared_products). To change such a listing, prepare_product can edit its linked draft too — Etsy changes only when the draft is sent again, and send_prepared_product then updates that same listing, never a second one. When the listing was also changed on Etsy since the last sync, send_prepared_product answers conflict: true and writes nothing: ask the user before sending again with overwrite_etsy_changes. list_prepared_products shows every draft's link and state; unlink_prepared_product forgets the link (the next send creates a new listing); delete_prepared_product deletes a draft in the app — with also_on_etsy the Etsy listing too, which can't be undone, so confirm with the user first.
+
+Marks: the user keeps their own record of which example listings (usually a competitor's, in a tracked shop) they already made their own version of — a mark on the listing in the app: in_progress (being made) or done (we have it), with an optional note, our_product_id (their own Etsy listing made from it) and our_draft_id (the draft in the app made from it). get_product, search_products and open_link show it as mark (null = none; set_by user or assistant); search_products filters by it (mark) and sorts marked_first; list_marked_products lists every marked listing. set_product_mark sets or removes one — it changes only the app's database (no Etsy request, no sign-in, no "allow changes" switch). When the user asks you to make a similar listing from an example: check its mark first (done = already made — tell the user), prepare_product, then set_product_mark(example, in_progress, our_draft_id = the new draft_id); the app turns that mark done by itself (with our_product_id) when the draft is published. When the user says the listing is done another way, set_product_mark(example, done, our_product_id).`
 
 export function createMcpTools(deps: McpToolDeps): McpTool[] {
   const { db } = deps
@@ -737,7 +760,7 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
       name: 'search_products',
       title: 'Search tracked listings (local)',
       description:
-        "Find listings in the local database (as of the latest scans), in one tracked Etsy shop or all of them: by text (title or tags, optionally the description; case-insensitive), status, sale/new filters, with sorting and paging. Returns total and compact summaries (url, price, quantity, favorers, views and their change, featured position, review summary, new_in_latest_snapshot); get_product has everything about one listing. To search all of Etsy live, use search_market.",
+        "Find listings in the local database (as of the latest scans), in one tracked Etsy shop or all of them: by text (title or tags, optionally the description; case-insensitive), status, sale/new/mark filters, with sorting and paging. Returns total and compact summaries (url, price, quantity, favorers, views and their change, featured position, review summary, new_in_latest_snapshot, the user's mark); get_product has everything about one listing. To search all of Etsy live, use search_market.",
       inputSchema: {
         type: 'object',
         properties: {
@@ -760,12 +783,18 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
             default: false,
             description: "Only listings added by their shop's latest successful scan (a shop's first scan adds none)."
           },
+          mark: {
+            type: 'string',
+            enum: ['any', 'none', 'in_progress', 'done'],
+            default: 'any',
+            description: "The user's mark (see set_product_mark): any = every listing, none = unmarked only, in_progress / done = only listings with that mark."
+          },
           sort: {
             type: 'string',
             enum: Object.keys(SORTS),
             default: 'newest',
             description:
-              'newest = most recently listed or renewed on Etsy first. price_low/price_high use the current price (currencies are not converted). favorites_growth / new_reviews = change since the previous scan; most_reviewed = stored reviews. Unknown values sort last.'
+              'newest = most recently listed or renewed on Etsy first. price_low/price_high use the current price (currencies are not converted). favorites_growth / new_reviews = change since the previous scan; most_reviewed = stored reviews; marked_first = marked done first, then in_progress, then unmarked (each newest first). Unknown values sort last.'
           },
           limit: limitArg(50, 200),
           offset: offsetArg
@@ -785,7 +814,8 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
         if (a.new_only) all = all.filter((l) => newIds.has(l.listingId))
         const hits = filterListings(all, String(a.query ?? ''), SORTS[(a.sort as string) ?? 'newest'], {
           discountOnly: !!a.on_sale_only,
-          searchDescription: !!a.search_description
+          searchDescription: !!a.search_description,
+          mark: isMarkFilter(a.mark) ? a.mark : 'any'
         })
         const offset = num(a.offset, 0)
         const limit = num(a.limit, 50)
@@ -800,7 +830,7 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
       name: 'get_product',
       title: 'Listing details (local)',
       description:
-        "Everything the local database has about one listing of a tracked shop, as of the latest scan (also listings that have left the shop): title, full description, tags, materials, styles, url (its Etsy page), state, price (base, buyer price with VAT, the sale and its dates, shipping), quantity, favorers/views and their change, featured position, review summary, attributes (type, who made it, when, category and section ids, processing time, weight/dimensions, variations, SKUs, auto-renew, expiry), personalization questions, photos (ids, sizes, alt text, colors), videos, and dates (created_at = first listed, listed_at = last listed/renewed, first/last seen by the app, removed).",
+        "Everything the local database has about one listing of a tracked shop, as of the latest scan (also listings that have left the shop): title, full description, tags, materials, styles, url (its Etsy page), state, price (base, buyer price with VAT, the sale and its dates, shipping), quantity, favorers/views and their change, featured position, review summary, attributes (type, who made it, when, category and section ids, processing time, weight/dimensions, variations, SKUs, auto-renew, expiry), personalization questions, photos (ids, sizes, alt text, colors), videos, dates (created_at = first listed, listed_at = last listed/renewed, first/last seen by the app, removed) and the user's mark (see set_product_mark; null = none).",
       inputSchema: {
         type: 'object',
         properties: { product_id: idArg('Etsy listing id (from search_products).') },
@@ -1170,10 +1200,92 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
         additionalProperties: false
       },
       run: (a) => reviewPhoto(Number(a.review_id))
+    },
+    {
+      name: 'set_product_mark',
+      readOnly: false,
+      title: "Mark a listing as made (the app's own bookkeeping)",
+      description:
+        "Sets the user's mark on a stored listing of a tracked shop — their own bookkeeping of which example (competitor) listings they already made their own version of: in_progress = being made (e.g. a draft prepared from it), done = we have our version, none = remove the mark. Changes only the app's database (nothing on Etsy, no API request, no sign-in and no \"allow changes\" needed); the app shows the mark on the listing and can sort and filter by it. note, our_product_id (the user's own Etsy listing made from it) and our_draft_id (the draft in the app made from it, from prepare_product): omit = keep, null = clear. When a draft named in an in_progress mark is published, the app turns the mark done by itself. Answers the listing and its mark.",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          product_id: idArg('The example listing (Etsy listing id, from search_products / get_product).'),
+          status: { type: 'string', enum: ['in_progress', 'done', 'none'], description: 'in_progress, done, or none (removes the mark).' },
+          note: { type: 'string', maxLength: MARK_NOTE_MAX, description: `A short note shown with the mark (≤ ${MARK_NOTE_MAX} characters; "" or null clears it).` },
+          our_product_id: idArg("The user's own Etsy listing made from this example (listing id); null clears it."),
+          our_draft_id: idArg('The draft in the app made from this example (draft_id from prepare_product); null clears it.')
+        },
+        required: ['product_id', 'status'],
+        additionalProperties: false
+      },
+      run: (a) => {
+        const l = requireProduct(db, a.product_id)
+        if (a.our_draft_id != null && !getDraft(db, Number(a.our_draft_id))) {
+          throw new ToolInputError(`No draft ${String(a.our_draft_id)} in the app. Call list_prepared_products for the ids.`)
+        }
+        const status = isMarkStatus(a.status) ? a.status : null
+        const pick = (k: string): number | null | undefined => (a[k] === undefined ? undefined : a[k] === null ? null : Number(a[k]))
+        const mark = setListingMark(
+          db,
+          l.listingId,
+          {
+            status,
+            source: 'mcp',
+            ...(a.note !== undefined ? { note: (a.note as string | null) ?? null } : {}),
+            ...(a.our_product_id !== undefined ? { ourListingId: pick('our_product_id') } : {}),
+            ...(a.our_draft_id !== undefined ? { ourDraftId: pick('our_draft_id') } : {})
+          },
+          now()
+        )
+        deps.onMarksChanged?.([l.listingId])
+        return textResult({ product_id: l.listingId, title: l.title, store_id: l.shopId, mark: markOut(mark) })
+      }
+    },
+    {
+      name: 'list_marked_products',
+      title: "Listings the user marked (local)",
+      description:
+        "The listings the user (or you) marked with set_product_mark — the user's own record of which example listings they already made their own version of (done) or are making (in_progress) — newest change first, from the app's database: id, store, title, url (its Etsy page), status (active/removed in its shop) and the mark (note, our_product_id, our_draft_id, set_by, updated_at). Check it before making a listing from an example, so the same example isn't made twice.",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          status: { type: 'string', enum: ['in_progress', 'done'], description: 'Only this mark (omit = both).' },
+          store_id: idArg('Only listings of this store (omit = all stores).'),
+          limit: limitArg(50, 200),
+          offset: offsetArg
+        },
+        additionalProperties: false
+      },
+      run: (a) => {
+        if (a.store_id != null) requireStore(db, a.store_id)
+        const rows = listMarkedListings(db, {
+          ...(isMarkStatus(a.status) ? { status: a.status } : {}),
+          ...(a.store_id != null ? { shopId: Number(a.store_id) } : {})
+        })
+        const offset = num(a.offset, 0)
+        const limit = num(a.limit, 50)
+        return textResult({
+          total: rows.length,
+          offset,
+          products: rows.slice(offset, offset + limit).map((r) => ({
+            id: r.listingId,
+            store_id: r.shopId,
+            store_name: r.shopName,
+            title: r.title,
+            url: pageUrl(r.url),
+            status: r.removedAt == null ? 'active' : 'removed',
+            mark: markOut(r.mark)
+          }))
+        })
+      }
     }
   ]
 
-  tools.push(...createStoreTools(deps.own), ...createDraftTools(deps.own, { db, now, onChanged: deps.onDraftsChanged, pull: deps.pullDrafts }))
+  tools.push(
+    ...createStoreTools(deps.own),
+    ...createDraftTools(deps.own, { db, now, onChanged: deps.onDraftsChanged, onMarksChanged: deps.onMarksChanged, pull: deps.pullDrafts })
+  )
   tools.push(
     ...featureMcpTools({
       db,

@@ -121,3 +121,32 @@ describe('filterListings: buyer prices and discounts', () => {
     expect(ids(filterListings(bl, '', 'newest', { discountOnly: false }))).toHaveLength(4)
   })
 })
+
+describe('filterListings: marks', () => {
+  const ml = [
+    mkListing(1, { title: 'Mug A', etsyCreatedAt: 10, mark: helpers.mkMark({ status: 'in_progress' }) }),
+    mkListing(2, { title: 'Mug B', etsyCreatedAt: 50 }),
+    mkListing(3, { title: 'Plate', etsyCreatedAt: 30, mark: helpers.mkMark({ status: 'done' }) }),
+    mkListing(4, { title: 'Mug C', etsyCreatedAt: 40, mark: helpers.mkMark({ status: 'done' }) }),
+    mkListing(5, { title: 'Mug D', etsyCreatedAt: 20, mark: null }),
+    mkListing(6, { title: 'Mug E', etsyCreatedAt: 60, mark: helpers.mkMark({ status: 'in_progress' }) })
+  ]
+
+  it('"Спершу з міткою": done first, then in progress, then unmarked — each group newest first', () => {
+    expect(ids(filterListings(ml, '', 'marked'))).toEqual([4, 3, 6, 1, 2, 5])
+  })
+
+  it('the mark filter: any / none / in_progress / done; absent = all', () => {
+    expect(ids(filterListings(ml, '', 'newest', { mark: 'any' }))).toEqual([6, 2, 4, 3, 5, 1])
+    expect(ids(filterListings(ml, '', 'newest'))).toEqual([6, 2, 4, 3, 5, 1])
+    expect(ids(filterListings(ml, '', 'newest', { mark: 'none' }))).toEqual([2, 5])
+    expect(ids(filterListings(ml, '', 'newest', { mark: 'in_progress' }))).toEqual([6, 1])
+    expect(ids(filterListings(ml, '', 'newest', { mark: 'done' }))).toEqual([4, 3])
+  })
+
+  it('works together with the search, "Зі знижкою" and any sort', () => {
+    expect(ids(filterListings(ml, 'mug', 'newest', { mark: 'done' }))).toEqual([4])
+    expect(ids(filterListings(ml, 'mug', 'marked', { mark: 'any' }))).toEqual([4, 6, 1, 2, 5])
+    expect(ids(filterListings(ml, '', 'newest', { mark: 'done', discountOnly: true }))).toEqual([])
+  })
+})

@@ -22,6 +22,7 @@ import { Badge, Button, Callout, Icon, InfoTip, Loading, Modal, Stat, ZoomImage,
 import { CopyForClaudeIcon, CopyLinkButton } from './CopyLinkButton'
 import { ExternalLink } from './ExternalLink'
 import { listingGallery } from './ListingCard'
+import { MarkBlock } from './ListingMark'
 import { NowPrice, WasPrice } from './PriceParts'
 
 // The listing window: a gallery beside the price, popularity, tags, description,
@@ -1036,6 +1037,7 @@ function ListingBody({ listing: l, mine }: { listing: Listing; mine: boolean }):
               Його більше немає в продажу. Нижче — дані з останнього сканування, коли він ще був у магазині.
             </Callout>
           )}
+          <MarkBlock listing={l} />
           <PriceBlock listing={l} />
           <Popularity listing={l} />
           <Tags tags={l.tags} />

@@ -5,7 +5,7 @@ import { GLOSSARY } from '../../../src/shared/glossary'
 import type { Quota, ScanProgress, ShopSummary } from '../../../src/shared/types'
 import { App } from '../../../src/renderer/src/App'
 import { useStore } from '../../../src/renderer/src/store'
-import { mkScan, mkShop, noKey, setupRenderer, type Api } from '../helpers'
+import { mkListing, mkMark, mkScan, mkShop, noKey, setupRenderer, type Api } from '../helpers'
 
 let api: Api
 beforeEach(() => {
@@ -129,5 +129,18 @@ describe('App: Etsy sign-in pushes', () => {
     const push = api.onEtsyAuth.mock.calls[0][0] as (s: unknown) => void
     act(() => push({ loggedIn: false, redirectUri: 'https://localhost:3003/callback', pending: false, encrypted: false }))
     expect(useStore.getState().etsyAuth).toMatchObject({ loggedIn: false })
+  })
+
+  it('marks:changed from main (Claude, a published draft) refreshes the open shop\'s marks', async () => {
+    const shop = mkShop({ id: 1, lastOkScan: mkScan() })
+    api.listShops.mockResolvedValue([shop])
+    api.listListings.mockResolvedValue([mkListing(7)])
+    render(<App />)
+    await screen.findAllByTestId('listing-card')
+    expect(screen.queryByTestId('card-mark')).toBeNull()
+    api.listListings.mockResolvedValue([mkListing(7, { mark: mkMark({ source: 'mcp' }) })])
+    const push = api.onMarksChanged.mock.calls[0][0] as (e: { listingIds: number[] }) => void
+    await act(async () => push({ listingIds: [7] }))
+    expect(await screen.findByTestId('card-mark')).toHaveTextContent('Реалізовано')
   })
 })

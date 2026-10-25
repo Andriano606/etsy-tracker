@@ -13,6 +13,7 @@ import {
   notifyDraftsChanged,
   notifyShopsChanged,
   onReviewSyncDone,
+  pullEtsyDrafts,
   registerIpc,
   startImageSync,
   type IpcContext
@@ -197,6 +198,9 @@ if (!app.requestSingleInstanceLock()) {
     // The local MCP server "etsy-tracker" (off until enabled in the MCP modal):
     // tools over the same db (local reads), live Etsy reads, and own-shop
     // writes; photos through the same handler as the window.
+    // Set once the IPC context exists (below); the MCP tools and the review
+    // syncer only call into it later.
+    let ctxRef: IpcContext | null = null
     const mcpTools = createMcpTools({
       db,
       // The user's own store (signed in via "Мій магазин"); writes only while
@@ -209,6 +213,9 @@ if (!app.requestSingleInstanceLock()) {
         accessToken: () => etsyAuth!.getAccessToken()
       },
       onDraftsChanged: () => notifyDraftsChanged({ db, getWindow }),
+      // One Etsy-drafts pull at a time, shared with the app's (scan, "Синхронізувати з Etsy").
+      pullDrafts: () =>
+        ctxRef ? pullEtsyDrafts(ctxRef) : Promise.resolve({ ok: false as const, error: 'The app is still starting.' }),
       readImage: async (url) => {
         const res = await imageHandler({ url } as Request)
         if (!res.ok) return null
@@ -231,7 +238,6 @@ if (!app.requestSingleInstanceLock()) {
 
     // Reviews of the whole shop, after each ok scan (ipc.ts) or on demand;
     // resumable and capped per run (reviewSync.ts).
-    let ctxRef: IpcContext | null = null
     const reviews = createReviewSyncer({
       db,
       client,
@@ -259,7 +265,8 @@ if (!app.requestSingleInstanceLock()) {
       buyerCountry,
       mcpSettings,
       mcp,
-      etsyAuth
+      etsyAuth,
+      cdnFetch
     }
     ctxRef = ctx
     registerIpc(ctx)

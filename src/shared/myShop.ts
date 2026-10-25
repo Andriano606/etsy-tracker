@@ -261,6 +261,29 @@ export function newListingForm(i: NewListingInput): Record<string, string | numb
 
 // ------------------------------------------------------- drafts in the app
 
+/**
+ * updateListing's form for a draft linked to an Etsy listing (Etsy's names):
+ * every DraftFields field updateListing takes. Price, quantity and the
+ * processing profile (readiness_state_id) aren't among them — the OAS keeps
+ * those on the inventory's offerings (updateListingInventory).
+ */
+export function draftUpdateForm(f: DraftFields): Record<string, string | number | boolean | string[]> {
+  const out: Record<string, string | number | boolean | string[]> = {
+    title: f.title.trim(),
+    description: f.description,
+    tags: f.tags,
+    materials: f.materials,
+    who_made: f.whoMade,
+    when_made: f.whenMade,
+    is_supply: f.isSupply,
+    should_auto_renew: f.shouldAutoRenew,
+    type: f.type
+  }
+  if (f.taxonomyId != null) out.taxonomy_id = f.taxonomyId
+  if (f.type === 'physical' && f.shippingProfileId != null) out.shipping_profile_id = f.shippingProfileId
+  return out
+}
+
 export const EMPTY_DRAFT_FIELDS: DraftFields = {
   type: 'download',
   title: '',

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { ListingModal } from '../../../src/renderer/src/components/ListingModal'
 import { useStore } from '../../../src/renderer/src/store'
@@ -63,6 +63,38 @@ describe('ListingModal', () => {
     render(<ListingModal />)
     fireEvent.click(screen.getByText('Відкрити на Etsy'))
     expect(api.openExternal).toHaveBeenCalledWith('https://www.etsy.com/listing/3/x')
+  })
+
+  it('"Копіювати посилання" copies the clean link, says "Скопійовано", then is back', async () => {
+    vi.useFakeTimers()
+    try {
+      useStore.setState({ detailListing: mkListing(3) })
+      render(<ListingModal />)
+      const btn = screen.getByTestId('copy-listing-link')
+      expect(btn).toHaveTextContent('Копіювати посилання')
+      act(() => void fireEvent.mouseEnter(btn.closest('.ui-tooltip-anchor')!))
+      expect(screen.getByRole('tooltip')).toHaveTextContent('вставте його Claude, і він знайде товар через MCP')
+      await act(async () => fireEvent.click(btn))
+      expect(api.copyText).toHaveBeenCalledWith('https://www.etsy.com/listing/3')
+      expect(btn).toHaveTextContent('Скопійовано')
+      expect(btn).toHaveClass('copied')
+      expect(useStore.getState().detailListing).not.toBeNull()
+      await act(async () => void vi.advanceTimersByTime(2100))
+      expect(btn).toHaveTextContent('Копіювати посилання')
+      expect(btn).not.toHaveClass('copied')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('"Копіювати посилання" refused → "Не вдалося скопіювати"', async () => {
+    api.copyText.mockResolvedValueOnce(false)
+    useStore.setState({ detailListing: mkListing(5) })
+    render(<ListingModal />)
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Копіювати посилання' })))
+    expect(api.copyText).toHaveBeenCalledWith('https://www.etsy.com/listing/5')
+    expect(screen.getByTestId('copy-listing-link')).toHaveTextContent('Не вдалося скопіювати')
+    expect(screen.getByTestId('copy-listing-link')).toHaveClass('copy-failed')
   })
 
   it('closes', () => {

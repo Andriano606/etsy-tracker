@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { ListingCard, PriceTag } from '../../../src/renderer/src/components/ListingCard'
 import { GLOSSARY } from '../../../src/shared/glossary'
@@ -208,5 +208,61 @@ describe('ListingCard photo → the image viewer', () => {
   it('no photo → no magnifier', () => {
     render(<ListingCard listing={mkListing(1, { images: [] })} onOpen={vi.fn()} />)
     expect(screen.queryByRole('button', { name: /^Відкрити фото на весь розмір/ })).toBeNull()
+  })
+})
+
+describe('ListingCard "Копіювати посилання" (for pasting to Claude)', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  const copyBtn = (title = 'Mug'): HTMLElement => screen.getByRole('button', { name: `Копіювати посилання на товар: ${title}` })
+
+  it('copies the clean listing link; a sibling of the card button, so the listing does not open', async () => {
+    const api = setupRenderer()
+    const onOpen = vi.fn()
+    render(<ListingCard listing={mkListing(42, { title: 'Mug' })} onOpen={onOpen} />)
+    const card = screen.getByTestId('listing-card')
+    const btn = copyBtn()
+    expect(card.contains(btn)).toBe(false)
+    expect(btn.closest('.listing-card-host')).toBe(card.parentElement)
+    await act(async () => fireEvent.click(btn))
+    expect(api.copyText).toHaveBeenCalledWith('https://www.etsy.com/listing/42')
+    expect(onOpen).not.toHaveBeenCalled()
+    // Enter on the focused icon doesn't reach the card either.
+    fireEvent.keyDown(btn, { key: 'Enter' })
+    expect(onOpen).not.toHaveBeenCalled()
+  })
+
+  it('"Скопійовано" with a check for ~2 s, then back', async () => {
+    vi.useFakeTimers()
+    render(<ListingCard listing={mkListing(7, { title: 'Mug' })} onOpen={vi.fn()} />)
+    await act(async () => fireEvent.click(copyBtn()))
+    expect(screen.getByRole('status')).toHaveTextContent('Скопійовано')
+    expect(copyBtn()).toHaveAttribute('title', 'Скопійовано')
+    expect(copyBtn()).toHaveClass('copied')
+    expect(copyBtn().closest('.card-copy')).toHaveClass('is-flash')
+    await act(async () => void vi.advanceTimersByTime(2100))
+    expect(screen.getByRole('status')).toHaveTextContent('')
+    expect(copyBtn()).not.toHaveClass('copied')
+    expect(copyBtn().getAttribute('title')).toMatch(/^Копіювати посилання/)
+    expect(copyBtn().closest('.card-copy')).not.toHaveClass('is-flash')
+  })
+
+  it('a refused copy says "Не вдалося скопіювати" (also when main throws)', async () => {
+    const api = setupRenderer()
+    api.copyText.mockResolvedValueOnce(false)
+    render(<ListingCard listing={mkListing(8, { title: 'Mug' })} onOpen={vi.fn()} />)
+    await act(async () => fireEvent.click(copyBtn()))
+    expect(screen.getByRole('status')).toHaveTextContent('Не вдалося скопіювати')
+    expect(copyBtn()).toHaveClass('copy-failed')
+    api.copyText.mockRejectedValueOnce(new Error('boom'))
+    await act(async () => fireEvent.click(copyBtn()))
+    expect(screen.getByRole('status')).toHaveTextContent('Не вдалося скопіювати')
+  })
+
+  it('a card without a photo still has it (in the corner the magnifier would take)', () => {
+    render(<ListingCard listing={mkListing(9, { title: 'Mug', images: [] })} onOpen={vi.fn()} />)
+    expect(copyBtn().closest('.card-copy')).toHaveClass('card-copy--solo')
   })
 })

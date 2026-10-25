@@ -25,6 +25,9 @@ const newDraft = async () => {
 }
 // Opens the first draft of the list (fixtures with drafts only; otherwise the list stays).
 const firstDraft = async () => { await openDrafts(); const b = __h.find('Відкрити', '.my-rows button'); if (b) await __h.click(b); await __h.sleep(300) }
+// Opens the n-th draft of the list (fake-api.cjs sampleDrafts: 3 changed, 4 from Etsy, 5 conflict, 6 deleted on Etsy, 7 send failed).
+const nthDraft = async (n) => { await openDrafts(); const bs = [...document.querySelectorAll('.my-rows button')].filter((b) => /Відкрити/.test(b.textContent)); if (bs[n]) await __h.click(bs[n]); await __h.sleep(500) }
+const bar = async (label) => { const b = __h.find(label, '.my-savebar button'); if (b && !b.disabled) await __h.click(b); await __h.sleep(400) }
 `
 
 const scene = (name, code) => ({ name, code: ACTION + code })
@@ -109,6 +112,22 @@ module.exports = [
     'draft-send-error',
     "await firstDraft(); const b = __h.find('Надіслати на Etsy як чернетку', '.my-savebar button'); if (b && !b.disabled) { await __h.click(b); await __h.click('Підтвердити', '[role=alertdialog] button'); await __h.sleep(800) }"
   ),
+  // ---- drafts linked to Etsy listings (fake-api.cjs sampleDrafts) ----
+  scene('drafts-linked-list', "await openDrafts(); await __h.scroll('.ui-modal-body', 99999)"),
+  scene('drafts-pull-running', "await openDrafts(); const b = __h.find('Синхронізувати з Etsy', 'button'); if (b) await __h.click(b); await __h.sleep(300)"),
+  scene('draft-linked-sent', 'await nthDraft(1)'),
+  scene('draft-linked-changed', 'await nthDraft(3)'),
+  scene('draft-linked-changed-bottom', "await nthDraft(3); await __h.scroll('.ui-modal-body', 99999)"),
+  scene('draft-update-confirm', "await nthDraft(3); await bar('Оновити на Etsy')"),
+  scene('draft-from-etsy', 'await nthDraft(4)'),
+  scene('draft-from-etsy-files', "await nthDraft(4); const f = document.querySelector('.draft-files'); f && f.scrollIntoView({ block: 'center' }); await __h.sleep(300)"),
+  scene('draft-conflict', 'await nthDraft(5)'),
+  scene('draft-conflict-ask', "await nthDraft(5); await bar('Оновити на Etsy'); await __h.click('Оновити на Etsy', '[role=alertdialog] button'); await __h.sleep(700)"),
+  scene('draft-removed-on-etsy', 'await nthDraft(6)'),
+  scene('draft-removed-send-new', "await nthDraft(6); await __h.click('Надіслати як новий товар', 'button'); await __h.sleep(400)"),
+  scene('draft-send-failed', 'await nthDraft(7)'),
+  scene('draft-delete-menu', "await nthDraft(1); await __h.clickSel('.draft-delete-menu'); await __h.sleep(300)"),
+  scene('draft-delete-on-etsy-confirm', "await nthDraft(1); await __h.clickSel('.draft-delete-menu'); await __h.click('Видалити і на Etsy', '[role=menuitem]'); await __h.sleep(300)"),
   // A new draft with something typed + × : the "Закрити без збереження?" question.
   scene(
     'draft-dirty-close',

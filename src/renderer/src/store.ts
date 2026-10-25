@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type {
+  DraftPullState,
   EtsyAuthStatus,
   ListingDraft,
   ImageCounts,
@@ -114,6 +115,8 @@ interface AppState {
   draftsView: null | 'list' | { draftId: number | null }
   /** Listing drafts kept in the app (main pushes `drafts:changed`). */
   drafts: ListingDraft[]
+  /** The pull of the own shop's Etsy drafts into the app (main pushes `drafts:pull`). */
+  draftPull: DraftPullState
   /** The shop whose "ℹ️ Більше" window (feature shop panels) is open. */
   shopPanelsFor: number | null
   /** The open sidebar feature window (TOP_MODALS id). */
@@ -164,6 +167,9 @@ interface AppState {
   openShopPanels: (shopId: number | null) => void
   openFeatureModal: (id: string | null) => void
   setDrafts: (d: ListingDraft[]) => void
+  setDraftPull: (s: DraftPullState) => void
+  /** "Синхронізувати з Etsy": pull the own shop's Etsy drafts now (never throws; the outcome lands in `draftPull`). */
+  pullDrafts: () => Promise<void>
   setEtsyAuth: (s: EtsyAuthStatus) => void
   setMcpStatus: (s: McpStatus) => void
   setShowAddShop: (v: boolean) => void
@@ -174,6 +180,9 @@ interface AppState {
   requestConfirm: (message: string, opts?: ConfirmOptions) => Promise<boolean>
   resolveConfirm: (ok: boolean) => void
 }
+
+/** No pull of Etsy's drafts yet (what main answers before the first one). */
+export const IDLE_DRAFT_PULL: DraftPullState = { running: false, lastAt: null, lastSummary: null, error: null }
 
 /** The signed-in user's own shop id (Etsy sign-in), or null. */
 export function ownShopId(s: Pick<AppState, 'etsyAuth'>): number | null {
@@ -210,6 +219,7 @@ export const useStore = create<AppState>((set, get) => ({
   showMyShop: false,
   draftsView: null,
   drafts: [],
+  draftPull: IDLE_DRAFT_PULL,
   shopPanelsFor: null,
   featureModal: null,
   showAddShop: false,
@@ -451,6 +461,24 @@ export const useStore = create<AppState>((set, get) => ({
   openShopPanels: (shopPanelsFor) => set({ shopPanelsFor }),
   openFeatureModal: (featureModal) => set({ featureModal }),
   setDrafts: (drafts) => set({ drafts }),
+  setDraftPull: (draftPull) => set({ draftPull }),
+  pullDrafts: async () => {
+    if (get().draftPull.running) return
+    set({ draftPull: { ...get().draftPull, running: true, error: null } })
+    let next: DraftPullState
+    try {
+      const res = await window.api.pullDrafts()
+      next = res.ok
+        ? { running: false, lastAt: Date.now(), lastSummary: res.value, error: null }
+        : { ...get().draftPull, running: false, error: res.error }
+    } catch (e) {
+      next = { ...get().draftPull, running: false, error: e instanceof Error ? e.message : String(e) }
+    }
+    // Main pushes the same state (`drafts:pull`); a push that came first is replaced by the answer.
+    set({ draftPull: next })
+    const drafts = await window.api.listDrafts().catch(() => null)
+    if (drafts) set({ drafts })
+  },
   setEtsyAuth: (etsyAuth) => set({ etsyAuth }),
   setMcpStatus: (mcpStatus) => set({ mcpStatus }),
   setShowAddShop: (showAddShop) => set({ showAddShop }),

@@ -8,8 +8,11 @@ import type { WebContents } from 'electron'
 import type {
   BuyerCountryResult,
   CreateListingResult,
+  DraftPullState,
+  DraftPullSummary,
   ListingDraft,
   SaveDraftInput,
+  SaveDraftResult,
   EtsyAuthStatus,
   PickedFile,
   ShippingOption,
@@ -59,7 +62,20 @@ import {
 } from './db'
 import { EtsyApiError, type EtsyClient } from './etsyApi'
 import { type EtsyAuth, EtsyAuthError } from './etsyAuth'
-import { type DraftMediaSlot, DraftError, deleteDraft, getDraftMediaData, listDrafts, saveDraft, sendDraft } from './drafts'
+import {
+  type DraftMediaSlot,
+  DraftError,
+  StaleDraftError,
+  deleteDraft,
+  deleteDraftEverywhere,
+  getDraftMediaData,
+  listDrafts,
+  saveDraft,
+  sendDraft,
+  unlinkDraft
+} from './drafts'
+import { importEtsyDrafts } from './draftImport'
+import { downloadImage } from './imageSync'
 import {
   type FileRegistry,
   createFileRegistry,
@@ -72,7 +88,7 @@ import {
   saveMyListing,
   saveMyShop
 } from './myShop'
-import { IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, isMyListingState } from '../shared/myShop'
+import { IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, isMyListingState, missingScopes } from '../shared/myShop'
 import { type ImageStore, describeStoreError } from './imageStore'
 import type { ImageSyncer } from './imageSync'
 import type { McpService } from './mcpServer'
@@ -134,6 +150,10 @@ export interface IpcContext {
   writeFile?: (path: string, data: Uint8Array) => Promise<void>
   /** Where "Зберегти як" starts (tests inject one; else the Downloads folder). */
   downloadsDir?: () => string
+  /** The seller category tree (made by registerIpc; tests inject one). */
+  taxonomy?: () => Promise<TaxonomyOption[]>
+  /** Fetch for Etsy's CDN (index.ts: net.fetch bypassing custom protocols; tests inject one; else global fetch). */
+  cdnFetch?: typeof fetch
 }
 
 /**
@@ -172,6 +192,60 @@ export function notifyDraftsChanged(ctx: Pick<IpcContext, 'db' | 'getWindow'>): 
   sendToRenderer(ctx, 'drafts:changed', listDrafts(ctx.db))
 }
 
+const pulls = new WeakMap<object, { state: DraftPullState; running: Promise<MyShopResult<DraftPullSummary>> | null }>()
+
+/** The last/current pull of the user's Etsy drafts (pushed as 'drafts:pull'). */
+export function draftPullState(ctx: object): DraftPullState {
+  return pulls.get(ctx)?.state ?? { running: false, lastAt: null, lastSummary: null, error: null }
+}
+
+/**
+ * Pull the user's Etsy drafts into the app (draftImport.ts) — one at a time
+ * (a call while one runs gets that run's answer). Pushes 'drafts:pull' when it
+ * starts and ends, and 'drafts:changed' afterwards. Never throws.
+ */
+export function pullEtsyDrafts(ctx: IpcContext): Promise<MyShopResult<DraftPullSummary>> {
+  const entry = pulls.get(ctx) ?? { state: draftPullState(ctx), running: null }
+  pulls.set(ctx, entry)
+  if (entry.running) return entry.running
+  const setState = (st: DraftPullState): void => {
+    entry.state = st
+    sendToRenderer(ctx, 'drafts:pull', st)
+  }
+  setState({ ...entry.state, running: true })
+  const cdn = ctx.cdnFetch ?? ((...a: Parameters<typeof fetch>) => fetch(...a))
+  const run = (async (): Promise<MyShopResult<DraftPullSummary>> => {
+    try {
+      const summary = await importEtsyDrafts({
+        db: ctx.db,
+        client: ctx.client,
+        auth: ctx.etsyAuth,
+        taxonomy: ctx.taxonomy,
+        fetchImage: (url) =>
+          downloadImage(url, {
+            fetch: cdn,
+            sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+            timeoutMs: 30_000,
+            retries: 2,
+            maxBytes: 20 * 1024 * 1024
+          }),
+        now: Date.now
+      })
+      setState({ running: false, lastAt: Date.now(), lastSummary: summary, error: null })
+      return { ok: true, value: summary }
+    } catch (e) {
+      const error = `Не вдалося синхронізувати чернетки з Etsy: ${myShopErrorMessage(e)}`
+      setState({ running: false, lastAt: Date.now(), lastSummary: entry.state.lastSummary, error })
+      return { ok: false, error }
+    } finally {
+      entry.running = null
+      notifyDraftsChanged(ctx)
+    }
+  })()
+  entry.running = run
+  return run
+}
+
 /** Ping Etsy with the given (unsaved) key, or the stored one. */
 export async function testKey(
   ctx: Pick<IpcContext, 'client' | 'keyStore'>,
@@ -204,6 +278,7 @@ export async function scanAll(ctx: IpcContext): Promise<ScanOutcome[]> {
     if (last.ok) {
       startImageSync(ctx, s.id, false, true)
       startReviewSync(ctx, s.id, last.scan.id)
+      startDraftPull(ctx, s.id)
     }
     // A bad key fails every shop the same way — stop instead of repeating it.
     if (!last.ok && /API-ключ/.test(last.error)) break
@@ -230,6 +305,22 @@ export function startImageSync(
  */
 export function startReviewSync(ctx: Pick<IpcContext, 'reviews'>, shopId: number, scanId?: number | null): void {
   ctx.reviews?.sync(shopId, { scanId: scanId ?? null }).catch(() => undefined)
+}
+
+/**
+ * After a successful scan of the user's OWN shop (signed in with listings_r):
+ * pull its Etsy drafts into the app in the background (pullEtsyDrafts — one
+ * at a time). Never awaited by the scan and never able to fail it; any other
+ * shop, or a sign-in that can't read drafts, starts nothing.
+ */
+export function startDraftPull(ctx: IpcContext, shopId: number): void {
+  try {
+    const st = ctx.etsyAuth.status()
+    if (!st.loggedIn || st.shopId !== shopId || missingScopes(st.scopes, ['listings_r']).length) return
+    void pullEtsyDrafts(ctx).catch(() => undefined)
+  } catch {
+    // a broken sign-in store must not fail the scan
+  }
 }
 
 /** An id from the renderer as a positive safe integer, else null (the handler answers "nothing"). */
@@ -369,6 +460,7 @@ export function registerIpc(ctx: IpcContext): void {
         // A scan refreshes everything: photos (failed ones retried too) and reviews follow it.
         startImageSync(ctx, shopId, false, true)
         startReviewSync(ctx, shopId, res.scan.id)
+        startDraftPull(ctx, shopId)
       }
       return res
     } finally {
@@ -468,7 +560,7 @@ export function registerIpc(ctx: IpcContext): void {
   // "Новий лістинг": native file picking (the renderer gets tokens, never paths),
   // the category tree, shipping/processing profiles, and the creation itself.
   const files = ctx.files ?? (ctx.files = createFileRegistry())
-  const taxonomy = createTaxonomyCache(client)
+  const taxonomy = ctx.taxonomy ?? (ctx.taxonomy = createTaxonomyCache(client))
   const openDialog =
     ctx.showOpenDialog ??
     ((opts: Electron.OpenDialogOptions) => {
@@ -508,7 +600,7 @@ export function registerIpc(ctx: IpcContext): void {
   )
   // Drafts in the app ("📝 Чернетки"): saved with their media, reviewed, then sent.
   ipcMain.handle('drafts:list', (): ListingDraft[] => listDrafts(db))
-  ipcMain.handle('drafts:save', async (_e, input: SaveDraftInput): Promise<MyShopResult<ListingDraft>> => {
+  ipcMain.handle('drafts:save', async (_e, input: SaveDraftInput): Promise<SaveDraftResult> => {
     try {
       if (!input || typeof input !== 'object' || !input.fields) throw new DraftError('Некоректні дані чернетки.')
       const read = ctx.readFile ?? ((p: string) => readFile(p) as Promise<Uint8Array<ArrayBuffer>>)
@@ -526,14 +618,23 @@ export function registerIpc(ctx: IpcContext): void {
       }
       const id = input.id != null ? positiveId(input.id) : undefined
       if (input.id != null && id == null) throw new DraftError('Некоректний id чернетки.')
+      const expected = Number(input.expectedUpdatedAt)
       const draft = saveDraft(
         db,
-        { id: id ?? undefined, source: 'app', fields: input.fields, photos: await slots(input.photos), files: await slots(input.files) },
+        {
+          id: id ?? undefined,
+          source: 'app',
+          fields: input.fields,
+          photos: await slots(input.photos),
+          files: await slots(input.files),
+          ...(input.expectedUpdatedAt != null && Number.isFinite(expected) ? { expectedUpdatedAt: expected } : {})
+        },
         Date.now()
       )
       notifyDraftsChanged(ctx)
       return { ok: true, value: draft }
     } catch (e) {
+      if (e instanceof StaleDraftError) return { ok: false, error: e.message, stale: true }
       return { ok: false, error: e instanceof DraftError ? e.message : myShopErrorMessage(e) }
     }
   })
@@ -560,20 +661,36 @@ export function registerIpc(ctx: IpcContext): void {
       return { ok: false, error: `Не вдалося зберегти файл: ${e instanceof Error ? e.message : String(e)}` }
     }
   })
-  ipcMain.handle('drafts:delete', (_e, id: unknown): boolean => {
-    const n = positiveId(id)
-    const ok = n != null && deleteDraft(db, n)
-    if (ok) notifyDraftsChanged(ctx)
-    return ok
-  })
-  ipcMain.handle('drafts:send', async (_e, id: unknown, publish: unknown): Promise<CreateListingResult> => {
+  // Delete in the app only, or ({onEtsy: true}) the linked Etsy listing too.
+  ipcMain.handle(
+    'drafts:delete',
+    async (_e, id: unknown, opts?: unknown): Promise<MyShopResult<{ deletedOnEtsy: boolean }>> => {
+      const n = positiveId(id)
+      if (n == null) return { ok: false, error: 'Некоректний id чернетки.' }
+      const onEtsy = !!opts && typeof opts === 'object' && (opts as { onEtsy?: unknown }).onEtsy === true
+      try {
+        if (onEtsy) return await deleteDraftEverywhere({ ...own, db }, n)
+        return deleteDraft(db, n) ? { ok: true, value: { deletedOnEtsy: false } } : { ok: false, error: `Чернетки #${n} немає.` }
+      } catch (e) {
+        return { ok: false, error: myShopErrorMessage(e) }
+      } finally {
+        notifyDraftsChanged(ctx)
+      }
+    }
+  )
+  // A new listing, or an update of the linked one ({overwrite: true} = replace changes made on Etsy).
+  ipcMain.handle('drafts:send', async (_e, id: unknown, publish: unknown, opts?: unknown): Promise<CreateListingResult> => {
     const n = positiveId(id)
     if (n == null) return { ok: false, error: 'Некоректний id чернетки.' }
+    const o = opts && typeof opts === 'object' ? (opts as { overwrite?: unknown; expectedUpdatedAt?: unknown }) : {}
+    const overwrite = o.overwrite === true
+    const expected = typeof o.expectedUpdatedAt === 'number' && Number.isFinite(o.expectedUpdatedAt) ? o.expectedUpdatedAt : undefined
     try {
       return await sendDraft(
         { ...own, db, onProgress: (p) => sendToRenderer(ctx, 'myShop:createProgress', p) },
         n,
-        publish === true
+        publish === true,
+        { overwrite, ...(expected != null ? { expectedUpdatedAt: expected } : {}) }
       )
     } catch (e) {
       return { ok: false, error: myShopErrorMessage(e) }
@@ -581,6 +698,21 @@ export function registerIpc(ctx: IpcContext): void {
       notifyDraftsChanged(ctx)
     }
   })
+  // Forget the Etsy listing (e.g. deleted there) so the draft can be sent as a new one.
+  ipcMain.handle('drafts:unlink', (_e, id: unknown): MyShopResult<ListingDraft> => {
+    const n = positiveId(id)
+    if (n == null) return { ok: false, error: 'Некоректний id чернетки.' }
+    try {
+      const draft = unlinkDraft(db, n, Date.now())
+      notifyDraftsChanged(ctx)
+      return { ok: true, value: draft }
+    } catch (e) {
+      return { ok: false, error: e instanceof DraftError ? e.message : myShopErrorMessage(e) }
+    }
+  })
+  // Pull the own shop's Etsy drafts into the app (also after a scan of the own shop).
+  ipcMain.handle('drafts:pull', (): Promise<MyShopResult<DraftPullSummary>> => pullEtsyDrafts(ctx))
+  ipcMain.handle('drafts:pullState', (): DraftPullState => draftPullState(ctx))
   // Every feature's actions through one channel: feature:call(featureId, action, args)
   // → {ok, value} | {ok: false, error} (features/*.ts; progress via feature:event).
   const featureCtx: FeatureCtx = {

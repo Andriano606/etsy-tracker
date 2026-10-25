@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest'
 import { waitFor } from '@testing-library/react'
-import { useStore } from '../../src/renderer/src/store'
+import { IDLE_DRAFT_PULL, useStore } from '../../src/renderer/src/store'
 import type { ScanOutcome } from '../../src/shared/types'
-import { etsyIn, etsyOut, idleReviews, idleSync, mcpOff, mcpOn, minioDefault, mkChange, mkListing, mkPromotion, mkReview, mkScan, mkShop, setupRenderer, type Api } from './helpers'
+import { etsyIn, etsyOut, idlePull, idleReviews, idleSync, mcpOff, mcpOn, minioDefault, mkChange, mkDraft, mkListing, mkPromotion, mkReview, mkScan, mkShop, setupRenderer, type Api } from './helpers'
 
 let api: Api
 beforeEach(() => {
@@ -222,5 +222,53 @@ describe('store: the full-size image viewer', () => {
     expect(s().viewer).toBeNull()
     s().openImage([{ src: '' }])
     expect(s().viewer).toBeNull()
+  })
+})
+
+describe('store: pulling the Etsy drafts in', () => {
+  beforeEach(() => {
+    useStore.setState({ draftPull: IDLE_DRAFT_PULL })
+  })
+
+  it('starts idle; setDraftPull takes what main pushes', () => {
+    expect(useStore.getState().draftPull).toEqual(idlePull)
+    useStore.getState().setDraftPull({ running: true, lastAt: null, lastSummary: null, error: null })
+    expect(useStore.getState().draftPull.running).toBe(true)
+  })
+
+  it('pullDrafts: running while it runs, then the summary; the drafts are re-read', async () => {
+    let finish: (v: { ok: true; value: { imported: number; updated: number; removed: number; conflicts: number; errors: string[] } }) => void = () => {}
+    api.pullDrafts.mockImplementation(() => new Promise((r) => (finish = r)))
+    api.listDrafts.mockResolvedValue([mkDraft(3, { source: 'etsy' })])
+    useStore.setState({ draftPull: { ...IDLE_DRAFT_PULL, error: 'old failure' } })
+    const p = useStore.getState().pullDrafts()
+    expect(useStore.getState().draftPull).toMatchObject({ running: true, error: null })
+    // A second click while it runs does nothing.
+    await useStore.getState().pullDrafts()
+    expect(api.pullDrafts).toHaveBeenCalledTimes(1)
+    finish({ ok: true, value: { imported: 1, updated: 2, removed: 0, conflicts: 0, errors: [] } })
+    await p
+    const s = useStore.getState()
+    expect(s.draftPull).toMatchObject({ running: false, error: null, lastSummary: { imported: 1, updated: 2 } })
+    expect(s.draftPull.lastAt).toEqual(expect.any(Number))
+    expect(s.drafts.map((d) => d.id)).toEqual([3])
+  })
+
+  it('pullDrafts: a refused pull keeps the last summary and says why; a throw too', async () => {
+    const summary = { imported: 1, updated: 0, removed: 0, conflicts: 0, errors: [] }
+    useStore.setState({ draftPull: { running: false, lastAt: 5, lastSummary: summary, error: null } })
+    api.pullDrafts.mockResolvedValueOnce({ ok: false, error: 'Увійдіть в Etsy.' })
+    await useStore.getState().pullDrafts()
+    expect(useStore.getState().draftPull).toEqual({ running: false, lastAt: 5, lastSummary: summary, error: 'Увійдіть в Etsy.' })
+    api.pullDrafts.mockRejectedValueOnce(new Error('IPC gone'))
+    await useStore.getState().pullDrafts()
+    expect(useStore.getState().draftPull).toMatchObject({ running: false, error: 'IPC gone', lastSummary: summary })
+  })
+
+  it('pullDrafts: a failing list read leaves the drafts as they were', async () => {
+    useStore.setState({ drafts: [mkDraft(1)] })
+    api.listDrafts.mockRejectedValueOnce(new Error('x'))
+    await useStore.getState().pullDrafts()
+    expect(useStore.getState().drafts.map((d) => d.id)).toEqual([1])
   })
 })

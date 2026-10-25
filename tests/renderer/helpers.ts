@@ -4,7 +4,12 @@ import type {
   BuyerCountryResult,
   CreateListingProgress,
   CreateListingResult,
+  DeleteDraftOptions,
+  DraftEtsyLink,
+  DraftPullState,
+  DraftPullSummary,
   ListingDraft,
+  SendDraftOptions,
   PickedFile,
   SaveDraftInput,
   ShippingOption,
@@ -42,7 +47,7 @@ import type {
   ShopSummary,
   StatsRange
 } from '../../src/shared/types'
-import { useStore } from '../../src/renderer/src/store'
+import { IDLE_DRAFT_PULL, useStore } from '../../src/renderer/src/store'
 
 export const noKey: KeyStatus = { hasKey: false, masked: null, encrypted: false }
 export const withKey: KeyStatus = { hasKey: true, masked: 'abcd…wxyz', encrypted: true }
@@ -112,6 +117,24 @@ export const mkMyShop = (over: Partial<MyShopProfile> = {}): MyShopProfile => ({
 })
 
 /** A draft kept in the app (digital, ready to send as an Etsy draft). */
+/** The Etsy link of a sent draft (in sync, an Etsy draft unless `over` says otherwise). */
+export const mkDraftLink = (listingId: number, over: Partial<DraftEtsyLink> = {}): DraftEtsyLink => ({
+  listingId,
+  state: 'draft',
+  url: null,
+  editUrl: `https://www.etsy.com/your/shops/me/listing-editor/edit/${listingId}`,
+  dirty: false,
+  syncedAt: Date.UTC(2026, 9, 23, 12),
+  etsyUpdatedAt: Math.floor(Date.UTC(2026, 9, 23, 12) / 1000),
+  changedOnEtsy: false,
+  removed: false,
+  shopId: null,
+  unverified: false,
+  incomplete: false,
+  ...over
+})
+
+/** A draft; with `sentListingId` (and no `etsy`) it is linked like main reports it (active when sentPublished). */
 export const mkDraft = (id: number, over: Partial<ListingDraft> = {}): ListingDraft => ({
   id,
   source: 'app',
@@ -142,8 +165,14 @@ export const mkDraft = (id: number, over: Partial<ListingDraft> = {}): ListingDr
   sentPublished: null,
   lastError: null,
   problems: [],
+  etsy:
+    over.sentListingId != null
+      ? mkDraftLink(over.sentListingId, over.sentPublished ? { state: 'active', url: `https://www.etsy.com/listing/${over.sentListingId}` } : {})
+      : null,
   ...over
 })
+
+export const idlePull: DraftPullState = { running: false, lastAt: null, lastSummary: null, error: null }
 
 /** The MCP server as main reports it before it was ever enabled (no token yet). */
 export const mcpOff: McpStatus = {
@@ -485,17 +514,31 @@ export function makeApi() {
       ok: true,
       value: mkDraft(input.id ?? 501, { fields: input.fields })
     })),
-    deleteDraft: vi.fn(async (_id: number): Promise<boolean> => true),
+    deleteDraft: vi.fn(
+      async (_id: number, _opts?: DeleteDraftOptions): Promise<MyShopResult<{ deletedOnEtsy: boolean }>> => ({
+        ok: true,
+        value: { deletedOnEtsy: false }
+      })
+    ),
     saveDraftMedia: vi.fn(async (_id: number): Promise<MyShopResult<{ path: string } | null>> => ({ ok: true, value: { path: '/tmp/file' } })),
     sendDraft: vi.fn(
-      async (_id: number, publish: boolean): Promise<CreateListingResult> => ({
+      async (_id: number, publish: boolean, _opts?: SendDraftOptions): Promise<CreateListingResult> => ({
         ok: true,
         listingId: 4242,
         published: publish,
         warnings: []
       })
     ),
+    unlinkDraft: vi.fn(async (id: number): Promise<MyShopResult<ListingDraft>> => ({ ok: true, value: mkDraft(id) })),
+    pullDrafts: vi.fn(
+      async (): Promise<MyShopResult<DraftPullSummary>> => ({
+        ok: true,
+        value: { imported: 0, updated: 0, removed: 0, conflicts: 0, errors: [] }
+      })
+    ),
+    getDraftsPullState: vi.fn(async (): Promise<DraftPullState> => idlePull),
     onDraftsChanged: vi.fn(() => () => {}),
+    onDraftsPull: vi.fn(() => () => {}),
     /** Every feature action: answers from `featureRoutes` (see mockFeature), else {ok: false, error: 'no mock'}. */
     featureCall: vi.fn(async (feature: string, action: string, args: Record<string, unknown> = {}): Promise<MyShopResult<unknown>> => {
       const r = featureRoutes.get(`${feature}.${action}`)
@@ -560,6 +603,7 @@ export function resetStore(): void {
     showMyShop: false,
     draftsView: null,
     drafts: [],
+    draftPull: IDLE_DRAFT_PULL,
     shopPanelsFor: null,
     featureModal: null,
     showAddShop: false,

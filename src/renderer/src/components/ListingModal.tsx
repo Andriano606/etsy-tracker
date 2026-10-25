@@ -18,6 +18,7 @@ import { LazyDetails, panelMeta } from '../features/LazyDetails'
 import { LISTING_PANELS } from '../features/registry'
 import { imageSrc, reviewImageSrc } from '../imageUrl'
 import { Badge, Button, Callout, Icon, InfoTip, Loading, Modal, Stat, ZoomImage, buttonClass, type BadgeTone, type IconName } from '../ui'
+import { CopyLinkButton } from './CopyLinkButton'
 import { ExternalLink } from './ExternalLink'
 import { listingGallery } from './ListingCard'
 import { NowPrice, WasPrice } from './PriceParts'
@@ -1106,6 +1107,7 @@ export function ListingModal(): JSX.Element | null {
           <span className="ui-modal-foot-start lm-foot-note truncate" title="Усі числа — станом на це сканування">
             Дані станом на {formatDateTime(l.lastSeenAt)}
           </span>
+          <CopyLinkButton listingId={l.listingId} />
           <ExternalLink href={l.url} className={buttonClass('primary')}>
             <Icon name="external" size={16} />
             <span className="ui-btn-text">Відкрити на Etsy</span>

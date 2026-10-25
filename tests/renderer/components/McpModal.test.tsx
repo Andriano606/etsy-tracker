@@ -99,7 +99,13 @@ describe('MCP modal', () => {
     const drafts = screen.getByTestId('mcp-draft-tools')
     const names = (el: HTMLElement) => [...el.querySelectorAll('.mcp-tool-name')].map((c) => c.textContent)
     expect(names(local)).toEqual(MCP_TOOL_SUMMARY.filter((t) => MCP_LOCAL_TOOLS.has(t.name)).map((t) => t.name))
-    expect(names(drafts)).toEqual(['prepare_product', 'list_prepared_products', 'delete_prepared_product'])
+    expect(names(drafts)).toEqual([
+      'prepare_product',
+      'list_prepared_products',
+      'sync_prepared_products',
+      'unlink_prepared_product',
+      'delete_prepared_product'
+    ])
     // Everything else that only reads goes to Etsy live: the store's live listings, market search, compete, own-shop reads.
     expect(names(live)).toEqual(
       MCP_TOOL_SUMMARY.filter((t) => !t.write && !MCP_LOCAL_TOOLS.has(t.name) && !MCP_DRAFT_TOOLS.has(t.name)).map((t) => t.name)

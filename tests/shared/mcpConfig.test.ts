@@ -83,3 +83,28 @@ describe('MCP_TOOL_SUMMARY', () => {
     expect(text('list_reviews')).toContain('збережені відгуки')
   })
 })
+
+describe('MCP_TOOL_SUMMARY: drafts in the app', () => {
+  const entry = (name: string) => MCP_TOOL_SUMMARY.find((t) => t.name === name)!
+
+  it('lists the draft tools in the server’s order; only sending is a store write', () => {
+    const names = MCP_TOOL_SUMMARY.map((t) => t.name).filter((n) => n.endsWith('_prepared_product') || n.endsWith('_prepared_products') || n === 'prepare_product')
+    expect(names).toEqual([
+      'prepare_product',
+      'list_prepared_products',
+      'sync_prepared_products',
+      'unlink_prepared_product',
+      'delete_prepared_product',
+      'send_prepared_product'
+    ])
+    expect(names.filter((n) => entry(n).write)).toEqual(['send_prepared_product'])
+  })
+
+  it('says what reaches Etsy: editing a sent draft changes Etsy only on sending; deleting on Etsy needs the permission', () => {
+    expect(entry('prepare_product').text).toContain('зміниться лише після надсилання')
+    expect(entry('send_prepared_product').text).toContain('оновлення вже надісланого')
+    expect(entry('sync_prepared_products').text).toContain('на Etsy нічого не змінює')
+    expect(entry('unlink_prepared_product').text).toContain('лише в програмі')
+    expect(entry('delete_prepared_product').text).toContain('лише це потребує дозволу на зміни')
+  })
+})

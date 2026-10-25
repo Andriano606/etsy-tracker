@@ -108,9 +108,11 @@ export const MCP_TOOL_SUMMARY: ReadonlyArray<{ name: string; text: string; write
   { name: 'update_my_product', text: 'змінити на Etsy назву, опис, теги, матеріали, автопоновлення; увімкнути / вимкнути', write: true },
   { name: 'add_product_media', text: 'додати фото чи файли в кінець товару на Etsy', write: true },
   { name: 'update_my_store', text: 'змінити тексти магазину на Etsy: заголовок, оголошення, повідомлення покупцям, додаткові правила (лише ЄС)', write: true },
-  { name: 'prepare_product', text: 'підготувати чернетку в програмі — ви переглядаєте й надсилаєте самі (працює без дозволу на зміни)' },
-  { name: 'list_prepared_products', text: 'усі чернетки в програмі: чого бракує, чи надіслано на Etsy' },
-  { name: 'delete_prepared_product', text: 'видалити чернетку в програмі' },
-  { name: 'send_prepared_product', text: 'надіслати чернетку з програми на Etsy — як чернетку Etsy або з публікацією', write: true },
+  { name: 'prepare_product', text: 'підготувати або змінити чернетку в програмі (і вже надіслану) — товар на Etsy зміниться лише після надсилання (працює без дозволу на зміни)' },
+  { name: 'list_prepared_products', text: 'усі чернетки в програмі: чого бракує, чи надіслано на Etsy, з яким товаром пов’язано, чи є ненадіслані зміни' },
+  { name: 'sync_prepared_products', text: 'підтягнути в програму чернетки, створені на сайті Etsy, і оновити пов’язані (на Etsy нічого не змінює; потрібен вхід, дозвіл на зміни — ні)' },
+  { name: 'unlink_prepared_product', text: 'від’єднати чернетку від товару на Etsy, щоб надіслати її як новий товар (лише в програмі)' },
+  { name: 'delete_prepared_product', text: 'видалити чернетку в програмі; на ваше прохання — і товар на Etsy (лише це потребує дозволу на зміни)' },
+  { name: 'send_prepared_product', text: 'надіслати чернетку на Etsy: новий товар (чернетка Etsy або публікація) або оновлення вже надісланого', write: true },
   ...FEATURE_TOOL_SUMMARY
 ]

@@ -26,7 +26,7 @@ import {
 import { isEtsyCdnUrl } from '../../../shared/externalUrl'
 import { decodeHtmlEntities } from '../../../shared/html'
 import { BATCH_LIMIT, EtsyApiError, PAGE_LIMIT, type EtsyClient, type EtsyListingImage, type EtsyListingWithAssociations, type EtsyMoney, type Paged } from '../../etsyApi'
-import { FeatureError } from '../common'
+import { FeatureError } from '../errors'
 
 // ------------------------------------------------------------- OAS shapes
 

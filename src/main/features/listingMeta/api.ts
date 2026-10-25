@@ -21,7 +21,7 @@ import { priceValue } from '../../../shared/format'
 import { decodeHtmlEntities } from '../../../shared/html'
 import type { TaxonomyOption } from '../../../shared/types'
 import { EtsyApiError, type EtsyClient, type Paged } from '../../etsyApi'
-import { FeatureError } from '../common'
+import { FeatureError } from '../errors'
 
 const A = '/v3/application'
 

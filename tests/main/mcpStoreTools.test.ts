@@ -4,13 +4,17 @@ import { join } from 'path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { EtsyApiError, type EtsyClient } from '../../src/main/etsyApi'
 import { type McpToolResult, handleMcpMessage } from '../../src/main/mcpProtocol'
-import { NOT_SIGNED_IN, WRITES_OFF, type OwnStoreDeps, createStoreTools, mcpErrorText } from '../../src/main/mcpStoreTools'
+import { NOT_SIGNED_IN, WRITES_OFF, type DraftDeps, type OwnStoreDeps, createStoreTools, mcpErrorText } from '../../src/main/mcpStoreTools'
 import { createMcpTools, mcpServerInfo } from '../../src/main/mcpTools'
 import { MyShopError } from '../../src/main/myShop'
 import type { EtsyAuthStatus } from '../../src/shared/types'
 import shopFx from '../fixtures/shop.json'
 import { mkEtsyListing } from '../helpers/fakeEtsy'
 import { memDb, seedShop } from '../helpers/db'
+
+// sync_prepared_products without the app's pull runs importEtsyDrafts itself (draftImport.ts is tested on its own).
+const importMock = vi.hoisted(() => ({ fn: vi.fn() }))
+vi.mock('../../src/main/draftImport', () => ({ importEtsyDrafts: (...a: unknown[]) => importMock.fn(...a) }))
 
 const SHOP = 68736507
 const signedIn: EtsyAuthStatus = {
@@ -447,8 +451,8 @@ describe('in the full tool set', () => {
 })
 
 import { createDraftTools } from '../../src/main/mcpStoreTools'
-import { getDraft, listDrafts } from '../../src/main/drafts'
-import { etsyListingEditUrl, etsyListingUrl } from '../../src/shared/myShop'
+import { VARIATIONS_NOTE, getDraft, listDrafts, saveDraft } from '../../src/main/drafts'
+import { etsyListingEditUrl, etsyListingUrl, normalizeDraftFields } from '../../src/shared/myShop'
 
 describe('drafts in the app over MCP (prepare → the user reviews → send)', () => {
   function drafts(over: { writes?: boolean; status?: EtsyAuthStatus } = {}) {
@@ -523,7 +527,7 @@ describe('drafts in the app over MCP (prepare → the user reviews → send)', (
     const list = JSON.parse((await d.run('list_prepared_products')).body)
     expect(list.count).toBe(2)
     expect(list.drafts.map((x: { title: string }) => x.title).sort()).toEqual(['A', 'B'])
-    expect(JSON.parse((await d.run('delete_prepared_product', { draft_id: 1 })).body)).toEqual({ deleted: 1 })
+    expect(JSON.parse((await d.run('delete_prepared_product', { draft_id: 1 })).body)).toEqual({ deleted: 1, deleted_on_etsy: false })
     expect((await d.run('delete_prepared_product', { draft_id: 1 })).isError).toBe(true)
     expect(listDrafts(d.db)).toHaveLength(1)
   })
@@ -537,20 +541,24 @@ describe('drafts in the app over MCP (prepare → the user reviews → send)', (
     const r = JSON.parse((await on.run('send_prepared_product', { draft_id: 1 })).body)
     expect(r).toEqual({
       draft_id: 1,
+      action: 'created',
       product_id: 4242,
       status: 'draft',
       url: null,
-      edit_url: 'https://www.etsy.com/your/shops/me/listing-editor/edit/4242'
+      edit_url: 'https://www.etsy.com/your/shops/me/listing-editor/edit/4242',
+      notes: []
     })
     expect(on.client.createDraftListing).toHaveBeenCalledTimes(1)
     expect(JSON.parse((await on.run('list_prepared_products')).body).drafts[0]).toMatchObject({ status: 'sent', sent_product_id: 4242 })
+    // A second send updates the linked Etsy listing (drafts.ts) — never a second listing.
+    // (This fake sign-in has no OAuth scopes, so the update is refused here.)
     const again = await on.run('send_prepared_product', { draft_id: 1 })
     expect(again.isError).toBe(true)
-    expect(JSON.parse(again.body)).toEqual({
-      error: 'Чернетку вже надіслано на Etsy (товар #4242).',
+    expect(JSON.parse(again.body)).toMatchObject({
       product_id: 4242,
       edit_url: 'https://www.etsy.com/your/shops/me/listing-editor/edit/4242'
     })
+    expect(on.client.createDraftListing).toHaveBeenCalledTimes(1)
   })
 
   it('send_prepared_product with publish=true returns the public page (url) and the editor (edit_url)', async () => {
@@ -560,10 +568,12 @@ describe('drafts in the app over MCP (prepare → the user reviews → send)', (
     expect(r.isError).toBe(false)
     expect(JSON.parse(r.body)).toEqual({
       draft_id: 1,
+      action: 'created',
       product_id: 4242,
       status: 'active',
       url: etsyListingUrl(4242),
-      edit_url: etsyListingEditUrl(4242)
+      edit_url: etsyListingEditUrl(4242),
+      notes: []
     })
     expect(etsyListingUrl(4242)).toBe('https://www.etsy.com/listing/4242')
     expect(on.client.updateListing).toHaveBeenCalledWith(SHOP, 4242, expect.objectContaining({ state: 'active' }))
@@ -576,7 +586,13 @@ describe('drafts in the app over MCP (prepare → the user reviews → send)', (
     const listed = (res!.result as { tools: Array<{ name: string; description: string; annotations: Record<string, boolean> }> }).tools
     const ann = Object.fromEntries(listed.map((t) => [t.name, t.annotations]))
     expect(ann.list_prepared_products).toMatchObject({ readOnlyHint: true, openWorldHint: false })
-    expect(ann.delete_prepared_product).toMatchObject({ readOnlyHint: false, openWorldHint: false })
+    // Local by default, but also_on_etsy deletes the Etsy listing — permanently.
+    expect(ann.delete_prepared_product).toMatchObject({ readOnlyHint: false, destructiveHint: true, openWorldHint: true })
+    // Reads Etsy live, writes only the app's drafts — but it overwrites unedited linked drafts with Etsy's version
+    // and drops pulled drafts deleted on Etsy (unsent edits are never overwritten).
+    expect(ann.sync_prepared_products).toMatchObject({ readOnlyHint: false, destructiveHint: true, openWorldHint: true })
+    // The app's database only; the link (and files only on Etsy) can't be restored.
+    expect(ann.unlink_prepared_product).toMatchObject({ readOnlyHint: false, destructiveHint: true, openWorldHint: false })
     // A category_id is looked up in Etsy's category tree (fetched on first use).
     expect(ann.prepare_product).toMatchObject({ readOnlyHint: false, openWorldHint: true })
     expect(ann.send_prepared_product).toMatchObject({ readOnlyHint: false, destructiveHint: true, openWorldHint: true })
@@ -591,5 +607,433 @@ describe('drafts in the app over MCP (prepare → the user reviews → send)', (
     expect(all).not.toContain('etsystatic.com')
     expect(all).not.toContain('raw_json')
     expect(all).not.toContain(TOKEN)
+  })
+})
+
+// ------------------------------------------------------------------ linked drafts over MCP
+
+import { ALL_SCOPES, signedIn as ownSignedIn } from '../helpers/features'
+import { ownEtsy } from '../helpers/ownEtsy'
+
+describe('drafts linked to Etsy listings over MCP (edit → update the same listing, sync, unlink, delete on Etsy)', () => {
+  function linked(over: { writes?: boolean; scopes?: string[]; status?: EtsyAuthStatus; pull?: DraftDeps['pull'] } = {}) {
+    const e = ownEtsy()
+    const db = memDb()
+    const changed = vi.fn()
+    let writes = over.writes ?? true
+    const own: OwnStoreDeps = {
+      client: e.client,
+      status: () => over.status ?? ownSignedIn({ scopes: over.scopes ?? ALL_SCOPES }),
+      writesAllowed: () => writes,
+      taxonomy: async () => [{ id: 2, path: 'Paper & Party Supplies › Paper › Calendars & Planners' }],
+      accessToken: async () => TOKEN
+    }
+    let t = 1000
+    const tools = createDraftTools(own, { db, now: () => ++t, onChanged: changed, pull: over.pull })
+    const run = async (name: string, args: Record<string, unknown> = {}) => {
+      const res = await handleMcpMessage(
+        { info: mcpServerInfo('0.1.0'), tools },
+        { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }
+      )
+      const r = res!.result as McpToolResult
+      for (const c of r.content) if (c.type === 'text') seen.push(c.text)
+      const body = (r.content[0] as { text: string }).text
+      let json: Record<string, unknown> | null = null
+      try {
+        json = JSON.parse(body)
+      } catch {
+        // a plain error text
+      }
+      return { isError: !!r.isError, body, json: json as Record<string, any> }
+    }
+    /** A digital draft with two photos and a file, sent once (Etsy listing 4242, an Etsy draft). */
+    const sent = async (publish = false) => {
+      const p = await run('prepare_product', { ...valid, photos: [{ path: photo }, { data_base64: Buffer.from('PNG2').toString('base64'), name: 'b.png' }], files: [{ path: sheet }] })
+      const r = await run('send_prepared_product', { draft_id: p.json.draft_id, publish })
+      expect(r.json).toMatchObject({ action: 'created', product_id: 4242 })
+      return p.json.draft_id as number
+    }
+    return { ...e, db, changed, run, sent, setWrites: (v: boolean) => (writes = v) }
+  }
+
+  it('list_prepared_products shows the link: product, Etsy state, in sync, editor; the public page only while active', async () => {
+    const w = linked()
+    const id = await w.sent()
+    const d = (await w.run('list_prepared_products')).json.drafts[0]
+    expect(d).toMatchObject({
+      draft_id: id,
+      status: 'sent',
+      prepared_by: 'assistant',
+      files_only_on_etsy: [],
+      sent_product_id: 4242,
+      etsy: {
+        product_id: 4242,
+        state: 'draft',
+        unsent_changes: false,
+        changed_on_etsy: false,
+        removed_on_etsy: false,
+        url: null,
+        edit_url: etsyListingEditUrl(4242)
+      }
+    })
+    expect(d.etsy.last_synced_at).toMatch(/^\d{4}-\d\d-\d\dT/)
+    expect(d.etsy.etsy_updated_at).toBe(new Date(w.listings.get(4242)!.updated_timestamp * 1000).toISOString())
+    const pub = linked()
+    await pub.sent(true)
+    expect((await pub.run('list_prepared_products')).json.drafts[0].etsy).toMatchObject({ state: 'active', url: etsyListingUrl(4242) })
+    // never sent → no link
+    await w.run('prepare_product', { title: 'Idea' })
+    expect((await w.run('list_prepared_products')).json.drafts[0]).toMatchObject({ status: 'waiting_for_review', etsy: null })
+  })
+
+  it('prepare_product edits a linked draft without touching Etsy (changed_since_sent); {keep: n} keeps photos in a new order', async () => {
+    const w = linked({ writes: false })
+    w.setWrites(true)
+    const id = await w.sent()
+    w.setWrites(false)
+    const before = w.writes().length
+    const r = await w.run('prepare_product', {
+      draft_id: id,
+      title: 'Budget Planner 2026',
+      photos: [{ keep: 2 }, { data_base64: Buffer.from('GIF').toString('base64'), name: 'c.gif' }, { keep: 1 }]
+    })
+    expect(r.isError).toBe(false)
+    expect(r.json).toMatchObject({
+      draft_id: id,
+      status: 'changed_since_sent',
+      title: 'Budget Planner 2026',
+      photos: ['b.png', 'c.gif', 'cover.jpg'],
+      files: ['Planner.xlsx'],
+      etsy: { product_id: 4242, unsent_changes: true }
+    })
+    expect(r.json.note).toContain('Etsy listing #4242 is unchanged until the draft is sent again')
+    expect(w.writes()).toHaveLength(before) // nothing on Etsy
+    expect(w.listings.get(4242)!.title).toBe('Budget Planner')
+    // the kept photos are still the ones on Etsy (not uploaded again on the next send)
+    expect(getDraft(w.db, id)!.photos.map((p) => p.onEtsy)).toEqual([true, false, true])
+  })
+
+  it('{keep: n} is checked: a position the draft has, once, not with content, and only with draft_id', async () => {
+    const w = linked()
+    const id = await w.sent()
+    expect((await w.run('prepare_product', { title: 'x', photos: [{ keep: 1 }] })).body).toContain('needs draft_id')
+    expect((await w.run('prepare_product', { draft_id: id, photos: [{ keep: 3 }] })).body).toContain('no photo at position 3 (it has 2)')
+    expect((await w.run('prepare_product', { draft_id: id, photos: [{ keep: 1 }, { keep: 1 }] })).body).toContain('kept twice')
+    expect((await w.run('prepare_product', { draft_id: id, files: [{ keep: 1, path: sheet }] })).body).toContain('not both')
+    expect(getDraft(w.db, id)!.photos).toHaveLength(2)
+    expect(getDraft(w.db, id)!.etsy!.dirty).toBe(false) // refused before anything was saved
+  })
+
+  it('send_prepared_product on a linked draft updates the same Etsy listing (no second one): texts, price, photos in order', async () => {
+    const w = linked()
+    const id = await w.sent()
+    await w.run('prepare_product', { draft_id: id, title: 'Budget Planner 2026', price: 7.5, photos: [{ keep: 2 }, { keep: 1 }] })
+    const ids = w.imageIds(4242)
+    const r = await w.run('send_prepared_product', { draft_id: id })
+    expect(r.isError).toBe(false)
+    expect(r.json).toEqual({
+      draft_id: id,
+      action: 'updated',
+      product_id: 4242,
+      status: 'draft',
+      url: null,
+      edit_url: etsyListingEditUrl(4242),
+      notes: []
+    })
+    const l = w.listings.get(4242)!
+    expect(l).toMatchObject({ title: 'Budget Planner 2026', price: { amount: 750, divisor: 100 } })
+    expect(w.imageIds(4242)).toEqual([ids[1], ids[0]])
+    expect(w.writes().filter((x) => x === `POST /v3/application/shops/${SHOP}/listings`)).toHaveLength(1)
+    expect((await w.run('list_prepared_products')).json.drafts[0]).toMatchObject({ status: 'sent', etsy: { unsent_changes: false } })
+    // publish=true publishes the linked Etsy draft
+    const p = await w.run('send_prepared_product', { draft_id: id, publish: true })
+    expect(p.json).toMatchObject({ action: 'updated', status: 'active', url: etsyListingUrl(4242) })
+    expect(w.listings.get(4242)!.state).toBe('active')
+  })
+
+  it('variations: the answer carries the note (Ukrainian) that price and quantity were left alone', async () => {
+    const w = linked()
+    const id = await w.sent()
+    w.listings.get(4242)!.products = [0, 1].map((i) => ({
+      product_id: 50 + i,
+      sku: '',
+      property_values: [{ property_id: 200, property_name: 'Color', value_ids: [i + 1], values: [i ? 'Red' : 'Blue'] }],
+      offerings: [{ offering_id: 60 + i, price: { amount: 100, divisor: 100, currency_code: 'USD' }, quantity: 3, is_enabled: true, readiness_state_id: null }]
+    }))
+    await w.run('prepare_product', { draft_id: id, price: 9.99 })
+    const r = await w.run('send_prepared_product', { draft_id: id })
+    expect(r.json).toMatchObject({ action: 'updated', notes: [VARIATIONS_NOTE] })
+  })
+
+  it('changed on Etsy since the last sync → {conflict: true}, nothing written; overwrite_etsy_changes=true then replaces it', async () => {
+    const w = linked()
+    const id = await w.sent()
+    await w.run('prepare_product', { draft_id: id, title: 'Mine' })
+    w.editOnEtsy(4242, (l) => (l.title = 'Edited on Etsy'))
+    const before = w.writes().length
+    const c = await w.run('send_prepared_product', { draft_id: id })
+    expect(c.isError).toBe(true)
+    expect(c.json).toMatchObject({ conflict: true, product_id: 4242, edit_url: etsyListingEditUrl(4242) })
+    expect(c.json.error).toContain('На Etsy цей товар змінили')
+    expect(c.json.what_to_do).toContain('only if they agree')
+    expect(c.json.what_to_do).toContain('overwrite_etsy_changes=true')
+    expect(w.writes()).toHaveLength(before)
+    expect(w.listings.get(4242)!.title).toBe('Edited on Etsy')
+    expect((await w.run('list_prepared_products')).json.drafts[0].etsy).toMatchObject({ changed_on_etsy: true, unsent_changes: true })
+    const o = await w.run('send_prepared_product', { draft_id: id, overwrite_etsy_changes: true })
+    expect(o.json).toMatchObject({ action: 'updated', product_id: 4242 })
+    expect(w.listings.get(4242)!.title).toBe('Mine')
+    expect((await w.run('list_prepared_products')).json.drafts[0].etsy).toMatchObject({ changed_on_etsy: false, unsent_changes: false })
+  })
+
+  it('deleted on Etsy → removed_on_etsy (unlink, then send); unlink_prepared_product makes the next send a new listing', async () => {
+    const w = linked()
+    const id = await w.sent()
+    w.listings.delete(4242)
+    const r = await w.run('send_prepared_product', { draft_id: id })
+    expect(r.isError).toBe(true)
+    expect(r.json).toMatchObject({ removed_on_etsy: true, product_id: 4242, edit_url: null })
+    expect(r.json.what_to_do).toContain('unlink_prepared_product, then send_prepared_product')
+    expect((await w.run('list_prepared_products')).json.drafts[0].etsy).toMatchObject({ state: 'removed', removed_on_etsy: true, edit_url: null })
+    const before = w.writes().length
+    const u = await w.run('unlink_prepared_product', { draft_id: id })
+    expect(u.isError).toBe(false)
+    expect(u.json).toMatchObject({ draft_id: id, status: 'waiting_for_review', etsy: null, unlinked_product_id: 4242, notes: [] })
+    expect(u.json.note).toContain('Sending this draft now creates a new Etsy listing')
+    expect(w.writes()).toHaveLength(before) // local only
+    const again = await w.run('send_prepared_product', { draft_id: id })
+    expect(again.json).toMatchObject({ action: 'created', product_id: 4243 })
+    expect(w.imageIds(4243)).toHaveLength(2)
+  })
+
+  it('unlink_prepared_product: files only on Etsy leave the draft (notes); a draft never sent / unknown is refused', async () => {
+    const w = linked()
+    const d = saveDraft(
+      w.db,
+      {
+        source: 'app',
+        imported: true,
+        fields: getDraft(w.db, await w.sent())!.fields,
+        files: [{ remote: true, name: 'Big.zip', size: 10, etsyId: 7001 }],
+        link: { listingId: 555, state: 'draft', etsyUpdatedAt: 1 }
+      },
+      5
+    )
+    expect((await w.run('list_prepared_products')).json.drafts.find((x: { draft_id: number }) => x.draft_id === d.id)).toMatchObject({
+      prepared_by: 'etsy_site',
+      files_only_on_etsy: ['Big.zip']
+    })
+    const u = await w.run('unlink_prepared_product', { draft_id: d.id })
+    expect(u.json.files).toEqual([])
+    expect(u.json.notes[0]).toContain('Big.zip')
+    expect((await w.run('unlink_prepared_product', { draft_id: d.id })).body).toContain('is not linked to an Etsy listing')
+    expect((await w.run('unlink_prepared_product', { draft_id: 99 })).body).toBe('No draft 99.')
+  })
+
+  it('a file only on Etsy can be kept with {keep: n}; new content replaces the list', async () => {
+    const w = linked()
+    const d = saveDraft(
+      w.db,
+      {
+        source: 'app',
+        imported: true,
+        fields: normalizeDraftFields({}),
+        files: [{ remote: true, name: 'Big.zip', size: 10, etsyId: 7001 }],
+        link: { listingId: 555, state: 'draft', etsyUpdatedAt: 1 }
+      },
+      5
+    )
+    const r = await w.run('prepare_product', { draft_id: d.id, files: [{ keep: 1 }, { path: sheet }] })
+    expect(r.json).toMatchObject({ files: ['Big.zip', 'Planner.xlsx'], files_only_on_etsy: ['Big.zip'], status: 'changed_since_sent' })
+  })
+
+  it('send_prepared_product on a linked draft is gated like every store write', async () => {
+    const w = linked()
+    const id = await w.sent()
+    await w.run('prepare_product', { draft_id: id, title: 'Mine' })
+    w.setWrites(false)
+    expect((await w.run('send_prepared_product', { draft_id: id })).body).toBe(WRITES_OFF)
+    const out = linked({ status: { loggedIn: false, redirectUri: '', pending: false, encrypted: true } })
+    await out.run('prepare_product', { title: 'x' })
+    expect((await out.run('send_prepared_product', { draft_id: 1 })).body).toBe(NOT_SIGNED_IN)
+    expect(w.listings.get(4242)!.title).toBe('Budget Planner')
+  })
+
+  it('delete_prepared_product: local by default (the Etsy listing stays, the note says a sync pulls an Etsy draft back)', async () => {
+    const w = linked({ writes: false })
+    w.setWrites(true)
+    const id = await w.sent()
+    w.setWrites(false)
+    const before = w.writes().length
+    const r = await w.run('delete_prepared_product', { draft_id: id })
+    expect(r.json).toMatchObject({ deleted: id, deleted_on_etsy: false, product_id: 4242 })
+    expect(r.json.note).toContain('the next sync pulls it into the app again')
+    expect(w.writes()).toHaveLength(before)
+    expect(w.listings.has(4242)).toBe(true)
+    expect(listDrafts(w.db)).toHaveLength(0)
+  })
+
+  it('delete_prepared_product also_on_etsy: needs "allow changes", the sign-in and listings_d; then deletes the listing too', async () => {
+    const off = linked()
+    const id = await off.sent()
+    off.setWrites(false)
+    expect((await off.run('delete_prepared_product', { draft_id: id, also_on_etsy: true })).body).toBe(WRITES_OFF)
+    expect(listDrafts(off.db)).toHaveLength(1)
+
+    const noScope = linked({ scopes: ALL_SCOPES.filter((x) => x !== 'listings_d') })
+    const id2 = await noScope.sent()
+    const ns = await noScope.run('delete_prepared_product', { draft_id: id2, also_on_etsy: true })
+    expect(ns.isError).toBe(true)
+    expect(ns.body).toContain('"listings_d" permission')
+    expect(noScope.listings.has(4242)).toBe(true)
+    expect(listDrafts(noScope.db)).toHaveLength(1)
+
+    const on = linked()
+    const id3 = await on.sent()
+    const r = await on.run('delete_prepared_product', { draft_id: id3, also_on_etsy: true })
+    expect(r.json).toEqual({ deleted: id3, deleted_on_etsy: true, product_id: 4242 })
+    expect(on.listings.has(4242)).toBe(false)
+    expect(on.writes()).toContain('DELETE /v3/application/listings/4242')
+    expect(listDrafts(on.db)).toHaveLength(0)
+    expect(on.changed).toHaveBeenCalled()
+  })
+
+  it('delete_prepared_product also_on_etsy: Etsy refusing keeps the draft; already gone counts as deleted; nothing linked = local', async () => {
+    const w = linked()
+    const id = await w.sent()
+    w.failures.push({ match: 'DELETE /v3/application/listings/4242', status: 500, times: 5 })
+    const r = await w.run('delete_prepared_product', { draft_id: id, also_on_etsy: true })
+    expect(r.isError).toBe(true)
+    expect(r.json).toMatchObject({ product_id: 4242, draft_kept: true })
+    expect(r.json.error).toContain('Товар на Etsy не видалено')
+    expect(listDrafts(w.db)).toHaveLength(1)
+    // gone from Etsy meanwhile (404) → the draft goes too
+    w.failures.length = 0
+    w.listings.delete(4242)
+    expect((await w.run('delete_prepared_product', { draft_id: id, also_on_etsy: true })).json).toMatchObject({
+      deleted: id,
+      deleted_on_etsy: false
+    })
+    expect(listDrafts(w.db)).toHaveLength(0)
+    // never sent: nothing on Etsy — deleted locally, without needing the switch
+    const local = linked({ writes: false })
+    await local.run('prepare_product', { title: 'x' })
+    const l = await local.run('delete_prepared_product', { draft_id: 1, also_on_etsy: true })
+    expect(l.json).toMatchObject({ deleted: 1, deleted_on_etsy: false, note: 'The draft was never sent to Etsy — nothing to delete there.' })
+  })
+
+  it('sync_prepared_products: the app’s pull (no "allow changes" needed) → the summary; its failure is an error; signed out refused', async () => {
+    const summary = { imported: 2, updated: 1, removed: 0, conflicts: 1, errors: ['#5: фото не завантажилось'] }
+    const pull = vi.fn(async () => ({ ok: true as const, value: summary }))
+    const w = linked({ writes: false, pull })
+    const r = await w.run('sync_prepared_products')
+    expect(r.isError).toBe(false)
+    expect(r.json).toEqual(summary)
+    expect(pull).toHaveBeenCalledTimes(1)
+    expect(importMock.fn).not.toHaveBeenCalled()
+    const bad = linked({ pull: async () => ({ ok: false as const, error: 'Не вдалося синхронізувати чернетки з Etsy: мережа' }) })
+    const b = await bad.run('sync_prepared_products')
+    expect(b).toMatchObject({ isError: true, body: 'Не вдалося синхронізувати чернетки з Etsy: мережа' })
+    const out = linked({ pull, status: { loggedIn: false, redirectUri: '', pending: false, encrypted: true } })
+    expect((await out.run('sync_prepared_products')).body).toBe(NOT_SIGNED_IN)
+    expect(pull).toHaveBeenCalledTimes(1)
+  })
+
+  it('createMcpTools hands the app’s pull (McpToolDeps.pullDrafts) to sync_prepared_products', async () => {
+    const summary = { imported: 0, updated: 0, removed: 0, conflicts: 0, errors: [] }
+    const pullDrafts = vi.fn(async () => ({ ok: true as const, value: summary }))
+    importMock.fn.mockReset()
+    const e = ownEtsy()
+    const tools = createMcpTools({
+      db: memDb(),
+      own: {
+        client: e.client,
+        status: () => ownSignedIn({ scopes: ALL_SCOPES }),
+        writesAllowed: () => false,
+        taxonomy: async () => [],
+        accessToken: async () => TOKEN
+      },
+      pullDrafts
+    })
+    const res = await handleMcpMessage(
+      { info: mcpServerInfo('0.1.0'), tools },
+      { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'sync_prepared_products', arguments: {} } }
+    )
+    const r = res!.result as McpToolResult
+    expect(r.isError).toBeFalsy()
+    expect(JSON.parse((r.content[0] as { text: string }).text)).toEqual(summary)
+    expect(pullDrafts).toHaveBeenCalledTimes(1)
+    expect(importMock.fn).not.toHaveBeenCalled()
+  })
+
+  it('sync_prepared_products without the app’s pull runs importEtsyDrafts itself — one at a time, CDN-only photos', async () => {
+    let release!: (v: unknown) => void
+    importMock.fn.mockReset()
+    importMock.fn.mockImplementation(() => new Promise((r) => (release = r)))
+    const w = linked({ writes: false })
+    const a = w.run('sync_prepared_products')
+    const b = w.run('sync_prepared_products')
+    await vi.waitFor(() => expect(importMock.fn).toHaveBeenCalledTimes(1))
+    release({ imported: 1, updated: 0, removed: 0, conflicts: 0, errors: [] })
+    expect((await a).json).toMatchObject({ imported: 1 })
+    expect((await b).json).toMatchObject({ imported: 1 })
+    expect(importMock.fn).toHaveBeenCalledTimes(1)
+    expect(w.changed).toHaveBeenCalled()
+    const deps = importMock.fn.mock.calls[0][0] as {
+      db: unknown
+      client: unknown
+      auth: { status: () => EtsyAuthStatus }
+      taxonomy: () => Promise<unknown>
+      fetchImage: (url: string) => Promise<unknown>
+    }
+    expect(deps.db).toBe(w.db)
+    expect(deps.client).toBe(w.client)
+    expect(deps.auth.status()).toMatchObject({ loggedIn: true, shopId: SHOP })
+    expect(await deps.taxonomy()).toHaveLength(1)
+    await expect(deps.fetchImage('https://evil.example.com/a.jpg')).rejects.toThrow()
+    await expect(deps.fetchImage('file:///etc/passwd')).rejects.toThrow()
+    // a failing import is an error for the client (English for Etsy errors)
+    importMock.fn.mockReset()
+    importMock.fn.mockRejectedValue(new EtsyApiError('network', 'x'))
+    expect((await w.run('sync_prepared_products')).body).toBe('No connection to the Etsy API — try again.')
+  })
+
+  it('tools/list: descriptions name Etsy, the scopes, the gates and the conflict rule', async () => {
+    const tools = createDraftTools(undefined, { db: memDb() })
+    const res = await handleMcpMessage({ info: mcpServerInfo('1'), tools }, { jsonrpc: '2.0', id: 1, method: 'tools/list' })
+    const listed = (res!.result as { tools: Array<{ name: string; description: string; inputSchema: { properties: Record<string, unknown> } }> }).tools
+    const desc = Object.fromEntries(listed.map((t) => [t.name, t.description]))
+    expect(listed.map((t) => t.name)).toEqual([
+      'prepare_product',
+      'list_prepared_products',
+      'sync_prepared_products',
+      'unlink_prepared_product',
+      'delete_prepared_product',
+      'send_prepared_product'
+    ])
+    expect(desc.send_prepared_product).toContain('UPDATES that listing')
+    expect(desc.send_prepared_product).toContain('never a second listing')
+    expect(desc.send_prepared_product).toContain('overwrite_etsy_changes=true')
+    expect(desc.send_prepared_product).toContain('listings_w')
+    expect(desc.sync_prepared_products).toContain('listings_r')
+    expect(desc.sync_prepared_products).toContain("not the 'allow changes' switch")
+    expect(desc.delete_prepared_product).toContain('listings_d')
+    expect(desc.delete_prepared_product).toContain('confirm with the user first')
+    expect(desc.unlink_prepared_product).toContain('stays on Etsy')
+    expect(desc.prepare_product).not.toContain("can't be changed")
+    expect(Object.keys(listed.find((t) => t.name === 'send_prepared_product')!.inputSchema.properties)).toEqual([
+      'draft_id',
+      'publish',
+      'overwrite_etsy_changes'
+    ])
+    expect(Object.keys(listed.find((t) => t.name === 'delete_prepared_product')!.inputSchema.properties)).toEqual(['draft_id', 'also_on_etsy'])
+  })
+
+  it('everything said about linked drafts: no CDN URL, raw JSON or token; every URL an Etsy page', () => {
+    const all = seen.join('\n')
+    expect(all).not.toContain('etsystatic.com')
+    expect(all).not.toContain('raw_json')
+    expect(all).not.toContain(TOKEN)
+    for (const u of all.match(/https?:\/\/[^\s"\\)]+/g) ?? []) expect(u).toMatch(/^https:\/\/(www\.)?etsy\.com\//)
   })
 })

@@ -4,9 +4,14 @@ import type {
   BuyerCountryResult,
   CreateListingProgress,
   CreateListingResult,
+  DeleteDraftOptions,
+  DraftPullState,
+  DraftPullSummary,
   ListingDraft,
+  SendDraftOptions,
   PickedFile,
   SaveDraftInput,
+  SaveDraftResult,
   ShippingOption,
   TaxonomyOption,
   EtsyAuthStatus,
@@ -154,14 +159,27 @@ const api = {
   /** Drafts kept in the app (yours and the ones Claude prepared), newest first. */
   listDrafts: (): Promise<ListingDraft[]> => ipcRenderer.invoke('drafts:list'),
   /** Create (no id) or update a draft with its media (stored ids + picked tokens, in order). */
-  saveDraft: (input: SaveDraftInput): Promise<MyShopResult<ListingDraft>> => ipcRenderer.invoke('drafts:save', input),
-  deleteDraft: (id: number): Promise<boolean> => ipcRenderer.invoke('drafts:delete', id),
+  saveDraft: (input: SaveDraftInput): Promise<SaveDraftResult> => ipcRenderer.invoke('drafts:save', input),
+  /** Delete a draft in the app; {onEtsy: true} also deletes its linked Etsy listing (if it still exists). */
+  deleteDraft: (id: number, opts?: DeleteDraftOptions): Promise<MyShopResult<{ deletedOnEtsy: boolean }>> =>
+    ipcRenderer.invoke('drafts:delete', id, opts),
   /** "Зберегти як" for a stored draft file/photo: value null = the user cancelled. */
   saveDraftMedia: (mediaId: number): Promise<MyShopResult<{ path: string } | null>> =>
     ipcRenderer.invoke('drafts:saveMedia', mediaId),
-  /** Send to Etsy: as an Etsy draft, or published ($0.20). */
-  sendDraft: (id: number, publish: boolean): Promise<CreateListingResult> => ipcRenderer.invoke('drafts:send', id, publish),
+  /**
+   * Send to Etsy: a new listing (as an Etsy draft, or published — $0.20), or, once linked,
+   * an update of that listing ({overwrite: true} replaces changes made on Etsy since the last sync).
+   */
+  sendDraft: (id: number, publish: boolean, opts?: SendDraftOptions): Promise<CreateListingResult> =>
+    ipcRenderer.invoke('drafts:send', id, publish, opts),
+  /** Forget the linked Etsy listing so the draft can be sent as a new one. */
+  unlinkDraft: (id: number): Promise<MyShopResult<ListingDraft>> => ipcRenderer.invoke('drafts:unlink', id),
+  /** Pull the own shop's Etsy drafts into the app now. */
+  pullDrafts: (): Promise<MyShopResult<DraftPullSummary>> => ipcRenderer.invoke('drafts:pull'),
+  /** The last/current pull (also pushed via onDraftsPull). */
+  getDraftsPullState: (): Promise<DraftPullState> => ipcRenderer.invoke('drafts:pullState'),
   onDraftsChanged: (cb: (d: ListingDraft[]) => void): (() => void) => subscribe('drafts:changed', cb),
+  onDraftsPull: (cb: (s: DraftPullState) => void): (() => void) => subscribe('drafts:pull', cb),
   /** Every feature's actions (main/features): {ok, value} | {ok: false, error}. */
   featureCall: (feature: string, action: string, args?: Record<string, unknown>): Promise<MyShopResult<unknown>> =>
     ipcRenderer.invoke('feature:call', feature, action, args ?? {}),

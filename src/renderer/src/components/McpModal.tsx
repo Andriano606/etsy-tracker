@@ -50,7 +50,13 @@ export const MCP_LOCAL_TOOLS: ReadonlySet<string> = new Set([
 ])
 
 /** Drafts kept in the app (nothing reaches Etsy until one is sent); sending is a write tool. */
-export const MCP_DRAFT_TOOLS: ReadonlySet<string> = new Set(['prepare_product', 'list_prepared_products', 'delete_prepared_product'])
+export const MCP_DRAFT_TOOLS: ReadonlySet<string> = new Set([
+  'prepare_product',
+  'list_prepared_products',
+  'sync_prepared_products',
+  'unlink_prepared_product',
+  'delete_prepared_product'
+])
 
 const OLD_NAMES = MCP_OLD_SERVER_NAMES.map((n) => `«${n}»`).join(', ')
 
@@ -547,8 +553,10 @@ function McpDialog({ onClose }: { onClose: () => void }): JSX.Element {
           </summary>
           <div className="settings-details-body">
             <p className="settings-note">
-              Чернетки зберігаються лише в програмі (кнопка «Чернетки» у шапці вашого магазину — вона з’являється, коли ви увійшли в Etsy), дозвіл на зміни для них не потрібен. На Etsy чернетку
-              надсилаєте ви самі — або Claude інструментом <code>send_prepared_product</code>, якщо зміни дозволено.
+              Чернетки зберігаються лише в програмі (кнопка «Чернетки» у шапці вашого магазину — вона з’являється, коли ви увійшли в Etsy), дозвіл на зміни для них не потрібен (крім видалення товару й на Etsy). На Etsy
+              чернетку надсилаєте ви самі — або Claude інструментом <code>send_prepared_product</code>, якщо зміни дозволено; надіслана чернетка
+              лишається пов’язаною з товаром на Etsy, і наступне надсилання оновлює той самий товар. <code>sync_prepared_products</code> підтягує
+              чернетки, створені на сайті Etsy (потрібен вхід).
             </p>
             <ToolList tools={draftTools} testId="mcp-draft-tools" />
           </div>

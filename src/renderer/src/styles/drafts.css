@@ -66,3 +66,96 @@
 .draft-next-hint {
   margin: 0;
 }
+
+/* ---- Linked drafts: the Etsy strip in the editor, a send's result, notes ---- */
+.draft-link {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.draft-link-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px var(--sp-2);
+  min-width: 0;
+}
+.draft-link-head > svg {
+  flex: none;
+  color: var(--text-dim);
+}
+.draft-link-title {
+  font-weight: 600;
+  color: var(--text);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.draft-link-meta {
+  margin: 0;
+}
+.draft-result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+}
+.draft-outcome > [data-testid] > .ui-callout {
+  margin-bottom: var(--sp-2);
+}
+
+/* The delete menu's trigger looks like the other small danger buttons. */
+.draft-delete-menu {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ---- The drafts list: sync with Etsy, row actions ---- */
+.draft-pull {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
+  min-width: 0;
+}
+.draft-pull-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+  min-width: 0;
+}
+.draft-pull-status {
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.draft-pull-status:empty {
+  display: none;
+}
+.draft-row-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+}
+
+/* A file row's trailing columns: the size, then a download (or this spacer of its width), then ×. */
+.my-file-size {
+  flex: none;
+  text-align: right;
+}
+.my-file-slot {
+  flex: none;
+  width: var(--control-h-sm);
+}
+.my-file > .ui-badge {
+  flex: none;
+}
+
+/* Scrolled into view when a send says something: clear of the sticky save bar (up to two rows of buttons). */
+.draft-outcome {
+  scroll-margin-bottom: 140px;
+}

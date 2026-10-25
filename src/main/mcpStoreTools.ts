@@ -2,7 +2,10 @@
 // read its listings in any state live, find Etsy categories, and — only while
 // the MCP modal's "Дозволити Claude змінювати мій магазин" is on — create and
 // edit listings, add photos/files, and edit the shop texts through the Etsy
-// API. Plus the drafts kept in the app (prepare_product …), which need neither.
+// API. Plus the drafts kept in the app (prepare_product …): saving, listing,
+// unlinking and deleting them locally need neither; pulling Etsy drafts in
+// (sync_prepared_products) needs the sign-in; sending (create or update the
+// linked listing) and deleting the Etsy listing too need both.
 // Tool names and JSON keys keep the catalog vocabulary of mcpTools.ts
 // ("store" = Etsy shop, "product" = Etsy listing); descriptions say Etsy.
 
@@ -11,11 +14,14 @@ import { readFile, stat } from 'fs/promises'
 import { basename, isAbsolute } from 'path'
 import type {
   DraftFields,
+  DraftMedia,
+  DraftPullSummary,
   EtsyAuthStatus,
   ListingDraft,
   MyListing,
   MyListingPatch,
   MyListingState,
+  MyShopResult,
   NewListingInput,
   TaxonomyOption
 } from '../shared/types'
@@ -33,6 +39,7 @@ import {
   WHO_MADE,
   etsyListingEditUrl,
   etsyListingUrl,
+  missingScopes,
   normalizeDraftFields
 } from '../shared/myShop'
 import { priceValue } from '../shared/format'
@@ -49,7 +56,18 @@ import {
   saveMyShop
 } from './myShop'
 import type { Db } from './db'
-import { type DraftMediaInput, deleteDraft, getDraft, listDrafts, saveDraft, sendDraft } from './drafts'
+import {
+  type DraftMediaSlot,
+  deleteDraft,
+  deleteDraftEverywhere,
+  getDraft,
+  listDrafts,
+  saveDraft,
+  sendDraft,
+  unlinkDraft
+} from './drafts'
+import { importEtsyDrafts } from './draftImport'
+import { type Downloaded, downloadImage } from './imageSync'
 
 /** Drafts kept in the app: prepared over MCP, reviewed and sent by the user there. */
 export interface DraftDeps {
@@ -57,6 +75,14 @@ export interface DraftDeps {
   now?: () => number
   /** A draft changed (the app refreshes its list). */
   onChanged?: () => void
+  /**
+   * Pull the user's Etsy drafts into the app (ipc.ts pullEtsyDrafts: one pull
+   * at a time, shared with the app's own, and the drafts window's progress).
+   * Absent: sync_prepared_products runs importEtsyDrafts itself.
+   */
+  pull?: () => Promise<MyShopResult<DraftPullSummary>>
+  /** Only for that direct pull: a photo from Etsy's CDN (default: downloadImage over fetch). */
+  fetchImage?: (url: string) => Promise<Downloaded>
 }
 
 export interface OwnStoreDeps {
@@ -256,12 +282,46 @@ const WRITE_NOTE =
 /** Etsy's fee for publishing a listing (a draft, or renewing an expired one). */
 const FEE = 'Etsy charges a listing fee (USD 0.20) — ask the user first'
 
+/** A draft's status for a client (ListingDraft.status in the app's words). */
+const DRAFT_STATUS: Record<ListingDraft['status'], string> = {
+  draft: 'waiting_for_review',
+  sent: 'sent',
+  changed: 'changed_since_sent',
+  error: 'send_failed'
+}
+
+const PREPARED_BY: Record<ListingDraft['source'], string> = { app: 'user', mcp: 'assistant', etsy: 'etsy_site' }
+
+const iso = (ms: number | null | undefined): string | null => (ms != null ? new Date(ms).toISOString() : null)
+
+/** The Etsy listing a draft is linked to, for a client (null = never sent). */
+function etsyLinkOut(d: ListingDraft) {
+  const e = d.etsy
+  if (!e) return null
+  return {
+    product_id: e.listingId,
+    // draft | active | inactive | expired | sold_out | removed (deleted on Etsy); null = not known yet.
+    state: e.state,
+    unsent_changes: e.dirty,
+    changed_on_etsy: e.changedOnEtsy,
+    removed_on_etsy: e.removed,
+    url: e.url,
+    edit_url: e.removed ? null : e.editUrl,
+    last_synced_at: iso(e.syncedAt),
+    etsy_updated_at: e.etsyUpdatedAt != null ? new Date(e.etsyUpdatedAt * 1000).toISOString() : null,
+    // Sent by an older app version: never compared with Etsy — the next send asks first (a conflict answer).
+    never_compared_with_etsy: e.unverified,
+    // The last sync couldn't fetch some of its photos/files from Etsy: a send keeps those on Etsy.
+    some_media_not_pulled: e.incomplete
+  }
+}
+
 function draftOut(d: ListingDraft) {
   const f = d.fields
   return {
     draft_id: d.id,
-    status: d.status === 'draft' ? 'waiting_for_review' : d.status === 'sent' ? 'sent' : 'send_failed',
-    prepared_by: d.source === 'mcp' ? 'assistant' : 'user',
+    status: DRAFT_STATUS[d.status] ?? d.status,
+    prepared_by: PREPARED_BY[d.source] ?? 'user',
     type: f.type === 'download' ? 'digital' : 'physical',
     title: f.title,
     description: f.description,
@@ -279,7 +339,10 @@ function draftOut(d: ListingDraft) {
     processing_profile_id: f.readinessStateId,
     photos: d.photos.map((p) => p.name),
     files: d.files.map((p) => p.name),
+    // Buyer files pulled from an Etsy draft: only on Etsy (Etsy gives no download), kept with { keep: n }.
+    files_only_on_etsy: d.files.filter((p) => p.remote).map((p) => p.name),
     problems: d.problems,
+    etsy: etsyLinkOut(d),
     sent_product_id: d.sentListingId,
     sent_published: d.sentPublished,
     last_error: d.lastError,
@@ -310,6 +373,17 @@ function fieldsFrom(a: Record<string, unknown>, base: DraftFields): DraftFields 
   return f
 }
 
+/** A photo/file of prepare_product: new content (MEDIA_ITEM), or one the draft already has, kept in place. */
+const DRAFT_MEDIA_ITEM: JsonSchema = {
+  type: 'object',
+  description:
+    'New content — {"path": "/home/me/cover.jpg"} or {"data_base64": "…", "name": "cover.jpg"} — or one the draft already has: {"keep": 2} = its photo/file at position 2 (1-based, in the order list_prepared_products shows), which stays as it is (and is not uploaded to Etsy again).',
+  properties: {
+    ...MEDIA_ITEM.properties,
+    keep: { type: 'integer', minimum: 1, description: "1-based position of a photo/file already in this draft (with draft_id) to keep at this place." }
+  }
+}
+
 const DRAFT_FIELD_PROPS: Record<string, JsonSchema> = {
   type: { type: 'string', enum: ['digital', 'physical'], description: 'Default digital.' },
   title: { type: 'string', maxLength: TITLE_MAX },
@@ -327,13 +401,13 @@ const DRAFT_FIELD_PROPS: Record<string, JsonSchema> = {
   processing_profile_id: { type: 'integer', minimum: 1 },
   photos: {
     type: 'array',
-    items: MEDIA_ITEM,
-    description: `Up to ${MAX_IMAGES} JPG/PNG/GIF (≤ ${MAX_IMAGE_BYTES / 1024 / 1024} MB each), first = main photo; replaces the draft's photos when given.`
+    items: DRAFT_MEDIA_ITEM,
+    description: `Up to ${MAX_IMAGES} JPG/PNG/GIF (≤ ${MAX_IMAGE_BYTES / 1024 / 1024} MB each), first = main photo. When given, this is the draft's whole new photo list in order: photos of the draft not listed (as {"keep": n}) are removed — and, for a draft linked to an Etsy listing, removed from that listing too on its next send.`
   },
   files: {
     type: 'array',
-    items: MEDIA_ITEM,
-    description: `Files the buyer downloads (digital only — not sent for a physical listing): up to ${MAX_DIGITAL_FILES}, ≤ ${MAX_DIGITAL_FILE_BYTES / 1024 / 1024} MB each; replaces the draft's files when given.`
+    items: DRAFT_MEDIA_ITEM,
+    description: `Files the buyer downloads (digital only — not sent for a physical listing): up to ${MAX_DIGITAL_FILES}, ≤ ${MAX_DIGITAL_FILE_BYTES / 1024 / 1024} MB each. When given, this is the draft's whole new file list: files not listed (as {"keep": n}) are removed — for a linked draft also on Etsy at its next send. A file that exists only on Etsy (files_only_on_etsy) can only be kept with {"keep": n}.`
   }
 }
 
@@ -352,6 +426,92 @@ export function createDraftTools(own: OwnStoreDeps | undefined, drafts: DraftDep
       return null
     }
   }
+  const draftOf = (d: DraftDeps, id: unknown): ListingDraft => {
+    const draft = getDraft(d.db, Number(id))
+    if (!draft) throw new ToolInputError(`No draft ${String(id)}.`)
+    return draft
+  }
+  /**
+   * prepare_product's photos/files argument → the draft's new ordered list:
+   * {keep: n} = the draft's current item n (it keeps its Etsy copy), anything
+   * else new content (resolveMedia: path or base64).
+   */
+  async function slots(items: unknown, kind: 'photo' | 'file', current: DraftMedia[] | null): Promise<DraftMediaSlot[]> {
+    if (!Array.isArray(items)) throw new ToolInputError(`Argument "${kind}s" must be an array.`)
+    const out: Array<DraftMediaSlot | null> = []
+    const fresh: unknown[] = []
+    const used = new Set<number>()
+    for (const item of items) {
+      const keep = (item as { keep?: unknown } | null)?.keep
+      if (keep == null) {
+        out.push(null)
+        fresh.push(item)
+        continue
+      }
+      const m = item as Record<string, unknown>
+      if (m.path != null || m.data_base64 != null) throw new ToolInputError(`A ${kind} is either {"keep": n} or new content, not both.`)
+      if (!current) throw new ToolInputError(`{"keep": n} needs draft_id — a new draft has no ${kind}s to keep.`)
+      const n = Number(keep)
+      if (!Number.isInteger(n) || n < 1 || n > current.length) {
+        throw new ToolInputError(`The draft has no ${kind} at position ${String(keep)} (it has ${current.length}).`)
+      }
+      if (used.has(n)) throw new ToolInputError(`The draft's ${kind} ${n} is kept twice.`)
+      used.add(n)
+      out.push({ mediaId: current[n - 1].id })
+    }
+    if (!fresh.length) return out as DraftMediaSlot[]
+    const media = await resolveMedia(own ?? ({} as OwnStoreDeps), kind === 'photo' ? fresh : undefined, kind === 'file' ? fresh : undefined)
+    const tokens = kind === 'photo' ? media.photos : media.files
+    const read = await Promise.all(
+      tokens.map(async (t) => {
+        const f = media.registry.get(t)!
+        return { name: f.name, data: await media.readFile(f.path) }
+      })
+    )
+    let next = 0
+    return out.map((s) => s ?? read[next++])
+  }
+  /** Pull the user's Etsy drafts into the app: the app's single-flight pull, else directly (one at a time per db). */
+  async function pull(d: DraftDeps, o: OwnStoreDeps): Promise<DraftPullSummary> {
+    if (d.pull) {
+      const res = await d.pull()
+      if (!res.ok) throw new Error(res.error)
+      return res.value
+    }
+    const running = directPulls.get(d.db)
+    if (running) return running
+    const run = importEtsyDrafts({
+      db: d.db,
+      client: o.client,
+      auth: { status: o.status },
+      taxonomy: o.taxonomy,
+      fetchImage:
+        d.fetchImage ??
+        ((url) =>
+          downloadImage(url, {
+            fetch: (...args: Parameters<typeof fetch>) => fetch(...args),
+            sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+            timeoutMs: 30_000,
+            retries: 2,
+            maxBytes: MAX_IMAGE_BYTES
+          })),
+      now: d.now ?? Date.now
+    }).finally(() => {
+      directPulls.delete(d.db)
+      changed()
+    })
+    directPulls.set(d.db, run)
+    return run
+  }
+  /** Refused unless the sign-in has this OAuth scope (English, for the client). */
+  const needScope = (o: OwnStoreDeps, scope: string, what: string): void => {
+    if (missingScopes(o.status().scopes, [scope]).length) {
+      throw new ToolInputError(
+        `The user's Etsy sign-in lacks the "${scope}" permission needed to ${what}. Ask them to sign out and sign in to Etsy again in the app (the "Керувати" button in their own shop's header → "Вийти", then "Увійти через Etsy").`
+      )
+    }
+  }
+
   return [
     {
       name: 'prepare_product',
@@ -360,7 +520,7 @@ export function createDraftTools(own: OwnStoreDeps | undefined, drafts: DraftDep
       title: 'Prepare an Etsy listing draft in the app',
       readOnly: false,
       description:
-        "Saves a listing draft INSIDE THE APP (its local database) — nothing is sent to Etsy. The user reviews and edits it in the app (the \"Чернетки\" button in the header of their own shop — it appears only once the user signed in to Etsy in the app, so ask a signed-out user to sign in via \"✏️ Мій магазин\" to see the draft) and sends it to Etsy themselves; the preferred way to propose a new listing. Without draft_id it creates a draft; with draft_id it updates that one (only the given fields change; photos/files, when given, replace that list; a draft already sent to Etsy can't be changed). Same fields as create_product, all optional (defaults: digital, quantity 999 / 1 for physical, made_by i_did, made_when made_to_order, auto_renew true). Returns the draft; `problems` (Ukrainian) = what still blocks sending it as an Etsy draft — publishing also needs a photo and, for digital, a file. Saving needs neither the Etsy sign-in nor the 'allow changes' switch (only reviewing it in the app needs the sign-in); a category_id is looked up in Etsy's category tree for the `category` path.",
+        "Saves a listing draft INSIDE THE APP (its local database) — nothing is sent to Etsy. The user reviews and edits it in the app (the \"Чернетки\" button in the header of their own shop — it appears only once the user signed in to Etsy in the app, so ask a signed-out user to sign in via \"✏️ Мій магазин\" to see the draft) and sends it to Etsy themselves; the preferred way to propose a new listing. Without draft_id it creates a draft; with draft_id it updates that one (only the given fields change; photos/files, when given, replace that list — keep existing ones with {\"keep\": n}). A draft linked to an Etsy listing (already sent, or pulled from an Etsy draft — see `etsy` in list_prepared_products) can be edited too: it becomes changed_since_sent, and the Etsy listing changes only when the draft is sent again (send_prepared_product, or the user in the app). Same fields as create_product, all optional (defaults: digital, quantity 999 / 1 for physical, made_by i_did, made_when made_to_order, auto_renew true). Returns the draft; `problems` (Ukrainian) = what still blocks sending it as an Etsy draft — publishing also needs a photo and, for digital, a file. Saving needs neither the Etsy sign-in nor the 'allow changes' switch (only reviewing it in the app needs the sign-in); a category_id is looked up in Etsy's category tree for the `category` path.",
       inputSchema: {
         type: 'object',
         properties: { draft_id: { type: 'integer', minimum: 1, description: 'Update this draft instead of creating one.' }, ...DRAFT_FIELD_PROPS },
@@ -369,34 +529,24 @@ export function createDraftTools(own: OwnStoreDeps | undefined, drafts: DraftDep
       run: async (a) => {
         try {
           const d = need()
-          const existing = a.draft_id != null ? getDraft(d.db, Number(a.draft_id)) : null
-          if (a.draft_id != null && !existing) throw new ToolInputError(`No draft ${String(a.draft_id)}.`)
+          const existing = a.draft_id != null ? draftOf(d, a.draft_id) : null
           const fields = fieldsFrom(a, existing?.fields ?? normalizeDraftFields({}))
           if (a.category_id != null) fields.taxonomyPath = await categoryPath(fields.taxonomyId)
-          let photos: DraftMediaInput[] | undefined
-          let files: DraftMediaInput[] | undefined
-          if (a.photos != null || a.files != null) {
-            const media = await resolveMedia(own ?? ({} as OwnStoreDeps), a.photos, a.files)
-            const read = async (tokens: string[]) =>
-              Promise.all(
-                tokens.map(async (t) => {
-                  const f = media.registry.get(t)!
-                  return { name: f.name, data: await media.readFile(f.path) }
-                })
-              )
-            if (a.photos != null) photos = await read(media.photos)
-            if (a.files != null) files = await read(media.files)
-          }
+          const photos = a.photos != null ? await slots(a.photos, 'photo', existing?.photos ?? null) : undefined
+          const files = a.files != null ? await slots(a.files, 'file', existing?.files ?? null) : undefined
           const saved = saveDraft(
             d.db,
-            { id: existing?.id, source: existing?.source ?? 'mcp', fields, photos, files },
+            { id: existing?.id, source: existing?.source === 'app' ? 'app' : 'mcp', fields, photos, files },
             (d.now ?? Date.now)()
           )
           changed()
-          return textResult({
-            ...draftOut(saved),
-            note: 'Saved in the app as a draft for the user to review. Nothing was sent to Etsy.'
-          })
+          const link = saved.etsy
+          const note = !link
+            ? 'Saved in the app as a draft for the user to review. Nothing was sent to Etsy.'
+            : link.removed
+              ? `Saved in the app only. Its Etsy listing #${link.listingId} was deleted on Etsy, so it can't be updated — to send this draft as a new listing, unlink it first (unlink_prepared_product, when the user wants that).`
+              : `Saved in the app only — Etsy listing #${link.listingId} is unchanged until the draft is sent again (by the user in the app, or send_prepared_product when the user asks).`
+          return textResult({ ...draftOut(saved), note })
         } catch (e) {
           return fail(e)
         }
@@ -406,7 +556,7 @@ export function createDraftTools(own: OwnStoreDeps | undefined, drafts: DraftDep
       name: 'list_prepared_products',
       title: 'Listing drafts kept in the app',
       description:
-        "Every listing draft in the app's local database (prepared_by user or assistant), most recently changed first, all at once (no Etsy call): the fields, photo/file names, `problems` (Ukrainian; what still blocks sending it as an Etsy draft) and the status — waiting_for_review, sent (sent_product_id = the Etsy listing id, sent_published) or send_failed (last_error; sent_product_id is set when the Etsy listing was created anyway).",
+        "Every listing draft in the app's local database, most recently changed first, all at once (no Etsy call): prepared_by (user, assistant, or etsy_site = pulled from a draft the user made on Etsy's site), the fields, photo/file names (files_only_on_etsy = buyer files that exist only on Etsy), `problems` (Ukrainian; what still blocks sending it as an Etsy draft) and the status — waiting_for_review (never sent), sent (linked to its Etsy listing and in sync), changed_since_sent (linked, with edits not yet on Etsy) or send_failed (last_error; the draft may be linked anyway). `etsy` is null for a draft never sent, else the linked Etsy listing: product_id, state (draft, active, inactive, expired, sold_out, or removed = deleted on Etsy; null = not known yet), unsent_changes, changed_on_etsy (the listing was changed on Etsy too since the last sync — sending would overwrite that), removed_on_etsy, url (the public page, only while active), edit_url (the user's Etsy listing editor), last_synced_at, etsy_updated_at, never_compared_with_etsy (sent by an older app version: the next send first answers a conflict — ask the user before overwriting), some_media_not_pulled (a sync couldn't fetch some photos/files from Etsy; a send keeps those on Etsy). What's shown is as of the last send or sync (sync_prepared_products refreshes it).",
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
       run: () => {
         try {
@@ -418,11 +568,39 @@ export function createDraftTools(own: OwnStoreDeps | undefined, drafts: DraftDep
       }
     },
     {
-      name: 'delete_prepared_product',
-      title: 'Delete a draft kept in the app',
+      name: 'sync_prepared_products',
+      openWorld: true,
+      title: "Pull the user's Etsy drafts into the app",
       readOnly: false,
+      // Local only, but it overwrites unedited linked drafts with Etsy's version and drops pulled drafts deleted on Etsy.
+      destructive: true,
       description:
-        "Deletes a draft and its photos/files from the app's local database. Never touches Etsy — a listing already sent stays on Etsy. Only when the user asked.",
+        "Reads the user's own Etsy shop now (Etsy API, OAuth listings_r; needs the Etsy sign-in, not the 'allow changes' switch — nothing on Etsy is changed) and updates the drafts kept in the app: every Etsy draft listing not yet in the app becomes an app draft (prepared_by etsy_site, with its photos; its buyer files stay only on Etsy), linked drafts without unsent edits are refreshed from Etsy, linked drafts with unsent edits whose listing changed on Etsy are only marked changed_on_etsy (never overwritten), and linked drafts whose listing left Etsy's drafts get its current state (removed = deleted on Etsy; an unedited pulled draft is then dropped from the app). The app also does this after every scan of the user's shop. Returns {imported, updated, removed, conflicts, errors (Ukrainian, per listing)}; then see list_prepared_products.",
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      run: async () => {
+        try {
+          const d = need()
+          const o = signedIn(own)
+          const s = await pull(d, o)
+          return textResult({
+            imported: s.imported,
+            updated: s.updated,
+            removed: s.removed,
+            conflicts: s.conflicts,
+            errors: s.errors
+          })
+        } catch (e) {
+          return fail(e)
+        }
+      }
+    },
+    {
+      name: 'unlink_prepared_product',
+      title: 'Unlink an app draft from its Etsy listing',
+      readOnly: false,
+      destructive: true,
+      description:
+        "Makes the app forget which Etsy listing a draft was sent as (local only — the Etsy listing itself is not changed and stays on Etsy), so the next send_prepared_product creates a NEW Etsy listing instead of updating it — e.g. after the listing was deleted on Etsy (etsy.removed_on_etsy). Buyer files that exist only on Etsy can't be uploaded again, so they leave the draft (`notes` say which; the user must add them again). If the old listing still exists on Etsy, sending afterwards gives the shop two listings, and while it is still an Etsy draft the next sync pulls it into the app again as a separate draft — so only when the user asked. Returns the draft.",
       inputSchema: {
         type: 'object',
         properties: { draft_id: { type: 'integer', minimum: 1 } },
@@ -431,9 +609,75 @@ export function createDraftTools(own: OwnStoreDeps | undefined, drafts: DraftDep
       },
       run: (a) => {
         try {
-          if (!deleteDraft(need().db, Number(a.draft_id))) throw new ToolInputError(`No draft ${String(a.draft_id)}.`)
+          const d = need()
+          const draft = draftOf(d, a.draft_id)
+          if (!draft.etsy) throw new ToolInputError(`Draft ${draft.id} is not linked to an Etsy listing (it was never sent).`)
+          const listingId = draft.etsy.listingId
+          const out = unlinkDraft(d.db, draft.id, (d.now ?? Date.now)())
           changed()
-          return textResult({ deleted: Number(a.draft_id) })
+          return textResult({
+            ...draftOut(out),
+            unlinked_product_id: listingId,
+            notes: out.notes ?? [],
+            note: `Unlinked from Etsy listing #${listingId}, which stays on Etsy unchanged. Sending this draft now creates a new Etsy listing.`
+          })
+        } catch (e) {
+          return fail(e)
+        }
+      }
+    },
+    {
+      name: 'delete_prepared_product',
+      openWorld: true,
+      title: 'Delete a draft kept in the app (and, if asked, its Etsy listing)',
+      readOnly: false,
+      destructive: true,
+      description: `Deletes a draft and its photos/files from the app's local database — only when the user asked. By default Etsy is not touched: a listing already sent stays on Etsy (and if it is still an Etsy draft, the next sync pulls it into the app again as a new draft). also_on_etsy=true also deletes the linked Etsy listing, whatever its state (active ones too) — that can't be undone, so confirm with the user first; it changes the user's live Etsy shop (Etsy API deleteListing, OAuth listings_d) and so needs the Etsy sign-in and the app's "allow changes" switch. If Etsy refuses, the draft stays in the app (the error may be partly Ukrainian); a listing already gone from Etsy counts as deleted. A draft never sent, or whose listing was deleted on Etsy, is just deleted locally.`,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          draft_id: { type: 'integer', minimum: 1 },
+          also_on_etsy: { type: 'boolean', default: false, description: 'Also delete the linked Etsy listing (permanent).' }
+        },
+        required: ['draft_id'],
+        additionalProperties: false
+      },
+      run: async (a) => {
+        try {
+          const d = need()
+          const draft = draftOf(d, a.draft_id)
+          const link = draft.etsy && !draft.etsy.removed ? draft.etsy : null
+          if (a.also_on_etsy && link) {
+            const w = writable(own)
+            needScope(w, 'listings_d', 'delete listings')
+            const res = await deleteDraftEverywhere({ client: w.client, auth: { status: w.status }, db: d.db }, draft.id)
+            if (!res.ok) {
+              return {
+                content: [{ type: 'text', text: JSON.stringify({ error: res.error, product_id: link.listingId, draft_kept: true }) }],
+                isError: true
+              }
+            }
+            changed()
+            return textResult({ deleted: draft.id, deleted_on_etsy: res.value.deletedOnEtsy, product_id: link.listingId })
+          }
+          if (!deleteDraft(d.db, draft.id)) throw new ToolInputError(`No draft ${String(a.draft_id)}.`)
+          changed()
+          return textResult({
+            deleted: draft.id,
+            deleted_on_etsy: false,
+            ...(link
+              ? {
+                  product_id: link.listingId,
+                  note: `Deleted in the app only — Etsy listing #${link.listingId} stays on Etsy${link.state === 'draft' ? ' (still an Etsy draft: the next sync pulls it into the app again)' : ''}.`
+                }
+              : a.also_on_etsy
+                ? {
+                    note: draft.etsy
+                      ? `Etsy listing #${draft.etsy.listingId} was already deleted on Etsy — nothing left to delete there.`
+                      : 'The draft was never sent to Etsy — nothing to delete there.'
+                  }
+                : {})
+          })
         } catch (e) {
           return fail(e)
         }
@@ -442,13 +686,21 @@ export function createDraftTools(own: OwnStoreDeps | undefined, drafts: DraftDep
     {
       name: 'send_prepared_product',
       openWorld: true,
-      title: 'Send an app draft to Etsy',
+      title: 'Send an app draft to Etsy (create, or update its listing)',
       readOnly: false,
       destructive: true,
-      description: `${WRITE_NOTE} Sends a draft from the app to the user's own Etsy shop with the same steps as create_product (Etsy API, OAuth listings_w): creates an Etsy draft listing, uploads the draft's photos and files, and with publish=true publishes it (${FEE}; publishing needs a photo, and a file for digital). Returns product_id (the Etsy listing id), status, url (the public Etsy page — only when published, else null) and edit_url (the listing in the user's Etsy listing editor; drafts too). A draft is sent once: afterwards it is read-only and another send is refused with its product_id. On failure: {error, product_id, edit_url} — product_id/edit_url are set when the Etsy listing was already created (finish it with add_product_media / update_my_product); the error may be partly Ukrainian. Usually the user sends drafts themselves after reviewing them; call this only when they ask you to.`,
+      description: `${WRITE_NOTE} Sends a draft from the app to the user's own Etsy shop (Etsy API, OAuth listings_r + listings_w). A draft never sent: the same steps as create_product — creates an Etsy draft listing, uploads the draft's photos and files, and with publish=true publishes it. A draft already linked to an Etsy listing (etsy in list_prepared_products): UPDATES that listing to match the draft — never a second listing: title, description, tags, materials, category, who/when made, supply, auto-renew, type, shipping profile; price, quantity and processing profile (only for a listing without variations — otherwise a note says they were left alone); photos in the draft's order (new ones uploaded, ones not in the draft deleted from the listing) and buyer files the same way. A live (active) listing changes for buyers at once. publish=true also publishes a linked listing that isn't active (${FEE} — for an Etsy draft, expired or sold-out listing; an inactive one is reactivated for free); publish=false never deactivates. Publishing — or updating an active listing — needs a photo, and a file for digital. If the listing was changed on Etsy since the app last synced it (or the draft was sent by an older app version and was never compared with Etsy), nothing is written and the answer is {conflict: true, …}: tell the user and only with their agreement send again with overwrite_etsy_changes=true (that replaces the changes made on Etsy). A listing deleted on Etsy answers removed_on_etsy: true (unlink_prepared_product, then send, creates a new one). Success: {draft_id, action (created|updated), product_id (the Etsy listing id), status (its Etsy state), url (the public Etsy page — only when active, else null), edit_url (the listing in the user's Etsy listing editor), notes (Ukrainian; what wasn't or couldn't be done)}. Failure: {error, product_id, edit_url, …} — product_id is set when the Etsy listing exists; the steps already done are kept, so sending again continues without duplicates; the error may be partly Ukrainian. Usually the user sends drafts themselves after reviewing them; call this only when they ask you to.`,
       inputSchema: {
         type: 'object',
-        properties: { draft_id: { type: 'integer', minimum: 1 }, publish: { type: 'boolean', default: false } },
+        properties: {
+          draft_id: { type: 'integer', minimum: 1 },
+          publish: { type: 'boolean', default: false },
+          overwrite_etsy_changes: {
+            type: 'boolean',
+            default: false,
+            description: 'Only after the user agreed: replace changes made on Etsy since the last sync (after a conflict answer).'
+          }
+        },
         required: ['draft_id'],
         additionalProperties: false
       },
@@ -456,34 +708,43 @@ export function createDraftTools(own: OwnStoreDeps | undefined, drafts: DraftDep
         try {
           const d = need()
           const w = writable(own)
+          const id = Number(a.draft_id)
           const res = await sendDraft(
             { client: w.client, auth: { status: w.status }, db: d.db, now: d.now, describe: mcpErrorText },
-            Number(a.draft_id),
-            !!a.publish
+            id,
+            !!a.publish,
+            { overwrite: a.overwrite_etsy_changes === true }
           )
           changed()
           if (!res.ok) {
-            return {
-              content: [
-                {
-                  type: 'text',
-                  text: JSON.stringify({
-                    error: res.error,
-                    product_id: res.listingId ?? null,
-                    edit_url: res.listingId != null ? etsyListingEditUrl(res.listingId) : null
-                  })
-                }
-              ],
-              isError: true
+            const out: Record<string, unknown> = {
+              error: res.error,
+              product_id: res.listingId ?? null,
+              edit_url: res.listingId != null && !res.removedOnEtsy ? etsyListingEditUrl(res.listingId) : null
             }
+            if (res.conflict) {
+              out.conflict = true
+              out.what_to_do =
+                'Nothing was sent. The Etsy listing was changed (on Etsy or elsewhere) after the app last synced this draft. Tell the user; only if they agree to replace those Etsy changes with the draft, call send_prepared_product again with overwrite_etsy_changes=true.'
+            }
+            if (res.removedOnEtsy) {
+              out.removed_on_etsy = true
+              out.what_to_do =
+                'The Etsy listing was deleted on Etsy, so it cannot be updated. If the user wants it as a new listing: unlink_prepared_product, then send_prepared_product.'
+            }
+            if (res.notes?.length) out.notes = res.notes
+            return { content: [{ type: 'text', text: JSON.stringify(out) }], isError: true }
           }
+          const state = getDraft(d.db, id)?.etsy?.state ?? (res.published ? 'active' : 'draft')
           return textResult({
-            draft_id: Number(a.draft_id),
+            draft_id: id,
+            action: res.updated ? 'updated' : 'created',
             product_id: res.listingId,
-            status: res.published ? 'active' : 'draft',
-            // The public page exists only once published; the editor (drafts too) opens for the signed-in owner.
-            url: res.published ? etsyListingUrl(res.listingId) : null,
-            edit_url: etsyListingEditUrl(res.listingId)
+            status: state,
+            // The public page exists only while active; the editor (drafts too) opens for the signed-in owner.
+            url: state === 'active' ? etsyListingUrl(res.listingId) : null,
+            edit_url: etsyListingEditUrl(res.listingId),
+            notes: [...res.warnings, ...(res.notes ?? [])]
           })
         } catch (e) {
           return fail(e)
@@ -492,6 +753,9 @@ export function createDraftTools(own: OwnStoreDeps | undefined, drafts: DraftDep
     }
   ]
 }
+
+/** Direct pulls (no app pull given) per database: one at a time. */
+const directPulls = new WeakMap<Db, Promise<DraftPullSummary>>()
 
 export function createStoreTools(deps: OwnStoreDeps | undefined): McpTool[] {
   return [

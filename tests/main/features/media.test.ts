@@ -132,7 +132,7 @@ describe('media: load', () => {
       notes: []
     })
     const by = (p: string) => fetch.calls.find((c) => c.url.pathname === p)!
-    expect(by(`${PUB}/images`).headers.authorization).toBeUndefined()
+    expect(by(`${PUB}/images`).headers.authorization).toBe('Bearer tok')
     expect(by(`${PUB}/videos`).headers.authorization).toBeUndefined()
     expect(by(`${OWN}/files`).headers.authorization).toBe('Bearer tok')
     expect(fetch.calls.every((c) => c.method === 'GET' && c.url.search === '')).toBe(true)
@@ -306,7 +306,7 @@ describe('media: photos', () => {
     const { ctx, fetch } = setup()
     await runAction(mediaFeature, 'setAltText', { listingId: L, imageId: 12, altText: 'Лисиця з планером' }, ctx)
     expect(fetch.calls[0].url.pathname).toBe(`${PUB}/images/12`)
-    expect(fetch.calls[0].headers.authorization).toBeUndefined()
+    expect(fetch.calls[0].headers.authorization).toBe('Bearer tok')
     const post = fetch.calls.find((c) => c.method === 'POST')!
     expect(await parts(post)).toEqual({
       listing_image_id: '12',

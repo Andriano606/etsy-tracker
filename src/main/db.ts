@@ -489,6 +489,35 @@ export const MIGRATIONS: string[] = [
     data BLOB NOT NULL
   );
   CREATE INDEX listing_draft_media_draft ON listing_draft_media(draft_id, kind, position);
+  `,
+  // v6: drafts stay linked to their Etsy listing (sent_listing_id) — editable and
+  // sent again as an update, pulled from drafts made on Etsy's site, deleted on
+  // both sides. ALTERs only: rebuilding listing_drafts (e.g. to widen the source
+  // CHECK) would cascade-delete every draft's media.
+  `
+  ALTER TABLE listing_drafts ADD COLUMN imported INTEGER NOT NULL DEFAULT 0; -- 1 = pulled from an Etsy draft made on the site (source reads 'etsy')
+  ALTER TABLE listing_drafts ADD COLUMN etsy_state TEXT;                       -- draft|active|inactive|expired|sold_out|removed; NULL = not linked/unknown
+  ALTER TABLE listing_drafts ADD COLUMN etsy_updated_at INTEGER;               -- Etsy updated_timestamp (s) at the last successful push/pull
+  ALTER TABLE listing_drafts ADD COLUMN synced_at INTEGER;                     -- ms of the last successful push/pull
+  ALTER TABLE listing_drafts ADD COLUMN dirty INTEGER NOT NULL DEFAULT 0;      -- 1 = local edits not yet on Etsy
+  ALTER TABLE listing_drafts ADD COLUMN etsy_changed_at INTEGER;               -- s; Etsy changed while dirty (a conflict to show)
+  ALTER TABLE listing_draft_media ADD COLUMN etsy_id INTEGER;                  -- listing_image_id / listing_file_id on Etsy; NULL = not uploaded
+  ALTER TABLE listing_draft_media ADD COLUMN remote INTEGER NOT NULL DEFAULT 0; -- 1 = a buyer file only on Etsy (empty data)
+  UPDATE listing_drafts SET etsy_state = CASE sent_published WHEN 1 THEN 'active' ELSE 'draft' END
+    WHERE sent_listing_id IS NOT NULL;
+  CREATE INDEX listing_drafts_sent ON listing_drafts(sent_listing_id);
+  `,
+  // v7: what a link needs to be updated safely — the Etsy shop the linked listing
+  // belongs to (a sign-in with another account must not read its 404s as
+  // "deleted"), links never compared with Etsy (sent before v6: no Etsy ids of
+  // the media, no baseline time — the first update adopts Etsy's media and asks
+  // first), and what a pull couldn't fetch (kept on Etsy by the next update).
+  `
+  ALTER TABLE listing_drafts ADD COLUMN etsy_shop_id INTEGER;                   -- shop_id of the linked listing; NULL = unknown (linked before v7)
+  ALTER TABLE listing_drafts ADD COLUMN unverified INTEGER NOT NULL DEFAULT 0;  -- 1 = linked but never compared with Etsy (media ids/baseline unknown)
+  ALTER TABLE listing_drafts ADD COLUMN etsy_gaps TEXT;                         -- JSON {photos?: id[] | "all", files?: "all"}: what the last pull couldn't fetch; NULL = none
+  UPDATE listing_drafts SET unverified = 1
+    WHERE sent_listing_id IS NOT NULL AND synced_at IS NULL AND etsy_updated_at IS NULL;
   `
 ]
 

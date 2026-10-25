@@ -664,6 +664,8 @@ describe('honesty: data reaches a client as stored, secrets and CDN URLs never d
   it('the server presents itself as Etsy Tracker and explains what is local and what is live', () => {
     expect(mcpServerInfo('1.0.0')).toMatchObject({ name: 'etsy-tracker', title: 'Etsy Tracker', instructions: MCP_INSTRUCTIONS })
     expect(MCP_INSTRUCTIONS).toContain('Etsy Open API v3')
+    expect(MCP_INSTRUCTIONS).toContain('https://www.etsy.com/listing/<id>')
+    expect(MCP_INSTRUCTIONS).toMatch(/means product_id = <id> — call get_product/)
     expect(MCP_INSTRUCTIONS).toMatch(/Local data — no Etsy request/)
     expect(MCP_INSTRUCTIONS).toMatch(/Live Etsy tools/)
     expect(MCP_INSTRUCTIONS).toContain('is_mine')
@@ -672,7 +674,7 @@ describe('honesty: data reaches a client as stored, secrets and CDN URLs never d
     expect(MCP_INSTRUCTIONS).not.toMatch(/marketplace/i)
     // every tool name the instructions use is a real tool
     const names = new Set(w.tools.map((t) => t.name))
-    const fields = new Set(['finished_at', 'latest_snapshot', 'customer_country', 'sales_count', 'featured_position', 'is_mine', 'shop_id', 'listing_id', 'category_id'])
+    const fields = new Set(['finished_at', 'latest_snapshot', 'customer_country', 'sales_count', 'featured_position', 'is_mine', 'shop_id', 'listing_id', 'category_id', 'also_on_etsy', 'overwrite_etsy_changes', 'product_id'])
     const mentioned = (MCP_INSTRUCTIONS.match(/\b[a-z]+(?:_[a-z]+)+\b/g) ?? []).filter((m) => !fields.has(m))
     expect(mentioned.length).toBeGreaterThan(30)
     for (const m of mentioned) expect(names, m).toContain(m)
@@ -683,8 +685,24 @@ describe('honesty: data reaches a client as stored, secrets and CDN URLs never d
     for (const n of ['create_product', 'update_my_product', 'add_product_media', 'update_my_store', 'send_prepared_product', 'mark_my_order_shipped', 'update_my_order', 'consolidate_my_return_policies']) {
       expect(para, n).toContain(n)
     }
-    expect(para).toMatch(/exception: prepare_product and delete_prepared_product change only drafts kept inside the app/)
+    // Deleting a draft is gated only when it deletes the Etsy listing too.
+    expect(para).toContain('delete_prepared_product with also_on_etsy')
+    expect(para).toMatch(
+      /exception: prepare_product, unlink_prepared_product and delete_prepared_product \(without also_on_etsy\) change only drafts kept inside the app/
+    )
     expect(para).toContain('need neither the sign-in nor the switch')
+    // Pulling Etsy drafts reads Etsy (sign-in) but writes only the app.
+    expect(para).toMatch(/sync_prepared_products reads Etsy \(sign-in needed\) and writes only the app's drafts/)
+  })
+
+  it('instructions: linked drafts — editing, updating the same listing, conflicts, unlink, delete on Etsy', () => {
+    const para = MCP_INSTRUCTIONS.split('\n\n').find((p) => p.startsWith('New listings'))!
+    expect(para).toContain('prepare_product can edit its linked draft too')
+    expect(para).toContain('updates that same listing, never a second one')
+    expect(para).toContain('conflict: true and writes nothing: ask the user before sending again with overwrite_etsy_changes')
+    expect(para).toContain('sync_prepared_products')
+    expect(para).toContain('unlink_prepared_product forgets the link')
+    expect(para).toContain('with also_on_etsy the Etsy listing too, which can\'t be undone, so confirm with the user first')
   })
 
   it('instructions: the fee is for publishing a draft or renewing an expired/sold-out listing, not reactivating', () => {

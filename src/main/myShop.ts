@@ -186,6 +186,19 @@ export interface CreateDeps extends MyShopDeps {
   onProgress?: (p: CreateListingProgress) => void
   /** How an error reads inside the result's message (default: the UI's Ukrainian text). */
   describe?: (e: unknown) => string
+  /** The Etsy listing exists now (right after createDraftListing) — record it before anything else can fail. */
+  onCreated?: (listingId: number) => void
+  /**
+   * An upload finished: `index` in input.images / input.files, and Etsy's
+   * listing_image_id / listing_file_id from the answer (null when it had none).
+   */
+  onUploaded?: (kind: 'image' | 'file', index: number, etsyId: number | null) => void
+}
+
+/** A positive id from an Etsy answer, else null. */
+export function answerId(v: unknown, key: string): number | null {
+  const n = v && typeof v === 'object' ? (v as Record<string, unknown>)[key] : undefined
+  return typeof n === 'number' && Number.isSafeInteger(n) && n > 0 ? n : null
 }
 
 /** Check the picked files behind the tokens (exist, type, size). */
@@ -234,6 +247,7 @@ export async function createMyListing(deps: CreateDeps, input: NewListingInput):
   } catch (e) {
     return { ok: false, error: `Не вдалося створити товар: ${describe(e)}` }
   }
+  deps.onCreated?.(listingId)
   const failed = (what: string, e: unknown): CreateListingResult => ({
     ok: false,
     listingId,
@@ -244,7 +258,8 @@ export async function createMyListing(deps: CreateDeps, input: NewListingInput):
     progress('images', i, up.images.length, `Фото ${i + 1} з ${up.images.length}…`)
     try {
       const data = await deps.readFile(f.path)
-      await deps.client.uploadListingImage(shopId, listingId, { data, name: f.name, type: mimeOf(f.name), rank: i + 1 })
+      const img = await deps.client.uploadListingImage(shopId, listingId, { data, name: f.name, type: mimeOf(f.name), rank: i + 1 })
+      deps.onUploaded?.('image', i, answerId(img, 'listing_image_id'))
     } catch (e) {
       return failed(`фото «${f.name}» не завантажилось`, e)
     }
@@ -253,7 +268,8 @@ export async function createMyListing(deps: CreateDeps, input: NewListingInput):
     progress('files', i, up.files.length, `Файл ${i + 1} з ${up.files.length}…`)
     try {
       const data = await deps.readFile(f.path)
-      await deps.client.uploadListingFile(shopId, listingId, { data, name: f.name, type: mimeOf(f.name), rank: i + 1 })
+      const file = await deps.client.uploadListingFile(shopId, listingId, { data, name: f.name, type: mimeOf(f.name), rank: i + 1 })
+      deps.onUploaded?.('file', i, answerId(file, 'listing_file_id'))
     } catch (e) {
       return failed(`файл «${f.name}» не завантажився`, e)
     }

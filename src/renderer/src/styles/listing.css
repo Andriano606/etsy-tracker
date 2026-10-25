@@ -839,3 +839,77 @@ label.check {
     font-size: var(--fs-2xl);
   }
 }
+
+/* ---- "Копіювати посилання" (CopyLinkButton.tsx) ----
+   On a card: a round icon over the photo's right edge, right under the magnifier
+   (top-right corner; the "Новий" badge is top-left), so it never covers the
+   title, the price or the stats at any card width. A sibling of the card button
+   in .listing-card-host (a .ui-zoom-host): shown on the card's hover / focus-within,
+   and kept while its "Скопійовано" feedback is up. */
+.listing-card-host > .card-copy {
+  position: absolute;
+  top: 40px;
+  right: 8px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  flex-direction: row-reverse;
+  gap: 6px;
+  opacity: 0;
+  transition: opacity 120ms var(--ease);
+}
+.listing-card-host > .card-copy--solo {
+  top: 8px;
+}
+.listing-card-host:hover > .card-copy,
+.listing-card-host:focus-within > .card-copy,
+.listing-card-host > .card-copy.is-flash {
+  opacity: 1;
+}
+.card-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(10, 11, 13, 0.72);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.28);
+  color: #fff;
+  cursor: copy;
+}
+.card-copy-btn:hover {
+  background: rgba(10, 11, 13, 0.9);
+}
+.card-copy-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.card-copy-btn.copied {
+  color: var(--accent);
+}
+.card-copy-btn.copy-failed {
+  color: var(--danger-text);
+}
+/* The feedback bubble, to the left of the icon (over the photo, never past the card). */
+.card-copy-flash {
+  padding: 2px 7px;
+  border-radius: var(--r-xs);
+  background: rgba(10, 11, 13, 0.85);
+  color: #fff;
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.card-copy[data-state='failed'] .card-copy-flash {
+  color: var(--danger-text);
+}
+@media (prefers-reduced-motion: reduce) {
+  .listing-card-host > .card-copy {
+    transition: none;
+  }
+}

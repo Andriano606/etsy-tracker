@@ -935,8 +935,30 @@ export interface CreateListingProgress {
  * failure still returns its id so the user can finish it in the editor.
  */
 export type CreateListingResult =
-  | { ok: true; listingId: number; published: boolean; warnings: string[] }
-  | { ok: false; error: string; listingId?: number }
+  | {
+      ok: true
+      listingId: number
+      published: boolean
+      warnings: string[]
+      /** Sending a draft linked to an Etsy listing updated that listing (no new one was created). */
+      updated?: boolean
+      /** What the send didn't do or couldn't fully do (e.g. variations' prices left alone). */
+      notes?: string[]
+      /** The Etsy listing's state after the send (null/absent = not known). */
+      state?: DraftEtsyState | null
+    }
+  | {
+      ok: false
+      error: string
+      listingId?: number
+      /** Etsy's listing changed after the last sync: nothing was written; send again with overwrite to replace it. */
+      conflict?: boolean
+      /** The linked Etsy listing no longer exists (deleted on Etsy): unlink the draft to send it as a new one. */
+      removedOnEtsy?: boolean
+      /** The draft changed after the sender read it (e.g. a pull from Etsy): nothing was sent — look at it again. */
+      stale?: boolean
+      notes?: string[]
+    }
 
 export interface TaxonomyOption {
   id: number
@@ -978,25 +1000,110 @@ export interface DraftMedia {
   name: string
   mime: string
   size: number
+  /** Uploaded to the linked Etsy listing (its listing_image_id / listing_file_id is known). */
+  onEtsy: boolean
+  /**
+   * A buyer file that exists only on Etsy (pulled from an Etsy draft — Etsy's API gives no
+   * download of digital files): no bytes here, it can't be downloaded or re-uploaded.
+   */
+  remote: boolean
 }
 
-/** A listing prepared in the app (by the user or by Claude over MCP), reviewed before sending. */
+/** Last known state of the Etsy listing a draft is linked to ('removed' = deleted on Etsy). */
+export type DraftEtsyState = 'draft' | 'active' | 'inactive' | 'expired' | 'sold_out' | 'removed'
+
+/** The Etsy listing a draft is linked to (after a send, or pulled from an Etsy draft). */
+export interface DraftEtsyLink {
+  listingId: number
+  /** null = not known yet. */
+  state: DraftEtsyState | null
+  /** The public page (only while active), else null. */
+  url: string | null
+  /** The listing in the seller's Etsy listing editor (drafts too). */
+  editUrl: string
+  /** Local edits not yet sent to Etsy. */
+  dirty: boolean
+  /** ms of the last successful push/pull; null = never (e.g. sent before linking existed). */
+  syncedAt: number | null
+  /** Etsy's updated_timestamp (seconds) at the last successful push/pull. */
+  etsyUpdatedAt: number | null
+  /** A pull saw the listing changed on Etsy while the draft had unsent edits (a conflict). */
+  changedOnEtsy: boolean
+  /** The listing was deleted on Etsy (state 'removed'). */
+  removed: boolean
+  /** The Etsy shop the listing belongs to; null = not known (linked by an older version). */
+  shopId: number | null
+  /**
+   * Linked but never compared with Etsy (sent by a version before linked drafts): which photos/files
+   * are which on Etsy and whether it changed there are unknown — the first update asks first.
+   */
+  unverified: boolean
+  /** The last pull couldn't fetch some of the listing's photos/files: they stay on Etsy (an update never deletes them). */
+  incomplete: boolean
+}
+
+/** A listing prepared in the app (by the user or by Claude over MCP, or pulled from an Etsy draft), reviewed before sending. */
 export interface ListingDraft {
   id: number
-  source: 'app' | 'mcp'
-  /** draft = not sent; sent = the listing exists on Etsy; error = the last send failed. */
-  status: 'draft' | 'sent' | 'error'
+  /** app = made in the app; mcp = prepared by Claude; etsy = pulled from a draft made on Etsy's site. */
+  source: 'app' | 'mcp' | 'etsy'
+  /**
+   * draft = never sent; sent = linked to an Etsy listing and in sync; changed = linked, with
+   * local edits not yet on Etsy; error = the last send failed.
+   */
+  status: 'draft' | 'sent' | 'changed' | 'error'
   fields: DraftFields
   photos: DraftMedia[]
   files: DraftMedia[]
   createdAt: number
   updatedAt: number
   sentAt: number | null
+  /** The linked Etsy listing (null = not linked). Same as etsy?.listingId. */
   sentListingId: number | null
   sentPublished: boolean | null
   lastError: string | null
   /** What still blocks sending it as an Etsy draft (empty = ready). */
   problems: string[]
+  /** The linked Etsy listing, null = not linked. */
+  etsy: DraftEtsyLink | null
+  /** One-off notes of the operation that returned this draft (e.g. unlink), absent otherwise. */
+  notes?: string[]
+}
+
+/** What a pull of the user's Etsy drafts did (drafts:pull, after a scan of the own shop). */
+export interface DraftPullSummary {
+  /** New drafts in the app, pulled from drafts made on Etsy's site. */
+  imported: number
+  /** Linked drafts refreshed from Etsy (no local edits). */
+  updated: number
+  /** Linked drafts whose Etsy listing was deleted (marked removed, or dropped when imported and unedited). */
+  removed: number
+  /** Linked drafts with local edits whose Etsy listing changed too (marked, not overwritten). */
+  conflicts: number
+  /** Per-listing problems (Ukrainian); the rest still ran. */
+  errors: string[]
+}
+
+/** Pushed as 'drafts:pull' while/after the drafts window syncs with Etsy. */
+export interface DraftPullState {
+  running: boolean
+  /** ms of the last finished pull; null = none yet. */
+  lastAt: number | null
+  lastSummary: DraftPullSummary | null
+  /** The last pull failed as a whole (Ukrainian); null = fine. */
+  error: string | null
+}
+
+export interface SendDraftOptions {
+  /** Etsy's listing changed after the last sync: replace those changes anyway. */
+  overwrite?: boolean
+  /** The draft's updatedAt the sender saw: a draft changed since (e.g. by a pull) is not sent (`stale`). */
+  expectedUpdatedAt?: number
+}
+
+export interface DeleteDraftOptions {
+  /** Also delete the linked Etsy listing (OAuth listings_d). */
+  onEtsy?: boolean
 }
 
 /** A media slot when saving a draft: one already stored, or a freshly picked file. */
@@ -1009,4 +1116,9 @@ export interface SaveDraftInput {
   /** The full list in order (stored ones not listed are removed). */
   photos: DraftMediaRef[]
   files: DraftMediaRef[]
+  /** The updatedAt of the draft the editor opened: a draft changed since (e.g. by a pull) is not overwritten (`stale`). */
+  expectedUpdatedAt?: number
 }
+
+/** drafts:save — `stale`: the draft changed after the editor read it; nothing was saved. */
+export type SaveDraftResult = { ok: true; value: ListingDraft } | { ok: false; error: string; stale?: boolean }

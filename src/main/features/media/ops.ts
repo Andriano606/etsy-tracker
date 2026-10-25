@@ -1,5 +1,7 @@
 // The Etsy calls of feature "media", each as the OAS defines it. Reads of
-// images/videos are public (API key only); files and every write need OAuth.
+// videos are public (API key only); photo reads go with the sign-in too (an
+// own listing in any state — drafts and inactive listings aren't public);
+// files and every write need OAuth.
 // Errors of our own carry a Ukrainian message (the app) and an English one (MCP).
 
 import type { ListingMedia, MediaFile, MediaKind, MediaPhoto, MediaVideo } from '../../../shared/features/media'
@@ -8,7 +10,7 @@ import { decodeHtmlEntities } from '../../../shared/html'
 import { MAX_DIGITAL_FILES, MAX_IMAGES } from '../../../shared/myShop'
 import { EtsyApiError, type EtsyClient, type EtsyListingImage, type EtsyListingVideo, type Paged } from '../../etsyApi'
 import { mimeOf } from '../../myShop'
-import { FeatureError } from '../common'
+import { FeatureError } from '../errors'
 
 /** OAS security of the reads that need a sign-in (getAllListingFiles, getListingFile). */
 export const READ_SCOPES = ['listings_r'] as const
@@ -120,15 +122,20 @@ const NO_PHOTO = () => new MediaError('У цього товару немає т�
 
 // ---------------------------------------------------------------- reads
 
-/** getListingImages (public): in rank order, positions 1…n (`rank` keeps Etsy's own). */
+/**
+ * getListingImages: in rank order, positions 1…n (`rank` keeps Etsy's own).
+ * Public in the OAS, but sent with the sign-in: these are the user's own
+ * listings of any state, and a draft's/inactive listing's photos may not be
+ * public (the same reason getListing goes with OAuth for them).
+ */
 export async function getPhotos(client: EtsyClient, listingId: number): Promise<MediaPhoto[]> {
-  const page = await client.call<Paged<EtsyListingImage>>(`${pub(listingId)}/images`)
+  const page = await client.call<Paged<EtsyListingImage>>(`${pub(listingId)}/images`, { oauth: true })
   return [...results(page)].sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0)).map((i, n) => toPhoto(i, n + 1))
 }
 
-/** getListingImage (public) — alone it can't count positions: `position` = Etsy's rank. */
+/** getListingImage (with the sign-in, like getPhotos) — alone it can't count positions: `position` = Etsy's rank. */
 export async function getPhoto(client: EtsyClient, listingId: number, imageId: number): Promise<MediaPhoto> {
-  const i = await client.call<EtsyListingImage>(`${pub(listingId)}/images/${imageId}`)
+  const i = await client.call<EtsyListingImage>(`${pub(listingId)}/images/${imageId}`, { oauth: true })
   if (!i?.listing_image_id) throw NO_PHOTO()
   return toPhoto(i, rankOr(i.rank, 1))
 }

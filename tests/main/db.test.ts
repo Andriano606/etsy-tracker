@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { getDraft } from '../../src/main/drafts'
 import {
   MIGRATIONS,
   deleteShop,
@@ -868,7 +869,7 @@ describe('migration v5 (from a real v4 database)', () => {
     const v4Tables = tables()
     const dump = () => Object.fromEntries(v4Tables.map((t) => [t, db.prepare(`SELECT * FROM ${t}`).all()]))
     const before = dump()
-    migrate(db)
+    migrate(db, MIGRATIONS.slice(0, 5))
     expect(schemaVersion(db)).toBe(5)
     expect(dump()).toEqual(before)
     expect(tables()).toEqual([...v4Tables, 'listing_draft_media', 'listing_drafts'].sort())
@@ -883,5 +884,115 @@ describe('migration v5 (from a real v4 database)', () => {
     db.prepare('DELETE FROM listing_drafts WHERE id = 1').run()
     expect(db.prepare('SELECT COUNT(*) AS n FROM listing_draft_media').get()).toEqual({ n: 0 })
     expect(() => db.prepare("INSERT INTO listing_drafts (source, fields_json, created_at, updated_at) VALUES ('web', '{}', 1, 1)").run()).toThrow()
+  })
+})
+
+describe('migration v6 (from a real v5 database)', () => {
+  it('links sent drafts to their Etsy listing, adds the sync columns, and keeps every draft and its media', () => {
+    const db = memDbAt(5)
+    insertShop(db, mkShop())
+    upsertListing(db, mkInput(1), 100)
+    const ins = db.prepare(
+      'INSERT INTO listing_drafts (source, fields_json, created_at, updated_at, sent_at, sent_listing_id, sent_published, last_error) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    )
+    ins.run('app', '{"title":"Never sent"}', 1, 2, null, null, null, null)
+    ins.run('mcp', '{"title":"Published"}', 3, 4, 5, 4242, 1, null)
+    ins.run('app', '{"title":"Etsy draft"}', 6, 7, 8, 4343, 0, null)
+    ins.run('app', '{"title":"Half sent"}', 9, 10, 11, 4444, 0, 'фото не завантажилось')
+    const media = db.prepare(
+      "INSERT INTO listing_draft_media (draft_id, kind, position, name, mime, size, data) VALUES (?, ?, 1, ?, 'image/jpeg', 1, x'01')"
+    )
+    media.run(1, 'photo', 'a.jpg')
+    media.run(2, 'photo', 'b.jpg')
+    media.run(2, 'file', 'p.pdf')
+    const tables = () =>
+      (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as Array<{ name: string }>).map(
+        (r) => r.name
+      )
+    const v5Tables = tables()
+    const v5Cols = (t: string) => (db.prepare(`PRAGMA table_info(${t})`).all() as Array<{ name: string }>).map((r) => r.name)
+    const project = (t: string, cols: string[]) => db.prepare(`SELECT ${cols.join(', ')} FROM ${t} ORDER BY ${cols.map((_, i) => i + 1).join(', ')}`).all()
+    const colsBefore = Object.fromEntries(v5Tables.map((t) => [t, v5Cols(t)]))
+    const before = Object.fromEntries(v5Tables.map((t) => [t, project(t, colsBefore[t])]))
+
+    migrate(db, MIGRATIONS.slice(0, 6))
+    expect(schemaVersion(db)).toBe(6)
+    expect(tables()).toEqual(v5Tables)
+    // Every v5 column of every table reads back unchanged (no rebuild: media survive).
+    expect(Object.fromEntries(v5Tables.map((t) => [t, project(t, colsBefore[t])]))).toEqual(before)
+    expect(v5Cols('listing_drafts')).toEqual([
+      ...colsBefore.listing_drafts, 'imported', 'etsy_state', 'etsy_updated_at', 'synced_at', 'dirty', 'etsy_changed_at'
+    ])
+    expect(v5Cols('listing_draft_media')).toEqual([...colsBefore.listing_draft_media, 'etsy_id', 'remote'])
+    expect(
+      db.prepare('SELECT id, imported, etsy_state, etsy_updated_at, synced_at, dirty, etsy_changed_at FROM listing_drafts ORDER BY id').all()
+    ).toEqual([
+      { id: 1, imported: 0, etsy_state: null, etsy_updated_at: null, synced_at: null, dirty: 0, etsy_changed_at: null },
+      { id: 2, imported: 0, etsy_state: 'active', etsy_updated_at: null, synced_at: null, dirty: 0, etsy_changed_at: null },
+      { id: 3, imported: 0, etsy_state: 'draft', etsy_updated_at: null, synced_at: null, dirty: 0, etsy_changed_at: null },
+      { id: 4, imported: 0, etsy_state: 'draft', etsy_updated_at: null, synced_at: null, dirty: 0, etsy_changed_at: null }
+    ])
+    expect(db.prepare('SELECT etsy_id, remote FROM listing_draft_media').all()).toEqual([
+      { etsy_id: null, remote: 0 },
+      { etsy_id: null, remote: 0 },
+      { etsy_id: null, remote: 0 }
+    ])
+    const indexes = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'listing_drafts'").all() as Array<{ name: string }>).map(
+      (r) => r.name
+    )
+    expect(indexes).toContain('listing_drafts_sent')
+    // The v5 source CHECK stays; the drafts read as linked through the app's mapping.
+    expect(() => db.prepare("INSERT INTO listing_drafts (source, fields_json, created_at, updated_at) VALUES ('etsy', '{}', 1, 1)").run()).toThrow()
+    expect(getDraft(db, 2)).toMatchObject({
+      source: 'mcp',
+      status: 'sent',
+      sentListingId: 4242,
+      etsy: { listingId: 4242, state: 'active', url: 'https://www.etsy.com/listing/4242', dirty: false, syncedAt: null, etsyUpdatedAt: null, changedOnEtsy: false, removed: false }
+    })
+    expect(getDraft(db, 2)!.photos[0]).toMatchObject({ name: 'b.jpg', onEtsy: false, remote: false })
+    expect(getDraft(db, 3)).toMatchObject({ status: 'sent', etsy: { state: 'draft', url: null } })
+    expect(getDraft(db, 4)).toMatchObject({ status: 'error', etsy: { listingId: 4444, state: 'draft' } })
+    expect(getDraft(db, 1)).toMatchObject({ status: 'draft', etsy: null })
+    // Media still go with their draft.
+    db.prepare('DELETE FROM listing_drafts WHERE id = 2').run()
+    expect(db.prepare('SELECT COUNT(*) AS n FROM listing_draft_media WHERE draft_id = 2').get()).toEqual({ n: 0 })
+  })
+})
+
+describe('migration v7 (from a real v6 database)', () => {
+  it('adds the link’s shop, the "never compared with Etsy" mark (links sent before v6) and the pull gaps; nothing else changes', () => {
+    const db = memDbAt(6)
+    const ins = db.prepare(
+      `INSERT INTO listing_drafts (source, fields_json, created_at, updated_at, sent_at, sent_listing_id, sent_published, last_error,
+         imported, etsy_state, etsy_updated_at, synced_at, dirty) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    ins.run('app', '{"title":"Never sent"}', 1, 2, null, null, null, null, 0, null, null, null, 0)
+    // Sent by v5 and linked by v6: no baseline, never synced.
+    ins.run('mcp', '{"title":"Sent by v5"}', 3, 4, 5, 4242, 1, null, 0, 'active', null, null, 0)
+    // Sent (or pulled) by v6: synced.
+    ins.run('app', '{"title":"Synced"}', 6, 7, 8, 4343, 0, null, 0, 'draft', 1_800_000_000, 9, 0)
+    ins.run('app', '{"title":"Pulled"}', 6, 7, 8, 4545, 0, null, 1, 'draft', 1_800_000_001, 9, 0)
+    db.prepare(
+      "INSERT INTO listing_draft_media (draft_id, kind, position, name, mime, size, data, etsy_id) VALUES (2, 'photo', 1, 'a.jpg', 'image/jpeg', 1, x'01', NULL)"
+    ).run()
+    const cols = (t: string) => (db.prepare(`PRAGMA table_info(${t})`).all() as Array<{ name: string }>).map((r) => r.name)
+    const v6Cols = cols('listing_drafts')
+    const before = db.prepare(`SELECT ${v6Cols.join(', ')} FROM listing_drafts ORDER BY id`).all()
+    const mediaBefore = db.prepare('SELECT * FROM listing_draft_media').all()
+
+    migrate(db)
+    expect(schemaVersion(db)).toBe(7)
+    expect(cols('listing_drafts')).toEqual([...v6Cols, 'etsy_shop_id', 'unverified', 'etsy_gaps'])
+    expect(db.prepare(`SELECT ${v6Cols.join(', ')} FROM listing_drafts ORDER BY id`).all()).toEqual(before)
+    expect(db.prepare('SELECT * FROM listing_draft_media').all()).toEqual(mediaBefore)
+    expect(db.prepare('SELECT id, etsy_shop_id, unverified, etsy_gaps FROM listing_drafts ORDER BY id').all()).toEqual([
+      { id: 1, etsy_shop_id: null, unverified: 0, etsy_gaps: null },
+      { id: 2, etsy_shop_id: null, unverified: 1, etsy_gaps: null },
+      { id: 3, etsy_shop_id: null, unverified: 0, etsy_gaps: null },
+      { id: 4, etsy_shop_id: null, unverified: 0, etsy_gaps: null }
+    ])
+    expect(getDraft(db, 2)).toMatchObject({ status: 'sent', etsy: { listingId: 4242, shopId: null, unverified: true, incomplete: false } })
+    expect(getDraft(db, 3)).toMatchObject({ etsy: { unverified: false, incomplete: false, shopId: null } })
+    expect(getDraft(db, 1)!.etsy).toBeNull()
   })
 })

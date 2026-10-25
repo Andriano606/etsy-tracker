@@ -6,9 +6,9 @@ import { EtsyApiError } from '../etsyApi'
 import { ToolInputError, type McpToolResult } from '../mcpProtocol'
 import { NOT_SIGNED_IN, WRITES_OFF, mcpErrorText } from '../mcpStoreTools'
 import type { FeatureCtx, FeatureMcpDeps } from './types'
+import { FeatureError } from './errors'
 
-/** A Ukrainian message for a refused action — shown as is (IPC and MCP). */
-export class FeatureError extends Error {}
+export { FeatureError }
 
 /** A positive safe integer argument, else FeatureError. */
 export function idArg(args: Record<string, unknown>, name: string): number {

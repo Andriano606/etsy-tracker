@@ -10,10 +10,12 @@
 
 import type {
   BuyerPrice,
+  DraftPullSummary,
   Listing,
   ListingDetails,
   ListingImage,
   MoneyValue,
+  MyShopResult,
   Promotion,
   PromotionEndReason,
   PromotionStartKind,
@@ -65,6 +67,12 @@ export interface McpToolDeps {
   own?: OwnStoreDeps
   /** Drafts kept in the app changed (prepare_product …): tell the renderer. */
   onDraftsChanged?: () => void
+  /**
+   * The app's own Etsy-drafts pull (ipc.ts pullEtsyDrafts: one at a time, shared
+   * with the scan-time pull, pushes the drafts window's progress). Absent:
+   * sync_prepared_products pulls directly.
+   */
+  pullDrafts?: () => Promise<MyShopResult<DraftPullSummary>>
 }
 
 /** Larger images are refused (base64 in a model's context). */
@@ -620,15 +628,15 @@ Prices: "base" is the seller's price as the API reports it (no VAT, no sale). "c
 
 Popularity: favorites = Etsy favorers; views = total listing views (Etsy updates them about once a day); featured_position = the listing's place among the shop's featured listings (null = not featured). *_change fields compare the latest scan with the previous one. A shop's sales_count is Etsy's total for the whole shop; Etsy does not give other shops' sales per listing — review counts are the best proxy. Review counts cover the reviews the app has stored (complete: false = the history is still loading, the counts are lower bounds).
 
-Ids: store, product, image and video ids are Etsy's (shop_id, listing_id, …); review and snapshot ids are the app's own. Times are ISO 8601 UTC.
+Ids: store, product, image and video ids are Etsy's (shop_id, listing_id, …); review and snapshot ids are the app's own. Times are ISO 8601 UTC. Links the user pastes: an Etsy listing link https://www.etsy.com/listing/<id>[/…] (the app's "Копіювати посилання" button copies exactly that) means product_id = <id> — call get_product with it right away (for the user's own listings also the *_my_* tools); a shop link https://www.etsy.com/shop/<Name> means the store whose name is <Name> in list_stores.
 
 Live Etsy tools (Etsy API requests on the user's daily quota; the app's API key is enough, no Etsy sign-in needed): search_market, list_market_categories, get_market_category_properties search all of Etsy, not only the tracked shops; get_store_sections, get_store_featured, get_store_return_policies, get_product_live_details read any shop or listing now (only the shipping part of get_product_live_details needs the sign-in); list_shipping_carriers; find_categories (Etsy's seller categories, for a new listing's category_id) and get_category_attributes (the attributes a seller category supports). The two category trees (find_categories, list_market_categories) are read from Etsy once per app run and then matched locally, so repeated searches make no further requests.
 
 The user's own Etsy shop: once the user signed in to Etsy in the app ("Мій магазин", OAuth), list_stores marks it is_mine: true and the *_my_* tools work on it live through the Etsy API: the account (get_my_account), listings in any state (list_my_products: drafts, inactive, expired, sold out), allowed values and the shop's shipping/processing profiles for new listings (get_product_options), inventory and prices, photos / video / digital files, attributes, personalization, translations, sections, shipping and processing profiles, return policies, public-holiday processing preferences (get_my_holidays, set_my_holiday: whether the shop processes orders on each public holiday of its country — not vacation mode, which no tool changes), production partners, orders (list_my_orders, mark_my_order_shipped…), sales (list_my_sales) and the payment ledger (list_my_ledger). A tool whose OAuth permission the sign-in lacks says which one is missing. Buyer email and street address are left out unless explicitly asked for.
 
-Changing the shop: every tool that writes to Etsy — create_product, update_my_product, add_product_media, update_my_store, send_prepared_product, mark_my_order_shipped, update_my_order, consolidate_my_return_policies and every create_/update_/set_/replace_/upload_/remove_/delete_ tool with "my" in its name — needs the Etsy sign-in and works only while "allow changes" is switched on in the app's MCP window; otherwise it answers how to enable it. The exception: prepare_product and delete_prepared_product change only drafts kept inside the app — they are annotated readOnlyHint: false too, but need neither the sign-in nor the switch. Change only what the user asked for, prefer Etsy drafts (publish=false) unless the user said to publish, and confirm with the user before publishing a draft (create_product / send_prepared_product with publish=true, or update_my_product status "active" on a draft) or renewing an expired or sold-out listing (update_my_product status "active"): Etsy charges a $0.20 listing fee for that. Reactivating an inactive listing costs no fee.
+Changing the shop: every tool that writes to Etsy — create_product, update_my_product, add_product_media, update_my_store, send_prepared_product, delete_prepared_product with also_on_etsy, mark_my_order_shipped, update_my_order, consolidate_my_return_policies and every create_/update_/set_/replace_/upload_/remove_/delete_ tool with "my" in its name — needs the Etsy sign-in and works only while "allow changes" is switched on in the app's MCP window; otherwise it answers how to enable it. The exception: prepare_product, unlink_prepared_product and delete_prepared_product (without also_on_etsy) change only drafts kept inside the app — they are annotated readOnlyHint: false too, but need neither the sign-in nor the switch; sync_prepared_products reads Etsy (sign-in needed) and writes only the app's drafts, so it needs no switch either. Change only what the user asked for, prefer Etsy drafts (publish=false) unless the user said to publish, and confirm with the user before publishing a draft (create_product / send_prepared_product with publish=true, or update_my_product status "active" on a draft) or renewing an expired or sold-out listing (update_my_product status "active"): Etsy charges a $0.20 listing fee for that. Reactivating an inactive listing costs no fee.
 
-New listings: prefer prepare_product — it saves a draft inside the app (nothing is sent to Etsy, no "allow changes" needed, incomplete drafts are fine); the user reviews, edits and sends it from the app's drafts window (the "Чернетки" button in their own shop's header, shown only while they are signed in to Etsy in the app). list_prepared_products and delete_prepared_product manage those drafts; send_prepared_product sends one to Etsy (as an Etsy draft or published) only when the user asks you to.`
+New listings: prefer prepare_product — it saves a draft inside the app (nothing is sent to Etsy, no "allow changes" needed, incomplete drafts are fine); the user reviews, edits and sends it from the app's drafts window (the "Чернетки" button in their own shop's header, shown only while they are signed in to Etsy in the app). send_prepared_product sends one to Etsy (as an Etsy draft or published) only when the user asks you to. A sent draft stays linked to its Etsy listing, and drafts the user made on Etsy's site are pulled into the app after every scan of their shop (or now with sync_prepared_products). To change such a listing, prepare_product can edit its linked draft too — Etsy changes only when the draft is sent again, and send_prepared_product then updates that same listing, never a second one. When the listing was also changed on Etsy since the last sync, send_prepared_product answers conflict: true and writes nothing: ask the user before sending again with overwrite_etsy_changes. list_prepared_products shows every draft's link and state; unlink_prepared_product forgets the link (the next send creates a new listing); delete_prepared_product deletes a draft in the app — with also_on_etsy the Etsy listing too, which can't be undone, so confirm with the user first.`
 
 export function createMcpTools(deps: McpToolDeps): McpTool[] {
   const { db } = deps
@@ -1191,7 +1199,7 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
     }
   ]
 
-  tools.push(...createStoreTools(deps.own), ...createDraftTools(deps.own, { db, now, onChanged: deps.onDraftsChanged }))
+  tools.push(...createStoreTools(deps.own), ...createDraftTools(deps.own, { db, now, onChanged: deps.onDraftsChanged, pull: deps.pullDrafts }))
   tools.push(
     ...featureMcpTools({
       db,

@@ -279,6 +279,40 @@ describe('createMyListing', () => {
     expect(t.d.client.updateListing).not.toHaveBeenCalled()
   })
 
+  it('reports the new listing at once and each upload’s Etsy id (null when the answer has none)', async () => {
+    let img = 0
+    const t = creating({
+      uploadListingImage: vi.fn(async () => (++img === 1 ? { listing_image_id: 9001 } : {})),
+      uploadListingFile: vi.fn(async () => ({ listing_file_id: 7001 }))
+    })
+    const events: string[] = []
+    const a = t.files.add('/x/a.jpg', 'a.jpg', 10)
+    const b = t.files.add('/x/b.jpg', 'b.jpg', 10)
+    const f = t.files.add('/x/p.pdf', 'p.pdf', 10)
+    const res = await createMyListing(
+      {
+        ...t.d,
+        onCreated: (id) => events.push(`created:${id}`),
+        onUploaded: (kind, i, id) => events.push(`${kind}:${i}:${id}`)
+      },
+      newInput({ images: [a.token, b.token], files: [f.token] })
+    )
+    expect(res).toMatchObject({ ok: true, listingId: 4242 })
+    expect(events).toEqual(['created:4242', 'image:0:9001', 'image:1:null', 'file:0:7001'])
+  })
+
+  it('a failed upload is not reported as uploaded', async () => {
+    const t = creating({
+      uploadListingImage: vi.fn(async () => {
+        throw new EtsyApiError('bad_request', 'HTTP 400', 400)
+      })
+    })
+    const events: string[] = []
+    const a = t.files.add('/x/a.jpg', 'a.jpg', 10)
+    await createMyListing({ ...t.d, onCreated: (id) => events.push(`created:${id}`), onUploaded: (k) => events.push(k) }, newInput({ images: [a.token] }))
+    expect(events).toEqual(['created:4242'])
+  })
+
   it('publishing fails: the draft with its photos stays', async () => {
     const t = creating({
       updateListing: vi.fn(async () => {

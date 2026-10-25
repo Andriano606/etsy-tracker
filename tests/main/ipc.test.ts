@@ -1,10 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { handlers, openExternal, writeText } = vi.hoisted(() => ({
+const { handlers, openExternal, writeText, importEtsyDrafts } = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
   openExternal: vi.fn(async () => {}),
-  writeText: vi.fn()
+  writeText: vi.fn(),
+  importEtsyDrafts: vi.fn(async (_deps: unknown) => ({ imported: 0, updated: 0, removed: 0, conflicts: 0, errors: [] as string[] }))
 }))
+// The pull itself is draftImport.ts (its own tests); here only how IPC runs it.
+vi.mock('../../src/main/draftImport', () => ({ importEtsyDrafts }))
 vi.mock('electron', () => ({
   ipcMain: {
     handle: (ch: string, fn: (...args: unknown[]) => unknown) => handlers.set(ch, fn)
@@ -115,6 +118,7 @@ const call = (ch: string, ...args: unknown[]) => handlers.get(ch)!({}, ...args)
 
 beforeEach(() => {
   handlers.clear()
+  importEtsyDrafts.mockClear()
   openExternal.mockClear()
   writeText.mockClear()
 })
@@ -748,9 +752,19 @@ describe('drafts over IPC', () => {
       value: ListingDraft
     }
     expect(u.value).toMatchObject({ id: r.value.id, photos: [], fields: { title: 'Planner 2' } })
+    // An editor that opened an older version (e.g. before a pull) is told so, and nothing is written.
+    const stale = await call('drafts:save', { id: r.value.id, fields: { ...fields, title: 'Stale' }, photos: [], files: [], expectedUpdatedAt: u.value.updatedAt - 1 })
+    expect(stale).toEqual({ ok: false, error: expect.stringContaining('її змінили'), stale: true })
+    const fresh = (await call('drafts:save', { id: r.value.id, fields: { ...fields, title: 'Fresh' }, photos: [], files: [], expectedUpdatedAt: u.value.updatedAt })) as {
+      ok: true
+      value: ListingDraft
+    }
+    expect(fresh.value.fields.title).toBe('Fresh')
+    expect(await call('drafts:send', r.value.id, false, { expectedUpdatedAt: fresh.value.updatedAt - 1 })).toMatchObject({ ok: false, stale: true })
     expect(((await call('drafts:list')) as ListingDraft[]).length).toBe(1)
-    expect(await call('drafts:delete', r.value.id)).toBe(true)
-    expect(await call('drafts:delete', r.value.id)).toBe(false)
+    expect(await call('drafts:delete', r.value.id)).toEqual({ ok: true, value: { deletedOnEtsy: false } })
+    expect(await call('drafts:delete', r.value.id)).toEqual({ ok: false, error: `Чернетки #${r.value.id} немає.` })
+    expect(await call('drafts:delete', 'x')).toEqual({ ok: false, error: 'Некоректний id чернетки.' })
     expect(await call('drafts:list')).toEqual([])
   })
 
@@ -845,5 +859,205 @@ describe('one button refreshes everything', () => {
     imageSync.mockClear()
     await call('scan:all')
     expect(imageSync).toHaveBeenCalledWith({ shopId: SHOP_ID, force: false, retryErrors: true })
+  })
+})
+
+import { OWN_SHOP, signedIn as ownSignedIn } from '../helpers/features'
+import { ownEtsy } from '../helpers/ownEtsy'
+import { getDraft } from '../../src/main/drafts'
+
+describe('linked drafts over IPC (update, unlink, delete on Etsy, pull)', () => {
+  const draftFields = { ...EMPTY_DRAFT_FIELDS, title: 'Planner', description: 'Text', price: '5.99', taxonomyId: 2 }
+
+  /** IPC over the fake own shop, signed in with every scope. */
+  function linked() {
+    const base = ctx()
+    const e = ownEtsy()
+    base.c.client = e.client
+    base.c.etsyAuth = { status: () => ownSignedIn(), getAccessToken: async () => 'tok' } as never
+    registerIpc(base.c)
+    return { ...base, e }
+  }
+  const save = async (fields = draftFields, id?: number) =>
+    ((await call('drafts:save', { id, fields, photos: [], files: [] })) as { value: ListingDraft }).value
+
+  it('drafts:send: the first send creates the listing, later ones update it; a conflict needs {overwrite: true}', async () => {
+    const { c, e, sent } = linked()
+    const d = await save()
+    expect(await call('drafts:send', d.id, false)).toMatchObject({ ok: true, listingId: 4242 })
+    await save({ ...draftFields, title: 'Planner v2' }, d.id)
+    expect(getDraft(c.db, d.id)!.status).toBe('changed')
+    e.editOnEtsy(4242, (l) => (l.title = 'on Etsy'))
+    const conflict = await call('drafts:send', d.id, false)
+    expect(conflict).toMatchObject({ ok: false, conflict: true, listingId: 4242 })
+    expect(e.listings.get(4242)!.title).toBe('on Etsy')
+    expect(await call('drafts:send', d.id, false, { overwrite: 'yes' })).toMatchObject({ conflict: true }) // only `true` overwrites
+    expect(await call('drafts:send', d.id, false, { overwrite: true })).toMatchObject({ ok: true, updated: true })
+    expect(e.listings.get(4242)!.title).toBe('Planner v2')
+    expect(e.requests().filter((r) => r === `POST /v3/application/shops/${OWN_SHOP}/listings`)).toHaveLength(1)
+    expect((sent.filter(([ch]) => ch === 'drafts:changed').at(-1)![1] as ListingDraft[])[0]).toMatchObject({ status: 'sent' })
+  })
+
+  it('drafts:delete {onEtsy: true} deletes the Etsy listing too; without it only the app copy goes', async () => {
+    const { c, e } = linked()
+    const a = await save()
+    const b = await save()
+    await call('drafts:send', a.id, false)
+    await call('drafts:send', b.id, false)
+    expect(await call('drafts:delete', a.id, { onEtsy: true })).toEqual({ ok: true, value: { deletedOnEtsy: true } })
+    expect(e.listings.has(4242)).toBe(false)
+    expect(await call('drafts:delete', b.id)).toEqual({ ok: true, value: { deletedOnEtsy: false } })
+    expect(e.listings.has(4243)).toBe(true)
+    expect(getDraft(c.db, a.id)).toBeNull()
+    expect(getDraft(c.db, b.id)).toBeNull()
+  })
+
+  it('drafts:unlink forgets the listing (then a send creates a new one); bad/unknown ids refused', async () => {
+    const { e } = linked()
+    const d = await save()
+    await call('drafts:send', d.id, false)
+    e.listings.delete(4242)
+    expect(await call('drafts:send', d.id, false)).toMatchObject({ ok: false, removedOnEtsy: true })
+    expect(await call('drafts:unlink', d.id)).toMatchObject({ ok: true, value: { id: d.id, etsy: null, status: 'draft' } })
+    expect(await call('drafts:send', d.id, false)).toMatchObject({ ok: true, listingId: 4243 })
+    expect(await call('drafts:unlink', 0)).toEqual({ ok: false, error: 'Некоректний id чернетки.' })
+    expect(await call('drafts:unlink', 999)).toEqual({ ok: false, error: 'Чернетки #999 немає.' })
+  })
+
+  it('drafts:pull runs the import once at a time, pushes drafts:pull before/after and drafts:changed', async () => {
+    const { c, sent } = linked()
+    expect(await call('drafts:pullState')).toEqual({ running: false, lastAt: null, lastSummary: null, error: null })
+    let release!: () => void
+    importEtsyDrafts.mockImplementationOnce(async () => {
+      await new Promise<void>((r) => (release = r))
+      return { imported: 2, updated: 1, removed: 0, conflicts: 1, errors: [] }
+    })
+    const one = call('drafts:pull') as Promise<unknown>
+    const two = call('drafts:pull') as Promise<unknown>
+    expect(await call('drafts:pullState')).toMatchObject({ running: true })
+    await Promise.resolve()
+    release()
+    const summary = { imported: 2, updated: 1, removed: 0, conflicts: 1, errors: [] }
+    expect(await one).toEqual({ ok: true, value: summary })
+    expect(await two).toEqual({ ok: true, value: summary })
+    expect(importEtsyDrafts).toHaveBeenCalledTimes(1)
+    const deps = importEtsyDrafts.mock.calls[0][0] as Record<string, unknown>
+    expect(deps).toMatchObject({ db: c.db, client: c.client, auth: c.etsyAuth })
+    expect(typeof deps.fetchImage).toBe('function')
+    expect(typeof deps.taxonomy).toBe('function')
+    const pulls = sent.filter(([ch]) => ch === 'drafts:pull').map(([, p]) => p)
+    expect(pulls).toEqual([
+      { running: true, lastAt: null, lastSummary: null, error: null },
+      { running: false, lastAt: expect.any(Number), lastSummary: summary, error: null }
+    ])
+    expect(sent.at(-1)![0]).toBe('drafts:changed')
+    expect(await call('drafts:pullState')).toMatchObject({ running: false, lastSummary: summary })
+  })
+
+  it('a failed pull is an {ok: false} answer and the pushed state’s error (the last summary kept)', async () => {
+    const { sent } = linked()
+    await call('drafts:pull')
+    importEtsyDrafts.mockImplementationOnce(async () => {
+      throw new Error('boom')
+    })
+    const r = await call('drafts:pull')
+    expect(r).toEqual({ ok: false, error: 'Не вдалося синхронізувати чернетки з Etsy: boom' })
+    expect(sent.filter(([ch]) => ch === 'drafts:pull').at(-1)![1]).toMatchObject({
+      running: false,
+      error: 'Не вдалося синхронізувати чернетки з Etsy: boom',
+      lastSummary: { imported: 0 }
+    })
+  })
+
+  it('fetchImage downloads from the CDN only (isEtsyCdnUrl)', async () => {
+    const { c } = linked()
+    c.cdnFetch = fakeCdn()
+    await call('drafts:pull')
+    const deps = importEtsyDrafts.mock.calls.at(-1)![0] as { fetchImage: (u: string) => Promise<{ body: Buffer; contentType: string | null }> }
+    const got = await deps.fetchImage('https://i.etsystatic.com/1/a/il_fullxfull.1.jpg')
+    expect(got.contentType).toBe('image/jpeg')
+    expect(got.body.length).toBeGreaterThan(0)
+    await expect(deps.fetchImage('https://evil.example/x.jpg')).rejects.toThrow('CDN Etsy')
+  })
+})
+
+describe('a scan of the own shop pulls its Etsy drafts (fire and forget)', () => {
+  /** IPC over FakeEtsy whose shop SHOP_ID is (or isn't) the signed-in one. */
+  function own(status: Record<string, unknown> = {}) {
+    const base = ctx()
+    base.c.keyStore.setKey('keystring1', 'secret1')
+    seedShop(base.c.db, { id: SHOP_ID })
+    base.c.etsyAuth = { status: () => ownSignedIn({ shopId: SHOP_ID, ...status }), getAccessToken: async () => 'tok' } as never
+    registerIpc(base.c)
+    return base
+  }
+  const flush = () => new Promise((r) => setTimeout(r, 0))
+
+  it('scan:shop of the own shop starts the pull after the scan; its pushes follow', async () => {
+    const { c, sent } = own()
+    const res = (await call('scan:shop', SHOP_ID)) as { ok: boolean }
+    expect(res.ok).toBe(true)
+    await flush()
+    expect(importEtsyDrafts).toHaveBeenCalledTimes(1)
+    expect(importEtsyDrafts.mock.calls[0][0]).toMatchObject({ db: c.db, client: c.client, auth: c.etsyAuth })
+    const pulls = sent.filter(([ch]) => ch === 'drafts:pull').map(([, p]) => p)
+    expect(pulls).toEqual([
+      { running: true, lastAt: null, lastSummary: null, error: null },
+      expect.objectContaining({ running: false, error: null, lastSummary: expect.objectContaining({ imported: 0 }) })
+    ])
+    // the scan itself answered before the pull was awaited
+    expect(sent.findIndex(([ch]) => ch === 'scan:state')).toBeLessThan(sent.findIndex(([ch]) => ch === 'drafts:pull'))
+  })
+
+  it('scan:all pulls only for the own shop, once', async () => {
+    const { c } = own()
+    seedShop(c.db, { id: 2, shopName: 'Second', addedAt: 2000 })
+    const out = await scanAll(c)
+    expect(out.map((o) => o.ok)).toEqual([true, false]) // FakeEtsy knows only SHOP_ID
+    await flush()
+    expect(importEtsyDrafts).toHaveBeenCalledTimes(1)
+  })
+
+  it('another shop, a signed-out user or a sign-in without listings_r starts nothing', async () => {
+    for (const status of [{ shopId: 999 }, { loggedIn: false }, { scopes: ['shops_r'] }]) {
+      handlers.clear()
+      own(status)
+      expect(((await call('scan:shop', SHOP_ID)) as { ok: boolean }).ok).toBe(true)
+    }
+    await flush()
+    expect(importEtsyDrafts).not.toHaveBeenCalled()
+  })
+
+  it('a failed scan starts no pull', async () => {
+    const { etsy } = own()
+    etsy.intercept = () => ({ status: 500, body: { error: 'down' } })
+    expect(((await call('scan:shop', SHOP_ID)) as { ok: boolean }).ok).toBe(false)
+    await flush()
+    expect(importEtsyDrafts).not.toHaveBeenCalled()
+  })
+
+  it('a failing pull never fails the scan: the scan is ok, the pull reports its error', async () => {
+    const { sent } = own()
+    importEtsyDrafts.mockImplementationOnce(async () => {
+      throw new Error('boom')
+    })
+    const res = (await call('scan:shop', SHOP_ID)) as { ok: boolean }
+    expect(res.ok).toBe(true)
+    await flush()
+    expect(sent.filter(([ch]) => ch === 'drafts:pull').at(-1)![1]).toMatchObject({
+      running: false,
+      error: 'Не вдалося синхронізувати чернетки з Etsy: boom'
+    })
+  })
+
+  it('a broken sign-in store neither throws nor fails the scan', async () => {
+    const { c } = own()
+    c.etsyAuth = {
+      status: () => {
+        throw new Error('keyring')
+      }
+    } as never
+    expect(((await call('scan:shop', SHOP_ID)) as { ok: boolean }).ok).toBe(true)
+    expect(importEtsyDrafts).not.toHaveBeenCalled()
   })
 })

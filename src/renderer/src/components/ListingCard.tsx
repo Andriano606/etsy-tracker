@@ -7,6 +7,7 @@ import { imageSrc } from '../imageUrl'
 import { Icon, Tooltip, ZoomButton, type IconName } from '../ui'
 import type { ViewerImage } from '../store'
 import { NowPrice, WasPrice } from './PriceParts'
+import { CardCopyLink } from './CopyLinkButton'
 
 /** A tooltip body: the glossary term in bold, its short text and an optional extra line. */
 function tipOf(key: GlossaryKey, extra?: ReactNode): JSX.Element {
@@ -255,6 +256,7 @@ export function ListingCard({
           className="ui-zoom-corner card-zoom"
         />
       )}
+      <CardCopyLink listingId={listing.listingId} title={listing.title} solo={!img} />
     </div>
   )
 }

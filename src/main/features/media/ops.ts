@@ -141,9 +141,13 @@ export async function getPhoto(client: EtsyClient, listingId: number, imageId: n
   return toPhoto(i, rankOr(i.rank, 1))
 }
 
-/** getListingVideos (public). */
-export async function getVideos(client: EtsyClient, listingId: number): Promise<MediaVideo[]> {
-  return results(await client.call<Paged<EtsyListingVideo>>(`${pub(listingId)}/videos`)).map(toVideo)
+/**
+ * getListingVideos (public in the OAS). `oauth` sends it with the sign-in —
+ * for the user's own listings of any state (a draft's/inactive listing's video
+ * may not be public, like its photos).
+ */
+export async function getVideos(client: EtsyClient, listingId: number, opts: { oauth?: boolean } = {}): Promise<MediaVideo[]> {
+  return results(await client.call<Paged<EtsyListingVideo>>(`${pub(listingId)}/videos`, opts.oauth ? { oauth: true } : undefined)).map(toVideo)
 }
 
 /** getListingVideo (public) — e.g. whether Etsy finished processing an upload. */
@@ -369,19 +373,25 @@ export async function movePhotoUp(
 
 // ---------------------------------------------------------------- video
 
-/** uploadListingVideo (OAuth listings_w, multipart `video` + `name`, or `video_id` to re-attach). */
+/** uploadListingVideo (OAuth listings_w, multipart `video` + `name`, or `video_id` to re-attach). Answers Etsy's ListingVideo. */
 export async function postVideo(
   client: EtsyClient,
   shopId: number,
   listingId: number,
   p: { video: Upload } | { videoId: number }
-): Promise<void> {
+): Promise<unknown> {
   const fd = new FormData()
   if ('video' in p) {
     fd.set('video', blob(p.video), p.video.name)
     fd.set('name', p.video.name)
   } else fd.set('video_id', String(p.videoId))
-  await client.call(`${own(shopId, listingId)}/videos`, { method: 'POST', oauth: true, multipart: fd })
+  return client.call(`${own(shopId, listingId)}/videos`, { method: 'POST', oauth: true, multipart: fd })
+}
+
+/** A positive video_id from an upload answer, else null. */
+const videoIdOf = (v: unknown): number | null => {
+  const n = v && typeof v === 'object' ? (v as Record<string, unknown>).video_id : undefined
+  return typeof n === 'number' && Number.isSafeInteger(n) && n > 0 ? n : null
 }
 
 /** deleteListingVideo (OAuth listings_w). Etsy keeps a copy (re-attachable by video_id). */
@@ -399,12 +409,16 @@ const isQuota = (e: unknown): boolean => isStatus(e, 429)
  * so a refusal — the daily limit (429) included — leaves the current video
  * as it is; after it, the previous video still on the listing is taken off.
  * Only when Etsy refuses a second video (409) is the current one taken off
- * first, and re-attached by its video_id if the upload then fails.
+ * first, and re-attached by its video_id if the upload then fails. Reads go
+ * with the sign-in (own listings of any state). Answers the new video's id
+ * (from the upload answer, else the one new video on the listing; null = not
+ * known).
  */
-export async function replaceVideo(client: EtsyClient, shopId: number, listingId: number, video: Upload): Promise<void> {
-  const old = (await getVideos(client, listingId)).filter((v) => v.state !== 'deleted')
+export async function replaceVideo(client: EtsyClient, shopId: number, listingId: number, video: Upload): Promise<number | null> {
+  const old = (await getVideos(client, listingId, { oauth: true })).filter((v) => v.state !== 'deleted')
+  let answer: unknown
   try {
-    await postVideo(client, shopId, listingId, { video })
+    answer = await postVideo(client, shopId, listingId, { video })
   } catch (e) {
     if (old.length && isStatus(e, 409)) return swapVideo(client, shopId, listingId, video, old)
     if (isQuota(e)) {
@@ -414,9 +428,15 @@ export async function replaceVideo(client: EtsyClient, shopId: number, listingId
     if (!old.length) throw e
     throw new MediaError(`Нове відео не завантажено, поточне лишилося: ${why(e)}`, 'The new video was not uploaded; the current video was kept', e)
   }
-  if (!old.length) return
   const ids = new Set(old.map((v) => v.id))
-  const still = (await getVideos(client, listingId)).filter((v) => v.state !== 'deleted' && ids.has(v.id))
+  let id = videoIdOf(answer)
+  if (!old.length) return id ?? (await newVideoId(client, listingId, ids).catch(() => null))
+  const now = (await getVideos(client, listingId, { oauth: true })).filter((v) => v.state !== 'deleted')
+  if (id == null) {
+    const fresh = now.filter((v) => !ids.has(v.id))
+    id = fresh.length === 1 ? fresh[0].id : null
+  }
+  const still = now.filter((v) => ids.has(v.id) && v.id !== id)
   try {
     for (const v of still) await deleteVideo(client, shopId, listingId, v.id)
   } catch (e) {
@@ -427,13 +447,21 @@ export async function replaceVideo(client: EtsyClient, shopId: number, listingId
       e
     )
   }
+  return id
+}
+
+/** The one video on the listing that isn't among `old` (an upload answer without its id); null = not exactly one. */
+async function newVideoId(client: EtsyClient, listingId: number, old: Set<number>): Promise<number | null> {
+  const fresh = (await getVideos(client, listingId, { oauth: true })).filter((v) => v.state !== 'deleted' && !old.has(v.id))
+  return fresh.length === 1 ? fresh[0].id : null
 }
 
 /** Etsy refused a second video: take the current one off, upload, re-attach it if that fails. */
-async function swapVideo(client: EtsyClient, shopId: number, listingId: number, video: Upload, old: MediaVideo[]): Promise<void> {
+async function swapVideo(client: EtsyClient, shopId: number, listingId: number, video: Upload, old: MediaVideo[]): Promise<number | null> {
   for (const v of old) await deleteVideo(client, shopId, listingId, v.id)
+  let answer: unknown
   try {
-    await postVideo(client, shopId, listingId, { video })
+    answer = await postVideo(client, shopId, listingId, { video })
   } catch (e) {
     const reason = isQuota(e) ? VIDEO_QUOTA : why(e)
     const ids = old.map((v) => v.id).join(', ')
@@ -450,6 +478,7 @@ async function swapVideo(client: EtsyClient, shopId: number, listingId: number, 
       e
     )
   }
+  return videoIdOf(answer) ?? (await newVideoId(client, listingId, new Set(old.map((v) => v.id))).catch(() => null))
 }
 
 // ---------------------------------------------------------------- files

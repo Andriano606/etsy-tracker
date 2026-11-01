@@ -42,8 +42,9 @@ export interface ViewerImage {
    */
   ref?: string
   /**
-   * A video to play instead of the picture (an Etsy CDN URL, checked with
-   * `playableVideo`); `src` is then its preview frame.
+   * A video to play instead of the picture: an Etsy CDN URL (checked with
+   * `playableVideo`; `src` is then its preview frame), or a draft's own video
+   * `etsyimg://draft/{id}` (no preview frame — `src` is the same URL).
    */
   video?: string
 }

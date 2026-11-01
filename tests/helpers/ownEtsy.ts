@@ -1,6 +1,8 @@
 // A stateful fake of the user's own Etsy shop for the draft send/update/delete
-// paths (and pulling Etsy drafts): listings with their images, buyer files and
-// inventory, behind the real OAS paths, through the real client (testClient).
+// paths (and pulling Etsy drafts): listings with their images, video, buyer
+// files and inventory, behind the real OAS paths, through the real client
+// (testClient). A listing holds one video: uploading a second answers 409 (the
+// caller takes the old one off first).
 
 import { testClient, routedFetch, OWN_SHOP } from './features'
 
@@ -18,6 +20,16 @@ export interface FakeFile {
   filename: string
   size_bytes: number
   filesize: string
+}
+
+export interface FakeVideo {
+  video_id: number
+  video_state: string
+  video_url: string
+  thumbnail_url: string
+  /** The uploaded file's name and size (what the test sent). */
+  name: string
+  size: number
 }
 
 export interface FakeOffering {
@@ -57,8 +69,22 @@ export interface FakeListing {
   /** The listing's photos, in display order (rank = index + 1). */
   images: FakeImage[]
   files: FakeFile[]
+  /** The listing video (one at most). */
+  videos: FakeVideo[]
   products: FakeProduct[]
 }
+
+export const fakeVideoUrl = (id: number): string => `https://v.etsystatic.com/video/upload/ac_none/v1/listing/${id}.mp4`
+
+export const mkFakeVideo = (id: number, over: Partial<FakeVideo> = {}): FakeVideo => ({
+  video_id: id,
+  video_state: 'active',
+  video_url: fakeVideoUrl(id),
+  thumbnail_url: `https://i.etsystatic.com/video/${id}.jpg`,
+  name: `video-${id}.mp4`,
+  size: 100,
+  ...over
+})
 
 const img = (id: number): FakeImage => ({
   listing_image_id: id,
@@ -95,6 +121,7 @@ export function mkFakeListing(id: number, over: Partial<FakeListing> = {}): Fake
     url: `https://www.etsy.com/listing/${id}`,
     images: [],
     files: [],
+    videos: [],
     products: [
       {
         product_id: id * 10,
@@ -123,6 +150,7 @@ export function ownEtsy(opts: { listings?: FakeListing[]; scopes?: string[] } = 
   let nextListing = 4242
   let nextImage = 9001
   let nextFile = 7001
+  let nextVideo = 6001
   const failures: FakeFailure[] = []
   const touch = (l: FakeListing) => (l.updated_timestamp = ++clock)
   // The fewest photos/files each listing had after any photo/file write (a live listing must never drop to none).
@@ -134,9 +162,10 @@ export function ownEtsy(opts: { listings?: FakeListing[]; scopes?: string[] } = 
   const get = (url: URL, at: number): FakeListing | undefined => listings.get(Number(url.pathname.split('/')[at]))
   const notFound = { status: 404, body: { error: 'Listing not found' } }
   const out = (l: FakeListing) => {
-    const { images, files, products, ...rest } = l
+    const { images, files, products, videos, ...rest } = l
     void files
     void products
+    void videos
     return { ...rest, images: images.map((i) => ({ ...i })) }
   }
   const failing = (method: string, url: URL) => {
@@ -263,6 +292,35 @@ export function ownEtsy(opts: { listings?: FakeListing[]; scopes?: string[] } = 
       track(l)
       return { body: {} }
     }),
+    ...route('GET /v3/application/listings/{id}/videos', (url) => {
+      const l = get(url, 4)
+      return l ? { body: { count: l.videos.length, results: l.videos.map(({ name, size, ...v }) => (void name, void size, { ...v })) } } : notFound
+    }),
+    // uploadListingVideo: a new `video`, or `video_id` re-attaching a removed one; a second video → 409.
+    ...route('POST /v3/application/shops/{shop}/listings/{id}/videos', (url, init) => {
+      const l = get(url, 6)
+      if (!l) return notFound
+      if (l.videos.length) return { status: 409, body: { error: 'This listing already has a video.' } }
+      const fd = init?.body as FormData
+      const file = fd.get('video') as File | null
+      const reId = fd.get('video_id') ? Number(fd.get('video_id')) : null
+      const v = file ? mkFakeVideo(nextVideo++, { name: String(fd.get('name') ?? file.name), size: file.size }) : reId != null ? mkFakeVideo(reId) : null
+      if (!v) return { status: 400, body: { error: 'no video' } }
+      l.videos.push(v)
+      touch(l)
+      const { name, size, ...body } = v
+      void name
+      void size
+      return { status: 201, body }
+    }),
+    ...route('DELETE /v3/application/shops/{shop}/listings/{id}/videos/{video}', (url) => {
+      const l = get(url, 6)
+      const id = Number(url.pathname.split('/')[8])
+      if (!l || !l.videos.some((v) => v.video_id === id)) return { status: 404, body: { error: 'no video' } }
+      l.videos = l.videos.filter((v) => v.video_id !== id)
+      touch(l)
+      return { body: {} }
+    }),
     ...route('GET /v3/application/shops/{shop}/listings/{id}/files', (url) => {
       const l = get(url, 6)
       return l ? { body: { count: l.files.length, results: l.files.map((f) => ({ ...f })) } } : notFound
@@ -323,9 +381,16 @@ export function ownEtsy(opts: { listings?: FakeListing[]; scopes?: string[] } = 
     return f.listing_file_id
   }
   const imageIds = (id: number): number[] => listings.get(id)!.images.map((i) => i.listing_image_id)
+  /** A video already on a listing (e.g. added on Etsy's site): its id. */
+  const addVideo = (id: number, over: Partial<FakeVideo> = {}): number => {
+    const v = mkFakeVideo(nextVideo++, over)
+    listings.get(id)!.videos.push(v)
+    return v.video_id
+  }
+  const videoIds = (id: number): number[] => listings.get(id)!.videos.map((v) => v.video_id)
   /** Start watching how few photos/files the listing has from now on (see `lowest`). */
   const watch = (id: number) => lows.delete(id)
   /** The fewest photos/files the listing had after a photo/file write since `watch` (null = no write). */
   const lowest = (id: number) => lows.get(id) ?? null
-  return { fetch, client, listings, failures, editOnEtsy, requests, writes, addImages, addFile, imageIds, watch, lowest }
+  return { fetch, client, listings, failures, editOnEtsy, requests, writes, addImages, addFile, imageIds, addVideo, videoIds, watch, lowest }
 }

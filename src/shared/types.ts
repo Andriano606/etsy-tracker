@@ -976,12 +976,14 @@ export interface NewListingInput {
   images: string[]
   /** Digital files (PickedFile tokens). */
   files: string[]
+  /** The listing video (a PickedFile token; Etsy shows one per listing), uploaded after the photos. */
+  video?: string
   /** Publish right away (Etsy's $0.20 fee) instead of leaving a draft. */
   publish: boolean
 }
 
 export interface CreateListingProgress {
-  step: 'draft' | 'images' | 'files' | 'publish'
+  step: 'draft' | 'images' | 'video' | 'files' | 'publish'
   done: number
   total: number
   label: string
@@ -1054,15 +1056,15 @@ export interface DraftFields {
   readinessStateId: number | null
 }
 
-/** A photo or buyer file stored with a draft (photos show via etsyimg://draft/{id}). */
+/** A photo, the video or a buyer file stored with a draft (photos show and the video plays via etsyimg://draft/{id}). */
 export interface DraftMedia {
   id: number
-  kind: 'photo' | 'file'
+  kind: 'photo' | 'file' | 'video'
   position: number
   name: string
   mime: string
   size: number
-  /** Uploaded to the linked Etsy listing (its listing_image_id / listing_file_id is known). */
+  /** Uploaded to the linked Etsy listing (its listing_image_id / listing_file_id / video_id is known). */
   onEtsy: boolean
   /**
    * A buyer file that exists only on Etsy (pulled from an Etsy draft — Etsy's API gives no
@@ -1100,7 +1102,10 @@ export interface DraftEtsyLink {
    * are which on Etsy and whether it changed there are unknown — the first update asks first.
    */
   unverified: boolean
-  /** The last pull couldn't fetch some of the listing's photos/files: they stay on Etsy (an update never deletes them). */
+  /**
+   * The last pull couldn't fetch some of the listing's photos/files/its video (or the draft was linked before
+   * drafts held videos, so Etsy's video is unknown): they stay on Etsy (an update never deletes them).
+   */
   incomplete: boolean
 }
 
@@ -1117,6 +1122,8 @@ export interface ListingDraft {
   fields: DraftFields
   photos: DraftMedia[]
   files: DraftMedia[]
+  /** The listing video (Etsy shows one per listing); null = none. */
+  video: DraftMedia | null
   createdAt: number
   updatedAt: number
   sentAt: number | null
@@ -1178,6 +1185,8 @@ export interface SaveDraftInput {
   /** The full list in order (stored ones not listed are removed). */
   photos: DraftMediaRef[]
   files: DraftMediaRef[]
+  /** The video: [] = none, one ref = that one (stored or picked); absent = keep the stored one as it is. */
+  video?: DraftMediaRef[]
   /** The updatedAt of the draft the editor opened: a draft changed since (e.g. by a pull) is not overwritten (`stale`). */
   expectedUpdatedAt?: number
 }

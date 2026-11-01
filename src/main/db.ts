@@ -540,6 +540,41 @@ export const MIGRATIONS: string[] = [
     updated_at INTEGER NOT NULL            -- ms
   );
   CREATE INDEX listing_marks_status ON listing_marks(status);
+  `,
+  // v9: a draft can hold its listing video (Etsy shows one per listing). The kind
+  // CHECK can't be altered, so listing_draft_media is rebuilt: every row and column
+  // copied with its id, the AUTOINCREMENT counter carried over (an id once used is
+  // never handed out again — references like etsyimg://draft/{id} stay unique), the
+  // index recreated, plus at most one video per draft. Nothing references this
+  // table, so dropping the old one cascades nothing. Drafts already linked to an
+  // Etsy listing never pulled its video: their gaps say so ({"video": "all"}), so
+  // an update keeps whatever video the listing has on Etsy until a pull (or a send
+  // of a draft video) settles it.
+  `
+  CREATE TABLE listing_draft_media_v9 (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,  -- etsyimg://draft/{id} shows a photo / plays the video
+    draft_id INTEGER NOT NULL REFERENCES listing_drafts(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('photo', 'file', 'video')),
+    position INTEGER NOT NULL,             -- 1-based within its kind; photo 1 = the main photo; a video is 1
+    name TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    data BLOB NOT NULL,
+    etsy_id INTEGER,                       -- listing_image_id / listing_file_id / video_id on Etsy; NULL = not uploaded
+    remote INTEGER NOT NULL DEFAULT 0      -- 1 = a buyer file only on Etsy (empty data)
+  );
+  INSERT INTO listing_draft_media_v9 (id, draft_id, kind, position, name, mime, size, data, etsy_id, remote)
+    SELECT id, draft_id, kind, position, name, mime, size, data, etsy_id, remote FROM listing_draft_media ORDER BY id;
+  DELETE FROM sqlite_sequence WHERE name = 'listing_draft_media_v9';
+  INSERT INTO sqlite_sequence (name, seq) SELECT 'listing_draft_media_v9', seq FROM sqlite_sequence WHERE name = 'listing_draft_media';
+  DROP TABLE listing_draft_media;
+  ALTER TABLE listing_draft_media_v9 RENAME TO listing_draft_media;
+  CREATE INDEX listing_draft_media_draft ON listing_draft_media(draft_id, kind, position);
+  CREATE UNIQUE INDEX listing_draft_media_video ON listing_draft_media(draft_id) WHERE kind = 'video';
+  UPDATE listing_drafts SET etsy_gaps = CASE
+      WHEN etsy_gaps IS NOT NULL AND json_valid(etsy_gaps) AND json_type(etsy_gaps) = 'object' THEN json_set(etsy_gaps, '$.video', 'all')
+      ELSE '{"video":"all"}' END
+    WHERE sent_listing_id IS NOT NULL;
   `
 ]
 

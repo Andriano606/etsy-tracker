@@ -19,7 +19,7 @@ import {
   getVideoThumbnailUrl
 } from './db'
 import type { ImageStore } from './imageStore'
-import { getDraftMediaData } from './drafts'
+import { getDraftMediaData, getDraftMediaInfo, readDraftMediaSlice } from './drafts'
 import { isEtsyCdnUrl } from '../shared/externalUrl'
 
 export const IMAGE_SCHEME = 'etsyimg'
@@ -58,7 +58,7 @@ export function parseReviewImageUrl(url: string): number | null {
   return Number.isSafeInteger(id) && id > 0 ? id : null
 }
 
-/** `etsyimg://draft/7` → 7 (a photo of a listing draft kept in the app); null otherwise. */
+/** `etsyimg://draft/7` → 7 (a photo or the video of a listing draft kept in the app); null otherwise. */
 export function parseDraftImageUrl(url: string): number | null {
   let u: URL
   try {
@@ -168,6 +168,55 @@ export interface ImageProtocolDeps {
 
 const CACHE = 'private, max-age=86400'
 
+/**
+ * A `Range: bytes=…` header against a body of `size` bytes (RFC 9110, one
+ * range): {start, end} inclusive; null = no usable Range (serve it all);
+ * 'unsatisfiable' = a range outside the body (416).
+ */
+export function parseRange(header: string | null, size: number): { start: number; end: number } | null | 'unsatisfiable' {
+  if (!header) return null
+  const m = /^\s*bytes\s*=\s*(\d*)\s*-\s*(\d*)\s*$/i.exec(header)
+  if (!m || (m[1] === '' && m[2] === '')) return null // several ranges or garbage: the whole body (allowed by the RFC)
+  if (m[1] === '') {
+    // The last N bytes.
+    const n = Number(m[2])
+    if (!(n > 0) || size === 0) return 'unsatisfiable'
+    return { start: Math.max(0, size - n), end: size - 1 }
+  }
+  const start = Number(m[1])
+  if (start >= size) return 'unsatisfiable'
+  const end = m[2] === '' ? size - 1 : Math.min(Number(m[2]), size - 1)
+  if (end < start) return null // invalid range: ignored
+  return { start, end }
+}
+
+/**
+ * The most an open-ended range (`bytes=N-`, how a <video> starts and seeks)
+ * gets in one answer: the player asks for the rest as it goes, and a 100 MB
+ * video is never read from the db in one piece just to play its first seconds.
+ */
+export const VIDEO_CHUNK_BYTES = 4 * 1024 * 1024
+
+/** A draft's stored video, with Range support (a <video> seeks with Range requests); only the asked part is read. */
+function videoResponse(db: Db, mediaId: number, size: number, mime: string, range: string | null): Response {
+  const r = parseRange(range, size)
+  const base = { 'content-type': mime, 'accept-ranges': 'bytes', 'cache-control': 'no-store' }
+  if (r === 'unsatisfiable') return new Response(null, { status: 416, headers: { ...base, 'content-range': `bytes */${size}` } })
+  if (!r) {
+    return new Response(new Uint8Array(getDraftMediaData(db, mediaId)?.data ?? []), {
+      status: 200,
+      headers: { ...base, 'content-length': String(size) }
+    })
+  }
+  const openEnded = !/-\s*\d+\s*$/.test(range ?? '')
+  const end = openEnded ? Math.min(r.end, r.start + VIDEO_CHUNK_BYTES - 1) : r.end
+  const part = readDraftMediaSlice(db, mediaId, r.start, end - r.start + 1)
+  return new Response(part, {
+    status: 206,
+    headers: { ...base, 'content-length': String(part.length), 'content-range': `bytes ${r.start}-${r.start + part.length - 1}/${size}` }
+  })
+}
+
 /** The `protocol.handle(IMAGE_SCHEME, …)` handler. */
 export function createImageProtocolHandler(deps: ImageProtocolDeps): (req: Request) => Promise<Response> {
   async function fromCdn(url: string): Promise<Response> {
@@ -202,11 +251,14 @@ export function createImageProtocolHandler(deps: ImageProtocolDeps): (req: Reque
   }
 
   return async (req) => {
-    // A draft's photo lives in the db (no CDN, no MinIO).
+    // A draft's photo or video lives in the db (no CDN, no MinIO). Buyer files are never served.
     const draftMedia = parseDraftImageUrl(req.url)
     if (draftMedia != null) {
+      const info = getDraftMediaInfo(deps.db, draftMedia)
+      if (!info || (info.kind !== 'photo' && info.kind !== 'video')) return new Response(null, { status: 404 })
+      if (info.kind === 'video') return videoResponse(deps.db, info.id, info.bytes, info.mime, req.headers?.get('range') ?? null)
       const row = getDraftMediaData(deps.db, draftMedia)
-      if (!row || row.kind !== 'photo') return new Response(null, { status: 404 })
+      if (!row) return new Response(null, { status: 404 })
       return new Response(new Uint8Array(row.data), {
         status: 200,
         headers: { 'content-type': row.mime, 'cache-control': 'no-store' }

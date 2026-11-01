@@ -1022,7 +1022,7 @@ describe('migration v8 (from a real v7 database)', () => {
       Object.fromEntries(v7Tables.map((t) => [t, db.prepare(`SELECT * FROM "${t}"`).all()]))
     const before = snapshot()
 
-    migrate(db)
+    migrate(db, MIGRATIONS.slice(0, 8))
     expect(schemaVersion(db)).toBe(8)
     expect(tables()).toEqual([...v7Tables, 'listing_marks'].sort())
     expect(snapshot()).toEqual(before)
@@ -1039,6 +1039,93 @@ describe('migration v8 (from a real v7 database)', () => {
     expect(() =>
       db.prepare("INSERT INTO listing_marks (listing_id, status, source, created_at, updated_at) VALUES (1, 'done', 'web', 1, 1)").run()
     ).toThrow(/CHECK/)
+  })
+})
+
+describe('migration v9 (from a real v8 database)', () => {
+  const tables = (db: Db): string[] =>
+    (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as Array<{ name: string }>).map(
+      (r) => r.name
+    )
+  const setup = (): Db => {
+    const db = memDbAt(8)
+    const draft = db.prepare('INSERT INTO listing_drafts (source, fields_json, created_at, updated_at) VALUES (?, ?, ?, ?)')
+    draft.run('app', '{"title":"Never sent"}', 1, 2)
+    draft.run('mcp', '{"title":"Linked"}', 3, 4)
+    draft.run('app', '{"title":"Linked, gaps"}', 5, 6)
+    draft.run('app', '{"title":"Linked, corrupt gaps"}', 7, 8)
+    db.prepare("UPDATE listing_drafts SET sent_listing_id = 4242, etsy_state = 'active', synced_at = 9, etsy_updated_at = 10 WHERE id = 2").run()
+    db.prepare(`UPDATE listing_drafts SET sent_listing_id = 4343, etsy_state = 'draft', etsy_gaps = '{"photos":[11,12],"files":"all"}' WHERE id = 3`).run()
+    db.prepare("UPDATE listing_drafts SET sent_listing_id = 4444, etsy_gaps = 'not json' WHERE id = 4").run()
+    const media = db.prepare(
+      'INSERT INTO listing_draft_media (id, draft_id, kind, position, name, mime, size, data, etsy_id, remote) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    )
+    media.run(5, 1, 'photo', 1, 'a.jpg', 'image/jpeg', 3, new Uint8Array([1, 2, 3]), null, 0)
+    media.run(9, 2, 'photo', 1, 'b.png', 'image/png', 2, new Uint8Array([4, 5]), 777, 0)
+    media.run(12, 2, 'file', 1, 'plan.pdf', 'application/pdf', 4, new Uint8Array([6, 7, 8, 9]), 888, 0)
+    media.run(13, 3, 'file', 1, 'remote.zip', 'application/zip', 1234, new Uint8Array(), 999, 1)
+    // The highest id ever handed out was 20 (deleted since): it must never come back.
+    media.run(20, 1, 'photo', 2, 'gone.jpg', 'image/jpeg', 1, new Uint8Array([0]), null, 0)
+    db.prepare('DELETE FROM listing_draft_media WHERE id = 20').run()
+    return db
+  }
+
+  it('rebuilds listing_draft_media byte for byte (ids, Etsy ids, remote rows), keeps its index and counter; other tables unchanged', () => {
+    const db = setup()
+    seedShop(db)
+    const v8Tables = tables(db)
+    const others = v8Tables.filter((t) => t !== 'listing_draft_media' && t !== 'listing_drafts')
+    const snapshot = (): Record<string, unknown[]> => Object.fromEntries(others.map((t) => [t, db.prepare(`SELECT * FROM "${t}"`).all()]))
+    const mediaBefore = db.prepare('SELECT * FROM listing_draft_media ORDER BY id').all()
+    const draftsBefore = db.prepare('SELECT * FROM listing_drafts ORDER BY id').all() as Array<Record<string, unknown>>
+    const before = snapshot()
+
+    migrate(db, MIGRATIONS.slice(0, 9))
+    expect(schemaVersion(db)).toBe(9)
+    expect(tables(db)).toEqual(v8Tables)
+    expect(snapshot()).toEqual(before)
+    expect(db.prepare('SELECT * FROM listing_draft_media ORDER BY id').all()).toEqual(mediaBefore)
+    const cols = (db.prepare('PRAGMA table_info(listing_draft_media)').all() as Array<{ name: string }>).map((r) => r.name)
+    expect(cols).toEqual(['id', 'draft_id', 'kind', 'position', 'name', 'mime', 'size', 'data', 'etsy_id', 'remote'])
+    const idx = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'listing_draft_media'").all() as Array<{ name: string }>).map(
+      (r) => r.name
+    )
+    expect(idx).toEqual(expect.arrayContaining(['listing_draft_media_draft', 'listing_draft_media_video']))
+    expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+    expect(db.prepare('PRAGMA integrity_check').get()).toEqual({ integrity_check: 'ok' })
+
+    // listing_drafts: only the gaps of linked drafts change — their Etsy video was never pulled.
+    const draftsAfter = db.prepare('SELECT * FROM listing_drafts ORDER BY id').all() as Array<Record<string, unknown>>
+    expect(draftsAfter.map(({ etsy_gaps, ...r }) => (void etsy_gaps, r))).toEqual(draftsBefore.map(({ etsy_gaps, ...r }) => (void etsy_gaps, r)))
+    expect(draftsAfter.map((r) => (r.etsy_gaps == null ? null : JSON.parse(String(r.etsy_gaps))))).toEqual([
+      null,
+      { video: 'all' },
+      { photos: [11, 12], files: 'all', video: 'all' },
+      { video: 'all' }
+    ])
+    expect(getDraft(db, 1)).toMatchObject({ video: null, etsy: null })
+    expect(getDraft(db, 2)).toMatchObject({ video: null, etsy: { incomplete: true }, photos: [{ id: 9, onEtsy: true }], files: [{ id: 12, onEtsy: true }] })
+    expect(getDraft(db, 3)!.files[0]).toMatchObject({ id: 13, remote: true, size: 1234 })
+
+    // The new kind is accepted (one video per draft); the counter continues past the deleted id 20.
+    const insert = db.prepare("INSERT INTO listing_draft_media (draft_id, kind, position, name, mime, size, data) VALUES (?, 'video', 1, 'v.mp4', 'video/mp4', 1, ?)")
+    expect(Number(insert.run(1, new Uint8Array([1])).lastInsertRowid)).toBe(21)
+    expect(() => insert.run(1, new Uint8Array([2]))).toThrow(/UNIQUE/)
+    expect(() =>
+      db.prepare("INSERT INTO listing_draft_media (draft_id, kind, position, name, mime, size, data) VALUES (1, 'audio', 1, 'a', 'a', 1, x'00')").run()
+    ).toThrow(/CHECK/)
+    expect(getDraft(db, 1)!.video).toMatchObject({ id: 21, kind: 'video', name: 'v.mp4', mime: 'video/mp4' })
+    // Still cascades with its draft.
+    deleteDraft(db, 1)
+    expect(db.prepare('SELECT COUNT(*) AS n FROM listing_draft_media WHERE draft_id = 1').get()).toEqual({ n: 0 })
+  })
+
+  it('migrates an empty v8 database (no media, no counter yet)', () => {
+    const db = memDbAt(8)
+    migrate(db)
+    expect(schemaVersion(db)).toBe(MIGRATIONS.length)
+    const d = saveDraft(db, { source: 'app', fields: normalizeDraftFields({}), video: [{ name: 'clip.mp4', data: new Uint8Array([1, 2]) }] }, 1)
+    expect(d.video).toMatchObject({ kind: 'video', name: 'clip.mp4', mime: 'video/mp4', size: 2, onEtsy: false })
   })
 })
 

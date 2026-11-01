@@ -60,12 +60,16 @@ export interface DownloadOptions {
   retries: number
   /** Refuse anything bigger (Etsy originals are a few MB). */
   maxBytes?: number
+  /** What the answer must be: an image (default, `image/*`) or a video (`video/*`). */
+  kind?: 'image' | 'video'
 }
 
 /** GET an image from the CDN with a timeout; 5xx/429/network/timeout errors are retried. */
 export async function downloadImage(url: string, o: DownloadOptions): Promise<Downloaded> {
   const maxBytes = o.maxBytes ?? 50 * 1024 * 1024
-  if (!isEtsyCdnUrl(url)) throw new DownloadError('Адреса зображення не на CDN Etsy (https://*.etsystatic.com)')
+  const video = o.kind === 'video'
+  const what = video ? 'відео' : 'зображення'
+  if (!isEtsyCdnUrl(url)) throw new DownloadError(`Адреса ${video ? 'відео' : 'зображення'} не на CDN Etsy (https://*.etsystatic.com)`)
   let last = new DownloadError('не завантажено')
   for (let attempt = 0; attempt <= o.retries; attempt++) {
     if (attempt > 0) await o.sleep(500 * 2 ** (attempt - 1))
@@ -79,8 +83,15 @@ export async function downloadImage(url: string, o: DownloadOptions): Promise<Do
         throw last // 404 etc.: retrying won't help
       }
       const contentType = res.headers.get('content-type')
-      if (!contentType || !/^image\//i.test(contentType)) {
-        throw new DownloadError(`CDN Etsy повернув не зображення (${contentType ?? 'без content-type'})`, res.status)
+      if (!contentType || !(video ? /^video\//i : /^image\//i).test(contentType)) {
+        await res.body?.cancel().catch(() => undefined)
+        throw new DownloadError(`CDN Etsy повернув не ${what} (${contentType ?? 'без content-type'})`, res.status)
+      }
+      // A size Etsy announces up front: refuse before reading (videos are big).
+      const announced = Number(res.headers.get('content-length'))
+      if (Number.isFinite(announced) && announced > maxBytes) {
+        await res.body?.cancel().catch(() => undefined)
+        throw new DownloadError(`Завеликий файл (${announced} байт)`, res.status)
       }
       const body = Buffer.from(await res.arrayBuffer())
       if (body.length === 0) throw new DownloadError('CDN Etsy повернув порожній файл', res.status)
@@ -96,6 +107,11 @@ export async function downloadImage(url: string, o: DownloadOptions): Promise<Do
     }
   }
   throw last
+}
+
+/** GET a listing video from Etsy's CDN (`video/*`), like downloadImage. */
+export function downloadVideo(url: string, o: Omit<DownloadOptions, 'kind'>): Promise<Downloaded> {
+  return downloadImage(url, { ...o, kind: 'video' })
 }
 
 export interface ImageSyncDeps {

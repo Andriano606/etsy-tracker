@@ -37,7 +37,23 @@ app.setPath('userData', path.join(OUT, 'userdata'))
 app.commandLine.appendSwitch('no-sandbox')
 app.disableHardwareAcceleration()
 app.commandLine.appendSwitch('force-device-scale-factor', '1')
-protocol.registerSchemesAsPrivileged([{ scheme: 'etsyimg', privileges: { standard: true, secure: true } }])
+protocol.registerSchemesAsPrivileged([{ scheme: 'etsyimg', privileges: { standard: true, secure: true, stream: true } }])
+
+// A draft's video (fake-api.cjs: media id 990001) plays a short sample clip, made once with ffmpeg
+// into .ui-harness/img-cache (no ffmpeg → 404, like a video that can't be played). Other video ids → 404.
+const SAMPLE_VIDEO_ID = '990001'
+function sampleVideo() {
+  const file = path.join(OUT, 'img-cache', 'draft-video.webm')
+  if (!fs.existsSync(file)) {
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    try {
+      require('child_process').execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc=duration=4:size=640x480:rate=24', '-c:v', 'libvpx', '-b:v', '400k', '-y', file], { stdio: 'ignore' })
+    } catch {
+      return null
+    }
+  }
+  return fs.existsSync(file) ? fs.readFileSync(file) : null
+}
 
 // Review photos aren't in the fixtures: a review's photo is shown as its listing's first photo.
 const reviewListing = {}
@@ -60,6 +76,10 @@ async function image(req) {
     return cached(`video-${m[1]}`, url)
   }
   // etsyimg://draft/{id}: the harness drafts use fixture image ids as media ids (fake-api.cjs).
+  if (u.hostname === 'draft' && u.pathname === `/${SAMPLE_VIDEO_ID}`) {
+    const buf = sampleVideo()
+    return buf ? new Response(buf, { headers: { 'content-type': 'video/webm', 'content-length': String(buf.length) } }) : new Response(null, { status: 404 })
+  }
   if (u.hostname === 'draft' && /^\/\d+$/.test(u.pathname)) m = [null, u.pathname.slice(1), 'fullxfull']
   else if (u.hostname === 'review' && m) {
     const img = firstImageOf(reviewListing[m[1]])

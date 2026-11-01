@@ -10,7 +10,7 @@ import {
   reviewImageCounts
 } from '../../src/main/db'
 import { createReviewSyncer } from '../../src/main/reviewSync'
-import { DownloadError, createImageSyncer, downloadImage } from '../../src/main/imageSync'
+import { DownloadError, createImageSyncer, downloadImage, downloadVideo } from '../../src/main/imageSync'
 import { createScanner } from '../../src/main/scanner'
 import type { ImageSyncState, ScanOutcome } from '../../src/shared/types'
 import { memDb, seedShop } from '../helpers/db'
@@ -354,6 +354,28 @@ describe('downloadImage', () => {
     expect(f404).toHaveBeenCalledTimes(1)
     const html = (async () => new Response('<html>', { headers: { 'content-type': 'text/html' } })) as unknown as typeof fetch
     await expect(downloadImage(CDN, opts(html))).rejects.toThrow(/не зображення/)
+  })
+
+  it('downloadVideo takes only video/* and refuses a size announced over the limit before reading the body', async () => {
+    const VIDEO = 'https://v.etsystatic.com/video/upload/1.mp4'
+    const mp4 = (async () => new Response(Buffer.from('mp4'), { headers: { 'content-type': 'video/mp4' } })) as unknown as typeof fetch
+    expect((await downloadVideo(VIDEO, opts(mp4))).contentType).toBe('video/mp4')
+    const jpeg = (async () => new Response(Buffer.from('x'), { headers: { 'content-type': 'image/jpeg' } })) as unknown as typeof fetch
+    await expect(downloadVideo(VIDEO, opts(jpeg))).rejects.toThrow(/не відео/)
+    await expect(downloadImage(CDN, opts(mp4))).rejects.toThrow(/не зображення/)
+    const arrayBuffer = vi.fn(async () => new ArrayBuffer(1))
+    const cancel = vi.fn(async () => undefined)
+    const huge = (async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'video/mp4', 'content-length': String(500 * 1024 * 1024) }),
+      body: { cancel },
+      arrayBuffer
+    })) as unknown as typeof fetch
+    await expect(downloadVideo(VIDEO, { ...opts(huge), maxBytes: 100 * 1024 * 1024 })).rejects.toThrow(/Завеликий/)
+    expect(arrayBuffer).not.toHaveBeenCalled()
+    expect(cancel).toHaveBeenCalled()
+    await expect(downloadVideo('https://evil.example/v.mp4', opts(mp4))).rejects.toThrow(/Адреса відео не на CDN Etsy/)
   })
 
   it('times out a stalled download', async () => {

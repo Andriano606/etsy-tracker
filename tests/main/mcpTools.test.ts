@@ -825,7 +825,8 @@ describe('open_link', () => {
             { name: 'cover.jpg', data: new Uint8Array(Buffer.from('COVER-BYTES')) },
             { name: 'back.png', data: new Uint8Array(Buffer.from('BACK-BYTES')) }
           ],
-          files: [{ name: 'planner.pdf', data: new Uint8Array(Buffer.from('PDF')) }]
+          files: [{ name: 'planner.pdf', data: new Uint8Array(Buffer.from('PDF')) }],
+          video: [{ name: 'spin.mp4', data: new Uint8Array(Buffer.from('MP4')) }]
         },
         1_760_000_000_000
       )
@@ -850,6 +851,9 @@ describe('open_link', () => {
     expect(bytesOf(r).toString()).toBe('BACK-BYTES')
 
     expect(errText(await call('open_link', { link: draftPhotoRef(d.id, d.files[0].id) }))).toContain('is a buyer file, not a photo')
+    // The draft's video is never returned as an image (the same etsyimg:// handler serves it).
+    expect(errText(await call('open_link', { link: draftPhotoRef(d.id, d.video!.id) }))).toContain('is its video, not a photo')
+    expect(shown.video).toEqual({ name: 'spin.mp4', size: 3, on_etsy: false })
     expect(errText(await call('open_link', { link: draftPhotoRef(d.id, other.photos[0].id) }))).toContain(`Draft ${d.id} has no photo`)
     expect(errText(await call('open_link', { link: draftRef(99_999) }))).toContain('No draft 99999')
     expect(errText(await call('open_link', { link: draftPhotoRef(99_999, 1) }))).toContain('No draft 99999')

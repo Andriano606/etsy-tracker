@@ -27,6 +27,7 @@ import {
   splitList
 } from '@shared/myShop'
 import { formatDateTime } from '@shared/format'
+import { MAX_VIDEO_BYTES, mediaProblemText } from '@shared/features/media'
 import { GLOSSARY, type GlossaryKey } from '@shared/glossary'
 import { draftPhotoRef } from '@shared/claudeRef'
 import { ownShopId, useStore, type ViewerImage } from '../store'
@@ -67,19 +68,23 @@ interface Slot {
   preview: string | null
   /** A buyer file that exists only on Etsy (pulled from an Etsy draft): no bytes here, no download. */
   remote: boolean
+  /** Already on the linked Etsy listing. */
+  onEtsy: boolean
 }
 
-/** A stored photo of a draft, as the app serves it (the original bytes — its biggest size). */
+/** A stored photo (or the video) of a draft, as the app serves it (the original bytes — its biggest size). */
 const draftPhotoSrc = (mediaId: number): string => `etsyimg://draft/${mediaId}`
 
-const stored = (d: ListingDraft, kind: 'photos' | 'files'): Slot[] =>
-  d[kind].map((m) => ({
+const stored = (d: ListingDraft, kind: 'photos' | 'files' | 'video'): Slot[] =>
+  (kind === 'video' ? (d.video ? [d.video] : []) : d[kind]).map((m) => ({
     key: `m${m.id}`,
     name: m.name,
     size: m.size,
     ref: { mediaId: m.id },
-    preview: kind === 'photos' ? draftPhotoSrc(m.id) : null,
-    remote: !!m.remote
+    // Photos show and the video plays from etsyimg://draft/{id}; buyer files never do.
+    preview: kind === 'files' ? null : draftPhotoSrc(m.id),
+    remote: !!m.remote,
+    onEtsy: !!m.onEtsy
   }))
 
 /** The id of a slot already stored with the draft (null = freshly picked, not in the app yet). */
@@ -263,13 +268,10 @@ function PhotoList({
 export const DOWNLOAD_NOTE_MS = 8000
 
 /**
- * The buyer's files (digital listings) as rows: a stored file can be saved to
- * the computer (download — the app keeps the bytes); in the editor each can be
- * removed (`onChange`; absent = read-only). A freshly picked file is still on
- * the disk, so it has no download; a file pulled from an Etsy draft exists only
- * on Etsy (Etsy's API gives no download of buyer files) — "лише на Etsy".
+ * "Завантажити" for stored media (a buyer file, the video): main writes the stored
+ * bytes where the user picks; the outcome shows under the list for a while.
  */
-function FileList({ items, onChange }: { items: Slot[]; onChange?: (v: Slot[]) => void }): JSX.Element | null {
+function useDownload(): { busy: number | null; download: (id: number) => Promise<void>; note: JSX.Element | null } {
   const [busy, setBusy] = useState<number | null>(null)
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null)
   useEffect(() => {
@@ -277,9 +279,6 @@ function FileList({ items, onChange }: { items: Slot[]; onChange?: (v: Slot[]) =
     const t = setTimeout(() => setNote(null), DOWNLOAD_NOTE_MS)
     return () => clearTimeout(t)
   }, [note])
-  if (!items.length) return null
-  const downloads = items.some((f) => storedId(f) != null && !f.remote)
-
   const download = async (id: number): Promise<void> => {
     setBusy(id)
     try {
@@ -293,6 +292,31 @@ function FileList({ items, onChange }: { items: Slot[]; onChange?: (v: Slot[]) =
       setBusy(null)
     }
   }
+  const view = !note ? null : note.ok ? (
+    <p className="draft-dl-note" role="status">
+      <Icon name="check" size={14} />
+      <span>{note.text}</span>
+    </p>
+  ) : (
+    <p className="draft-dl-note is-error" role="alert">
+      <Icon name="error" size={14} />
+      <span>{note.text}</span>
+    </p>
+  )
+  return { busy, download, note: view }
+}
+
+/**
+ * The buyer's files (digital listings) as rows: a stored file can be saved to
+ * the computer (download — the app keeps the bytes); in the editor each can be
+ * removed (`onChange`; absent = read-only). A freshly picked file is still on
+ * the disk, so it has no download; a file pulled from an Etsy draft exists only
+ * on Etsy (Etsy's API gives no download of buyer files) — "лише на Etsy".
+ */
+function FileList({ items, onChange }: { items: Slot[]; onChange?: (v: Slot[]) => void }): JSX.Element | null {
+  const { busy, download, note } = useDownload()
+  if (!items.length) return null
+  const downloads = items.some((f) => storedId(f) != null && !f.remote)
 
   return (
     <div className="draft-files">
@@ -332,18 +356,103 @@ function FileList({ items, onChange }: { items: Slot[]; onChange?: (v: Slot[]) =
           )
         })}
       </ul>
-      {note &&
-        (note.ok ? (
-          <p className="draft-dl-note" role="status">
-            <Icon name="check" size={14} />
-            <span>{note.text}</span>
-          </p>
-        ) : (
-          <p className="draft-dl-note is-error" role="alert">
-            <Icon name="error" size={14} />
-            <span>{note.text}</span>
-          </p>
-        ))}
+      {note}
+    </div>
+  )
+}
+
+/**
+ * The listing video (one per listing): a saved one plays here (and opens in the
+ * full-size viewer), can be downloaded; a freshly picked one shows its name and
+ * size until the draft is saved. "Замінити" picks another, "Прибрати" removes it.
+ */
+function VideoBlock({ items, onPick, onChange }: { items: Slot[]; onPick: () => void; onChange: (v: Slot[]) => void }): JSX.Element {
+  const openImage = useStore((s) => s.openImage)
+  const { busy, download, note } = useDownload()
+  const [failed, setFailed] = useState<string | null>(null)
+  const v = items[0] ?? null
+  const id = v ? storedId(v) : null
+  const src = v && id != null ? v.preview : null
+  // Checked here too, so a wrong pick says so at once (main refuses it on saving anyway).
+  const problem = v && id == null ? mediaProblemText('video', v.name, v.size) : null
+  return (
+    <div className="my-block" data-testid="draft-video">
+      <BlockHead label="Відео" glossary="myshop.draftVideo" aside={<span className="num">{`${v ? 1 : 0}/1`}</span>} />
+      <div className="ui-field-hint">
+        Одне відео на товар: MP4, MOV, M4V, WEBM, AVI або MKV, до {MAX_VIDEO_BYTES / 1024 / 1024} МБ. Найкраще 5–15 секунд — Etsy показує
+        його без звуку. Необов’язкове.
+      </div>
+      {v && (
+        <div className="draft-video">
+          {src ? (
+            failed === src ? (
+              <div className="draft-video-stage draft-video-empty" role="note">
+                <Icon name="video" size={22} />
+                <span>Не вдалося відтворити відео в програмі. Його можна завантажити й переглянути на комп’ютері.</span>
+              </div>
+            ) : (
+              <div className="draft-video-stage">
+                {/* Etsy plays listing videos without sound: muted here too. */}
+                <video
+                  key={src}
+                  className="draft-video-player"
+                  src={src}
+                  controls
+                  muted
+                  playsInline
+                  preload="metadata"
+                  aria-label={`Відео чернетки: ${v.name}`}
+                  onError={() => setFailed(src)}
+                  data-testid="draft-video-player"
+                />
+              </div>
+            )
+          ) : (
+            <div className="draft-video-stage draft-video-empty" role="note">
+              <Icon name="video" size={22} />
+              <span>Переглянути відео можна буде після збереження чернетки.</span>
+            </div>
+          )}
+          <div className="my-file draft-video-row">
+            <Icon name="video" size={16} />
+            <span className="picked-name truncate" title={v.name}>
+              {v.name}
+            </span>
+            {v.onEtsy && (
+              <Badge tone="accent" icon="store" hint={GLOSSARY['myshop.videoOnEtsy'].short}>
+                є на Etsy
+              </Badge>
+            )}
+            <span className="dim num my-file-size">{kb(v.size)}</span>
+            {src && failed !== src && (
+              <Button
+                size="sm"
+                variant="ghost"
+                icon="maximize"
+                iconOnly
+                label={`Відтворити на весь екран: ${v.name}`}
+                onClick={() => openImage({ src, video: src, alt: v.name, caption: v.name })}
+              />
+            )}
+            {id != null && (
+              <Button size="sm" variant="ghost" icon="download" iconOnly label={`Завантажити відео «${v.name}»`} busy={busy === id} onClick={() => void download(id)} />
+            )}
+            <Button size="sm" variant="ghost" icon="close" iconOnly label={`Прибрати відео: ${v.name}`} onClick={() => onChange([])} />
+          </div>
+          {problem && (
+            <p className="draft-dl-note is-error" role="alert">
+              <Icon name="error" size={14} />
+              <span>{problem}</span>
+            </p>
+          )}
+          {note}
+        </div>
+      )}
+      <div className="ui-row">
+        <Button size="sm" icon={v ? 'refresh' : 'plus'} onClick={onPick}>
+          {v ? 'Замінити відео' : 'Додати відео'}
+        </Button>
+      </div>
     </div>
   )
 }
@@ -412,7 +521,7 @@ function DraftLinkStrip({ draft, unsent, otherShop }: { draft: ListingDraft; uns
       )}
       {!removed && link.incomplete && (
         <p className="ui-field-hint" data-testid="draft-incomplete">
-          Не всі фото чи файли цього товару вдалося підтягнути з Etsy. Під час оновлення їх не буде видалено з Etsy, а наступна
+          Не всі фото, файли чи відео цього товару програма підтягнула з Etsy. Під час оновлення їх не буде видалено з Etsy, а наступна
           синхронізація спробує підтягнути їх ще раз.
         </p>
       )}
@@ -520,6 +629,8 @@ function DraftEditor({ draft, onBack }: { draft: ListingDraft | null; onBack: ()
   const [readinessId, setReadinessId] = useState(init.readinessStateId)
   const [photos, setPhotos] = useState<Slot[]>(draft ? stored(draft, 'photos') : [])
   const [files, setFiles] = useState<Slot[]>(draft ? stored(draft, 'files') : [])
+  // The listing video: 0 or 1 slot (a list, like photos and files, so the unsaved/save logic is the same).
+  const [video, setVideo] = useState<Slot[]>(draft ? stored(draft, 'video') : [])
   const [taxonomy, setTaxonomy] = useState<TaxonomyOption[] | null>(null)
   const [taxonomyError, setTaxonomyError] = useState<string | null>(null)
   const [catQuery, setCatQuery] = useState('')
@@ -607,7 +718,7 @@ function DraftEditor({ draft, onBack }: { draft: ListingDraft | null; onBack: ()
     readinessStateId: readinessId
   })
   const keys = (v: Slot[]): string[] => v.map((s) => s.key)
-  const snapshot = JSON.stringify([fields(), keys(photos), keys(files)])
+  const snapshot = JSON.stringify([fields(), keys(photos), keys(files), keys(video)])
   const [baseline, setBaseline] = useState(snapshot)
   // A save (or a send) stored the form: what is on screen now is the saved state.
   useEffect(() => {
@@ -650,10 +761,14 @@ function DraftEditor({ draft, onBack }: { draft: ListingDraft | null; onBack: ()
     touched()
   }
 
-  const pick = async (kind: 'images' | 'files'): Promise<void> => {
+  const pick = async (kind: 'images' | 'files' | 'videos'): Promise<void> => {
     const picked = await window.api.pickListingFiles(kind)
-    const slots = picked.map((p) => ({ key: `t${p.token}`, name: p.name, size: p.size, ref: { token: p.token }, preview: null, remote: false }))
-    if (kind === 'images') setPhotos((v) => [...v, ...slots])
+    const slots = picked.map((p) => ({ key: `t${p.token}`, name: p.name, size: p.size, ref: { token: p.token }, preview: null, remote: false, onEtsy: false }))
+    if (kind === 'videos') {
+      // One video per listing: a pick replaces it; a cancelled dialog changes nothing.
+      if (!slots.length) return
+      setVideo(slots.slice(0, 1))
+    } else if (kind === 'images') setPhotos((v) => [...v, ...slots])
     else setFiles((v) => [...v, ...slots])
     touched()
   }
@@ -665,6 +780,7 @@ function DraftEditor({ draft, onBack }: { draft: ListingDraft | null; onBack: ()
     setLive(d)
     setPhotos(stored(d, 'photos'))
     setFiles(stored(d, 'files'))
+    setVideo(stored(d, 'video'))
   }
 
   /** Shows another stored version of the draft (e.g. pulled from Etsy meanwhile): every field of the form, its media, its link. */
@@ -697,7 +813,8 @@ function DraftEditor({ draft, onBack }: { draft: ListingDraft | null; onBack: ()
       ...(current ? { id: current.id } : {}),
       fields: fields(),
       photos: photos.map((p) => p.ref),
-      files: files.map((f) => f.ref)
+      files: files.map((f) => f.ref),
+      video: video.map((v) => v.ref)
     }
     let res = await window.api.saveDraft(current ? { ...input, expectedUpdatedAt: current.updatedAt } : input)
     if (!res.ok && res.stale) {
@@ -804,7 +921,7 @@ function DraftEditor({ draft, onBack }: { draft: ListingDraft | null; onBack: ()
     }
     if (mode === 'update') {
       return requestConfirm(
-        `Оновити товар на Etsy?\nНазва, опис, ціна, фото й файли товару № ${link.listingId} на Etsy стануть такими, як у цій чернетці.${active ? ' Покупці одразу побачать зміни.' : ''} Плати за це немає.`,
+        `Оновити товар на Etsy?\nНазва, опис, ціна, фото, відео й файли товару № ${link.listingId} на Etsy стануть такими, як у цій чернетці.${active ? ' Покупці одразу побачать зміни.' : ''} Плати за це немає.`,
         { title: 'Оновити на Etsy', confirmLabel: 'Оновити на Etsy' }
       )
     }
@@ -1195,14 +1312,9 @@ function DraftEditor({ draft, onBack }: { draft: ListingDraft | null; onBack: ()
       )}
 
       <section className="my-card">
-        {type === 'download' && <h3 className="my-card-title">Фото і файли</h3>}
+        <h3 className="my-card-title">{type === 'download' ? 'Фото, відео і файли' : 'Фото і відео'}</h3>
         <div className="my-block">
-          <BlockHead
-            label="Фото"
-            heading={type !== 'download'}
-            glossary="myshop.photos"
-            aside={<span className="num">{`${photos.length}/${MAX_IMAGES}`}</span>}
-          />
+          <BlockHead label="Фото" glossary="myshop.photos" aside={<span className="num">{`${photos.length}/${MAX_IMAGES}`}</span>} />
           <div className="ui-field-hint">JPG, PNG або GIF. Перше фото — головне: його видно в пошуку. Стрілка ↑ піднімає фото вище.</div>
           <PhotoList items={photos} onChange={(v) => (setPhotos(v), touched())} readOnly={false} draftId={current?.id ?? null} />
           <div className="ui-row">
@@ -1211,6 +1323,7 @@ function DraftEditor({ draft, onBack }: { draft: ListingDraft | null; onBack: ()
             </Button>
           </div>
         </div>
+        <VideoBlock items={video} onPick={() => void pick('videos')} onChange={(v) => (setVideo(v), touched())} />
         {type === 'download' && (
           <div className="my-block">
             <BlockHead label="Файли для покупця" glossary="myshop.digitalFiles" aside={<span className="num">{`${files.length}/${MAX_DIGITAL_FILES}`}</span>} />
@@ -1466,6 +1579,11 @@ function DraftList(): JSX.Element {
                     </span>
                     {d.source === 'mcp' && <ClaudeBadge />}
                     {d.source === 'etsy' && <EtsyBadge />}
+                    {d.video && (
+                      <Badge tone="neutral" icon="play" hint={`У чернетці є відео: ${d.video.name}`}>
+                        відео
+                      </Badge>
+                    )}
                   </div>
                   <div className="my-meta">
                     <StatusBadge draft={d} />

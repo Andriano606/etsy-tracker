@@ -30,6 +30,7 @@ import {
   parsePrice
 } from '../shared/myShop'
 import { formatDateTime } from '../shared/format'
+import { MAX_VIDEOS, mediaProblemText } from '../shared/features/media'
 import { inventorySummary, inventoryToWrite, type InventoryWrite } from '../shared/features/inventory'
 import { type Db, completeDraftMarks, transaction } from './db'
 import { EtsyApiError, type EtsyClient, type EtsyListing } from './etsyApi'
@@ -43,7 +44,17 @@ import {
   myShopErrorMessage
 } from './myShop'
 import { getInventory, putInventory } from './features/inventory/api'
-import { deleteFile, deletePhoto, getFiles, getPhotos, movePhotoUp } from './features/media/ops'
+import {
+  deleteFile,
+  deletePhoto,
+  deleteVideo,
+  getFiles,
+  getPhotos,
+  getVideos,
+  mimeFor,
+  movePhotoUp,
+  replaceVideo
+} from './features/media/ops'
 import { deleteListing } from './features/listingMeta/api'
 
 /** A Ukrainian message for a refused draft operation. */
@@ -56,10 +67,15 @@ export const DRAFT_STALE =
   'Поки чернетка була відкрита, її змінили (наприклад, синхронізація з Etsy підтягнула зміни або її змінив Claude).'
 export const DRAFT_BUSY = 'Цю чернетку саме надсилають на Etsy — зачекайте, доки надсилання закінчиться.'
 
-/** What the last pull couldn't fetch of a linked listing (kept on Etsy by an update): photo ids or all; all files. */
+/**
+ * What the last pull couldn't fetch of a linked listing (kept on Etsy by an
+ * update): photo ids or all; all files; the video (also every draft linked
+ * before drafts held videos — migration v9).
+ */
 export interface EtsyGaps {
   photos?: number[] | 'all'
   files?: 'all'
+  video?: 'all'
 }
 
 export function parseGaps(json: string | null): EtsyGaps | null {
@@ -73,16 +89,19 @@ export function parseGaps(json: string | null): EtsyGaps | null {
       if (ids.length) out.photos = ids
     }
     if (g?.files === 'all') out.files = 'all'
-    return out.photos || out.files ? out : null
+    if (g?.video === 'all') out.video = 'all'
+    return out.photos || out.files || out.video ? out : null
   } catch {
     return null
   }
 }
 
-const gapsJson = (g: EtsyGaps | null | undefined): string | null => {
+export const gapsJson = (g: EtsyGaps | null | undefined): string | null => {
   if (!g) return null
   const photos = g.photos === 'all' ? 'all' : g.photos?.length ? g.photos : undefined
-  return photos || g.files ? JSON.stringify({ ...(photos ? { photos } : {}), ...(g.files ? { files: g.files } : {}) }) : null
+  return photos || g.files || g.video
+    ? JSON.stringify({ ...(photos ? { photos } : {}), ...(g.files ? { files: g.files } : {}), ...(g.video ? { video: g.video } : {}) })
+    : null
 }
 
 /** Drafts being sent, per database: one send per draft at a time, and no save meanwhile. */
@@ -144,10 +163,12 @@ interface DraftRow {
   etsy_gaps: string | null
 }
 
+export type DraftMediaKind = 'photo' | 'file' | 'video'
+
 interface MediaRow {
   id: number
   draft_id: number
-  kind: 'photo' | 'file'
+  kind: DraftMediaKind
   position: number
   name: string
   mime: string
@@ -200,6 +221,7 @@ function toDraft(r: DraftRow, media: MediaRow[]): ListingDraft {
   const fields = parseFields(r.fields_json)
   const photos = media.filter((m) => m.kind === 'photo').sort((a, b) => a.position - b.position).map(toMedia)
   const files = media.filter((m) => m.kind === 'file').sort((a, b) => a.position - b.position).map(toMedia)
+  const video = media.filter((m) => m.kind === 'video').sort((a, b) => a.position - b.position).map(toMedia)[0] ?? null
   const listingId = r.sent_listing_id
   const state = normalizeEtsyState(r.etsy_state)
   const dirty = r.dirty === 1
@@ -210,6 +232,7 @@ function toDraft(r: DraftRow, media: MediaRow[]): ListingDraft {
     fields,
     photos,
     files,
+    video,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     sentAt: r.sent_at,
@@ -259,7 +282,7 @@ export function getDraftByListing(db: Db, listingId: number): ListingDraft | nul
   return r ? getDraft(db, r.id) : null
 }
 
-/** A stored photo/file with its bytes (etsyimg://draft/{id}, sending). A remote file has empty data. */
+/** A stored photo/video/file with its bytes (etsyimg://draft/{id}, sending). A remote file has empty data. */
 export function getDraftMediaData(db: Db, mediaId: number): (MediaRow & { data: Uint8Array }) | null {
   const r = db.prepare('SELECT * FROM listing_draft_media WHERE id = ?').get(mediaId) as
     | (MediaRow & { data: Uint8Array })
@@ -267,8 +290,24 @@ export function getDraftMediaData(db: Db, mediaId: number): (MediaRow & { data: 
   return r ?? null
 }
 
-/** The Etsy id (listing_image_id / listing_file_id) of a draft's media; null = not uploaded. */
-export function getDraftMediaEtsyIds(db: Db, draftId: number, kind: 'photo' | 'file'): Array<{ id: number; etsyId: number | null }> {
+/** A stored photo/video/file without its bytes (`bytes` = the stored length); null = no such media. */
+export function getDraftMediaInfo(db: Db, mediaId: number): (MediaRow & { bytes: number }) | null {
+  const r = db.prepare(`SELECT ${MEDIA_COLS}, length(data) AS bytes FROM listing_draft_media WHERE id = ?`).get(mediaId) as
+    | (MediaRow & { bytes: number })
+    | undefined
+  return r ?? null
+}
+
+/** `length` bytes of a stored media from `start` (0-based) — SQLite reads only that part of the BLOB. */
+export function readDraftMediaSlice(db: Db, mediaId: number, start: number, length: number): Uint8Array<ArrayBuffer> {
+  const r = db.prepare('SELECT substr(data, ?, ?) AS part FROM listing_draft_media WHERE id = ?').get(start + 1, length, mediaId) as
+    | { part: Uint8Array | null }
+    | undefined
+  return r?.part ? new Uint8Array(r.part) : new Uint8Array()
+}
+
+/** The Etsy id (listing_image_id / listing_file_id / video_id) of a draft's media; null = not uploaded. */
+export function getDraftMediaEtsyIds(db: Db, draftId: number, kind: DraftMediaKind): Array<{ id: number; etsyId: number | null }> {
   return (
     db
       .prepare('SELECT id, etsy_id FROM listing_draft_media WHERE draft_id = ? AND kind = ? ORDER BY position')
@@ -276,20 +315,26 @@ export function getDraftMediaEtsyIds(db: Db, draftId: number, kind: 'photo' | 'f
   ).map((r) => ({ id: r.id, etsyId: r.etsy_id }))
 }
 
-/** Record (or clear) where a draft's photo/file lives on Etsy — right after each upload. */
+/** Record (or clear) where a draft's photo/file/video lives on Etsy — right after each upload. */
 export function setDraftMediaEtsyId(db: Db, mediaId: number, etsyId: number | null): void {
   db.prepare('UPDATE listing_draft_media SET etsy_id = ? WHERE id = ?').run(etsyId, mediaId)
 }
 
 const ext = (name: string): string => (name.split('.').pop() ?? '').toLowerCase()
 
-function checkNew(kind: 'photo' | 'file', m: DraftMediaInput | DraftRemoteFile): void {
+function checkNew(kind: DraftMediaKind, m: DraftMediaInput | DraftRemoteFile): void {
   if ('remote' in m) {
     if (kind !== 'file') throw new DraftError('Лише файл для покупця може бути тільки на Etsy.')
     if (!m.name || !Number.isSafeInteger(m.etsyId) || m.etsyId <= 0) throw new DraftError(`Некоректний файл з Etsy «${m.name || '?'}».`)
     return
   }
   if (!m.name || !m.data?.length) throw new DraftError(`Порожній файл «${m.name || '?'}».`)
+  if (kind === 'video') {
+    // The media feature's rules: MP4/MOV/M4V/WEBM/AVI/MKV, ≤ MAX_VIDEO_BYTES.
+    const problem = mediaProblemText('video', m.name, m.data.length)
+    if (problem) throw new DraftError(problem)
+    return
+  }
   if (kind === 'photo' && !IMAGE_EXTENSIONS.includes(ext(m.name))) {
     throw new DraftError(`«${m.name}»: фото має бути JPG, PNG або GIF.`)
   }
@@ -297,10 +342,14 @@ function checkNew(kind: 'photo' | 'file', m: DraftMediaInput | DraftRemoteFile):
   if (m.data.length > max) throw new DraftError(`«${m.name}» більший за ${Math.round(max / 1024 / 1024)} МБ.`)
 }
 
+/** The content type a draft's media is stored (and sent) with. */
+const mediaMime = (kind: DraftMediaKind, name: string): string => (kind === 'video' ? mimeFor('video', name) : mimeOf(name))
+
 /**
  * Create (no id) or update a draft: the fields, and the media as the full
  * ordered list (stored ones by id — they keep their Etsy id; others of this
- * draft are removed — and new ones with their bytes). Saving a draft linked to
+ * draft are removed — and new ones with their bytes); the video as a list of
+ * at most one (`[]`/null = none, undefined = as it is). Saving a draft linked to
  * an Etsy listing marks it dirty (local edits not yet on Etsy) — unless `link`
  * is given (a pull from Etsy: the draft is then in sync with that listing).
  * Throws DraftError.
@@ -313,6 +362,8 @@ export function saveDraft(
     fields: DraftFields
     photos?: DraftMediaSlot[]
     files?: DraftMediaSlot[]
+    /** The listing video: 0 or 1 slot; null = none; undefined = keep as it is. */
+    video?: DraftMediaSlot[] | null
     /** A new draft pulled from an Etsy draft made on the site (source then reads 'etsy'). */
     imported?: boolean
     /** Pulled from Etsy: link the draft to this listing as in sync (not dirty). */
@@ -325,10 +376,13 @@ export function saveDraft(
   const fields = normalizeDraftFields(input.fields)
   const photos = input.photos
   const files = input.files
+  const video = input.video === null ? [] : input.video
   if (photos && photos.length > MAX_IMAGES) throw new DraftError(`Фото може бути не більше ${MAX_IMAGES}.`)
   if (files && files.length > MAX_DIGITAL_FILES) throw new DraftError(`Файлів може бути не більше ${MAX_DIGITAL_FILES}.`)
+  if (video && video.length > MAX_VIDEOS) throw new DraftError('Відео може бути лише одне — Etsy показує одне відео на товар.')
   for (const m of photos ?? []) if (!('mediaId' in m)) checkNew('photo', m)
   for (const m of files ?? []) if (!('mediaId' in m)) checkNew('file', m)
+  for (const m of video ?? []) if (!('mediaId' in m)) checkNew('video', m)
 
   // A send reads the media and finally marks the draft in sync: an edit meanwhile would be lost.
   if (input.id != null && isDraftSending(db, input.id)) throw new DraftError(DRAFT_BUSY)
@@ -369,7 +423,7 @@ export function saveDraft(
         draftId
       )
     }
-    for (const [kind, list] of [['photo', photos], ['file', files]] as const) {
+    for (const [kind, list] of [['photo', photos], ['file', files], ['video', video]] as const) {
       if (!list) continue // undefined = keep this kind as it is
       const own = new Set(
         (db.prepare('SELECT id FROM listing_draft_media WHERE draft_id = ? AND kind = ?').all(draftId, kind) as Array<{ id: number }>).map(
@@ -390,11 +444,11 @@ export function saveDraft(
         } else if ('remote' in m) {
           db.prepare(
             'INSERT INTO listing_draft_media (draft_id, kind, position, name, mime, size, data, etsy_id, remote) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)'
-          ).run(draftId!, kind, i + 1, m.name, mimeOf(m.name), Math.max(0, Math.round(m.size) || 0), new Uint8Array(), m.etsyId)
+          ).run(draftId!, kind, i + 1, m.name, mediaMime(kind, m.name), Math.max(0, Math.round(m.size) || 0), new Uint8Array(), m.etsyId)
         } else {
           db.prepare(
             'INSERT INTO listing_draft_media (draft_id, kind, position, name, mime, size, data, etsy_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-          ).run(draftId!, kind, i + 1, m.name, mimeOf(m.name), m.data.length, m.data, m.etsyId ?? null)
+          ).run(draftId!, kind, i + 1, m.name, mediaMime(kind, m.name), m.data.length, m.data, m.etsyId ?? null)
         }
       })
     }
@@ -553,7 +607,7 @@ async function createFromDraft(deps: SendDeps, d: ListingDraft, publish: boolean
     : []
   const photoIds = d.photos.map((m) => m.id)
   const fileIds = sendable.map((m) => m.id)
-  const input = draftInput(d.fields, d.photos.map(token), sendable.map(token), publish)
+  const input = { ...draftInput(d.fields, d.photos.map(token), sendable.map(token), publish), ...(d.video ? { video: token(d.video) } : {}) }
   const res = await createMyListing(
     {
       client: deps.client,
@@ -576,7 +630,7 @@ async function createFromDraft(deps: SendDeps, d: ListingDraft, publish: boolean
           )
           .run(now(), listingId, shopId, id),
       onUploaded: (kind, index, etsyId) => {
-        const mediaId = kind === 'image' ? photoIds[index] : fileIds[index]
+        const mediaId = kind === 'image' ? photoIds[index] : kind === 'video' ? d.video?.id : fileIds[index]
         if (mediaId != null) setDraftMediaEtsyId(db, mediaId, etsyId)
       }
     },
@@ -584,11 +638,11 @@ async function createFromDraft(deps: SendDeps, d: ListingDraft, publish: boolean
   )
   if (res.ok) {
     // An upload answer without its id: the fresh listing's photos are in upload
-    // order and its files carry our names — map what's left, so a later update
-    // doesn't upload them again (and delete Etsy's as extra).
+    // order, its files carry our names and its one video is ours — map what's
+    // left, so a later update doesn't upload them again (and delete Etsy's as extra).
     if (shopId != null && hasUnmapped(db, id, d.fields.type === 'download')) {
       try {
-        await adoptFromEtsy(deps.client, db, id, shopId, res.listingId, d.fields.type === 'download', true)
+        await adoptFromEtsy(deps.client, db, id, shopId, res.listingId, d.fields.type === 'download', true, true)
       } catch {
         // stays unmapped; an update maps the files by name and size
       }
@@ -673,9 +727,11 @@ export const BOTH_TYPE_NOTE =
  *    right away), Etsy's others deleted (never those a pull couldn't fetch),
  *    then re-ranked to the draft's order; never more than 10 at once and never
  *    none on the way;
- * 5. buyer files the same (≤ 5; files only on Etsy kept while listed);
- * 6. publish → state=active when it isn't;
- * 7. in sync (dirty 0) with Etsy's new updated_timestamp.
+ * 5. the video (syncVideo: replaced, uploaded, or deleted — never one the app
+ *    doesn't know);
+ * 6. buyer files the same as photos (≤ 5; files only on Etsy kept while listed);
+ * 7. publish → state=active when it isn't;
+ * 8. in sync (dirty 0) with Etsy's new updated_timestamp.
  * A failure keeps the error and the Etsy ids already recorded — a retry
  * never uploads twice.
  */
@@ -777,12 +833,13 @@ async function pushLinked(deps: SendDeps, d: ListingDraft, publish: boolean, opt
     const invNote = await step('не вдалося оновити ціну й кількість', () => syncInventory(client, listingId, d.fields))
     if (invNote) notes.push(invNote)
 
-    // (4) Photos, (5) buyer files.
-    const ctx: SyncCtx = { db, client, shopId, listingId, draftId: d.id, progress, notes, gaps }
+    // (4) Photos, (5) the video, (6) buyer files.
+    const ctx: SyncCtx = { db, client, shopId, listingId, draftId: d.id, progress, notes, gaps, unverified: link.unverified }
     await syncPhotos(ctx)
+    const videoKnown = await syncVideo(ctx)
     if (digital) await syncFiles(ctx)
 
-    // (6) Publish.
+    // (7) Publish.
     let finalState = state
     if (publish && state !== 'active') {
       progress('publish', 0, 1, 'Публікую…')
@@ -790,7 +847,7 @@ async function pushLinked(deps: SendDeps, d: ListingDraft, publish: boolean, opt
       finalState = 'active'
     }
 
-    // (7) In sync with Etsy as it is now — unless the draft was edited meanwhile (then it stays changed).
+    // (8) In sync with Etsy as it is now — unless the draft was edited meanwhile (then it stays changed).
     let after: EtsyListing | null = null
     try {
       after = await readOwnListing(client, listingId)
@@ -798,11 +855,13 @@ async function pushLinked(deps: SendDeps, d: ListingDraft, publish: boolean, opt
       // updated; only the baseline time stays unknown
     }
     finalState = normalizeEtsyState(after?.state) ?? finalState
+    // Etsy's video is the draft's now (or there is none): the "video not pulled" gap is settled.
+    const gapsAfter = videoKnown && gaps?.video ? gapsJson({ ...gaps, video: undefined }) : gapsJson(gaps)
     db.prepare(
       `UPDATE listing_drafts SET dirty = CASE WHEN updated_at = ? THEN 0 ELSE 1 END, etsy_changed_at = NULL, synced_at = ?,
          etsy_state = ?, etsy_updated_at = ?, sent_published = ?, last_error = NULL, unverified = 0, etsy_shop_id = ?,
-         updated_at = ? WHERE id = ?`
-    ).run(startedAt, now(), finalState, etsyTime(after), finalState === 'active' ? 1 : 0, shopId, now(), d.id)
+         etsy_gaps = ?, updated_at = ? WHERE id = ?`
+    ).run(startedAt, now(), finalState, etsyTime(after), finalState === 'active' ? 1 : 0, shopId, gapsAfter, now(), d.id)
     return {
       ok: true,
       listingId,
@@ -871,11 +930,13 @@ interface SyncCtx {
   draftId: number
   progress: (s: CreateListingProgress['step'], done: number, total: number, label: string) => void
   notes: string[]
-  /** What the last pull couldn't fetch: those Etsy photos/files are never deleted. */
+  /** What the last pull couldn't fetch: those Etsy photos/files (and the video) are never deleted. */
   gaps: EtsyGaps | null
+  /** Linked by an older version, never compared with Etsy: Etsy's video is never deleted. */
+  unverified: boolean
 }
 
-const mediaRows = (db: Db, draftId: number, kind: 'photo' | 'file'): MediaRow[] =>
+const mediaRows = (db: Db, draftId: number, kind: DraftMediaKind): MediaRow[] =>
   db
     .prepare(`SELECT ${MEDIA_COLS} FROM listing_draft_media WHERE draft_id = ? AND kind = ? ORDER BY position`)
     .all(draftId, kind) as unknown as MediaRow[]
@@ -904,7 +965,7 @@ export interface EtsyMediaItem {
  * size (files keep the name they were uploaded with). Records the Etsy ids;
  * nothing is sent. Returns how many it mapped.
  */
-export function adoptEtsyMedia(db: Db, draftId: number, kind: 'photo' | 'file', etsy: EtsyMediaItem[], byOrder: boolean): number {
+export function adoptEtsyMedia(db: Db, draftId: number, kind: DraftMediaKind, etsy: EtsyMediaItem[], byOrder: boolean): number {
   const rows = mediaRows(db, draftId, kind)
   const mapped = new Set(rows.map((r) => r.etsy_id).filter((x): x is number => x != null))
   const free = etsy.filter((e, i) => !mapped.has(e.id) && etsy.findIndex((x) => x.id === e.id) === i)
@@ -920,15 +981,21 @@ export function adoptEtsyMedia(db: Db, draftId: number, kind: 'photo' | 'file', 
   return n
 }
 
-/** Some photo (or, digital, a file with bytes) of the draft has no Etsy id. */
+/** Some photo, the video (or, digital, a file with bytes) of the draft has no Etsy id. */
 function hasUnmapped(db: Db, draftId: number, digital: boolean): boolean {
   return (
     mediaRows(db, draftId, 'photo').some((r) => r.etsy_id == null) ||
+    mediaRows(db, draftId, 'video').some((r) => r.etsy_id == null) ||
     (digital && mediaRows(db, draftId, 'file').some((r) => r.etsy_id == null && r.remote !== 1))
   )
 }
 
-/** Read the listing's photos (and files, digital) and map the draft's unmapped media to them (adoptEtsyMedia). */
+/**
+ * Read the listing's photos (and files, digital) and map the draft's unmapped
+ * media to them (adoptEtsyMedia). `video`: the listing is the one this send just
+ * created, so its only video is the draft's (never for an older link — a video
+ * there may be one set on Etsy).
+ */
 async function adoptFromEtsy(
   client: EtsyClient,
   db: Db,
@@ -936,9 +1003,14 @@ async function adoptFromEtsy(
   shopId: number,
   listingId: number,
   digital: boolean,
-  photosByOrder: boolean
+  photosByOrder: boolean,
+  video = false
 ): Promise<void> {
   if (photosByOrder) adoptEtsyMedia(db, draftId, 'photo', (await getPhotos(client, listingId)).map((p) => ({ id: p.id })), true)
+  if (video && mediaRows(db, draftId, 'video').some((r) => r.etsy_id == null)) {
+    const vids = (await getVideos(client, listingId, { oauth: true })).filter((v) => v.state !== 'deleted')
+    if (vids.length === 1) adoptEtsyMedia(db, draftId, 'video', [{ id: vids[0].id }], true)
+  }
   if (digital) {
     const files = await getFiles(client, shopId, listingId)
     adoptEtsyMedia(db, draftId, 'file', files.map((f) => ({ id: f.id, name: f.name, size: f.sizeBytes })), false)
@@ -1067,6 +1139,50 @@ async function syncPhotos(c: SyncCtx): Promise<void> {
       c.notes.push('Etsy не прийняв новий порядок фото повністю — перевірте його в редакторі товару на Etsy.')
     }
   }
+}
+
+export const VIDEO_KEPT_NOTE =
+  'У товару на Etsy є відео, якого програма ще не підтягнула з Etsy, — його не видалено. Щоб замінити його, додайте відео в чернетку; щоб прибрати — видаліть його на Etsy або синхронізуйте чернетки з Etsy і тоді приберіть тут.'
+
+/**
+ * The draft's video onto the listing (Etsy shows one): the draft's video already
+ * there (its Etsy id) → nothing; a draft video Etsy doesn't have → uploaded
+ * (replaceVideo: the new one goes up first, the old one comes off after — a
+ * failed upload keeps Etsy's video); no draft video → Etsy's is deleted, except
+ * when the app never learned it (a pull couldn't fetch it, the draft was linked
+ * before drafts held videos, or an unverified link) — then it stays, with a
+ * note. Answers whether Etsy's video is now known (the video gap can go).
+ */
+async function syncVideo(c: SyncCtx): Promise<boolean> {
+  const { db, client, shopId, listingId } = c
+  const local = mediaRows(db, c.draftId, 'video')[0] ?? null
+  const etsy = (await step('не вдалося прочитати відео товару', () => getVideos(client, listingId, { oauth: true }))).filter(
+    (v) => v.state !== 'deleted'
+  )
+  if (local) {
+    if (local.etsy_id != null && etsy.some((v) => v.id === local.etsy_id)) return true
+    c.progress('video', 0, 1, `Відео «${local.name}»…`)
+    const id = await step(`відео «${local.name}» не завантажилось`, () =>
+      replaceVideo(client, shopId, listingId, { data: bytesOf(db, local), name: local.name, type: local.mime || mimeFor('video', local.name) })
+    )
+    setDraftMediaEtsyId(db, local.id, id)
+    return true
+  }
+  if (!etsy.length) return true
+  if (c.gaps?.video === 'all' || c.unverified) {
+    c.notes.push(VIDEO_KEPT_NOTE)
+    return false
+  }
+  for (const v of etsy) {
+    await step('відео не вдалося видалити з Etsy', async () => {
+      try {
+        await deleteVideo(client, shopId, listingId, v.id)
+      } catch (e) {
+        if (!isNotFound(e)) throw e
+      }
+    })
+  }
+  return true
 }
 
 /** The draft's buyer files onto the listing: upload the missing, delete the extra (≤ 5 at a time, never none). */

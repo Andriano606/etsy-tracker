@@ -35,6 +35,7 @@ import {
   MY_LISTING_STATES,
   TAG_MAX,
   TITLE_MAX,
+  VIDEO_EXTENSIONS,
   WHEN_MADE,
   WHO_MADE,
   etsyListingEditUrl,
@@ -43,6 +44,8 @@ import {
   normalizeDraftFields
 } from '../shared/myShop'
 import { priceValue } from '../shared/format'
+import { MAX_VIDEO_BYTES, mediaProblemEnglish } from '../shared/features/media'
+import { MCP_MAX_BODY } from './mcpServer'
 import { EtsyApiError, type EtsyClient, type Paged } from './etsyApi'
 import { type JsonSchema, type McpTool, ToolInputError, textResult } from './mcpProtocol'
 import {
@@ -67,7 +70,7 @@ import {
   unlinkDraft
 } from './drafts'
 import { importEtsyDrafts } from './draftImport'
-import { type Downloaded, downloadImage } from './imageSync'
+import { type Downloaded, downloadImage, downloadVideo } from './imageSync'
 
 /** Drafts kept in the app: prepared over MCP, reviewed and sent by the user there. */
 export interface DraftDeps {
@@ -85,6 +88,8 @@ export interface DraftDeps {
   pull?: () => Promise<MyShopResult<DraftPullSummary>>
   /** Only for that direct pull: a photo from Etsy's CDN (default: downloadImage over fetch). */
   fetchImage?: (url: string) => Promise<Downloaded>
+  /** Only for that direct pull: a listing video from Etsy's CDN (default: downloadVideo over fetch). */
+  fetchVideo?: (url: string) => Promise<Downloaded>
 }
 
 export interface OwnStoreDeps {
@@ -228,16 +233,17 @@ export const MEDIA_ITEM: JsonSchema = {
 /**
  * Turn the media arguments into picked-file tokens for createMyListing (or
  * plain uploads). Paths must be absolute regular files; base64 content needs a
- * name. Photos must be JPG/PNG/GIF; size limits as in the app.
+ * name. Photos must be JPG/PNG/GIF; size limits as in the app. `videos` (one
+ * at most where a listing is concerned) are resolved the same way.
  */
-export async function resolveMedia(deps: OwnStoreDeps, photos: unknown, files: unknown) {
+export async function resolveMedia(deps: OwnStoreDeps, photos: unknown, files: unknown, videos?: unknown) {
   const registry = createFileRegistry()
   const memory = new Map<string, Uint8Array<ArrayBuffer>>()
   const doStat = deps.statFile ?? (async (p: string) => {
     const s = await stat(p)
     return { size: s.size, isFile: s.isFile() }
   })
-  async function one(item: unknown, kind: 'photo' | 'file'): Promise<string> {
+  async function one(item: unknown, kind: 'photo' | 'file' | 'video'): Promise<string> {
     const m = (item ?? {}) as MediaItem
     if (typeof m.path === 'string' && m.path) {
       if (!isAbsolute(m.path)) throw new ToolInputError(`The ${kind} path must be absolute: ${m.path}`)
@@ -271,9 +277,11 @@ export async function resolveMedia(deps: OwnStoreDeps, photos: unknown, files: u
   for (const p of list(photos, 'photos')) photoTokens.push(await one(p, 'photo'))
   const fileTokens: string[] = []
   for (const f of list(files, 'files')) fileTokens.push(await one(f, 'file'))
+  const videoTokens: string[] = []
+  for (const v of list(videos, 'videos')) videoTokens.push(await one(v, 'video'))
   const read = deps.readFile ?? ((p: string) => readFile(p) as Promise<Uint8Array<ArrayBuffer>>)
   const readAny = async (p: string): Promise<Uint8Array<ArrayBuffer>> => memory.get(p) ?? read(p)
-  return { registry, readFile: readAny, photos: photoTokens, files: fileTokens }
+  return { registry, readFile: readAny, photos: photoTokens, files: fileTokens, videos: videoTokens }
 }
 
 const STATUS_VALUES = MY_LISTING_STATES.map((s) => s.value)
@@ -341,6 +349,8 @@ export function draftOut(d: ListingDraft) {
     shipping_profile_id: f.shippingProfileId,
     processing_profile_id: f.readinessStateId,
     photos: d.photos.map((p) => p.name),
+    // The listing video (one per listing on Etsy); on_etsy = already on the linked Etsy listing.
+    video: d.video ? { name: d.video.name, size: d.video.size, on_etsy: d.video.onEtsy } : null,
     files: d.files.map((p) => p.name),
     // Buyer files pulled from an Etsy draft: only on Etsy (Etsy gives no download), kept with { keep: n }.
     files_only_on_etsy: d.files.filter((p) => p.remote).map((p) => p.name),
@@ -411,6 +421,14 @@ const DRAFT_FIELD_PROPS: Record<string, JsonSchema> = {
     type: 'array',
     items: DRAFT_MEDIA_ITEM,
     description: `Files the buyer downloads (digital only — not sent for a physical listing): up to ${MAX_DIGITAL_FILES}, ≤ ${MAX_DIGITAL_FILE_BYTES / 1024 / 1024} MB each. When given, this is the draft's whole new file list: files not listed (as {"keep": n}) are removed — for a linked draft also on Etsy at its next send. A file that exists only on Etsy (files_only_on_etsy) can only be kept with {"keep": n}.`
+  },
+  video: {
+    type: 'object',
+    description: `The listing video (Etsy shows one per listing; ${VIDEO_EXTENSIONS.map((e) => e.toUpperCase()).join('/')}, ≤ ${MAX_VIDEO_BYTES / 1024 / 1024} MB, 5–15 seconds recommended; Etsy plays it without sound): {"path": "/home/me/clip.mp4"} — send a big video by path, an MCP request is limited to ${MCP_MAX_BODY / 1024 / 1024} MB, base64 included — or {"data_base64": "…", "name": "clip.mp4"}; {"keep": true} keeps the draft's video as it is; null removes it (for a linked draft, also from its Etsy listing at the next send). Omitted = unchanged.`,
+    properties: {
+      ...MEDIA_ITEM.properties,
+      keep: { type: 'boolean', description: 'true = keep the video the draft already has (with draft_id).' }
+    }
   }
 }
 
@@ -474,6 +492,27 @@ export function createDraftTools(own: OwnStoreDeps | undefined, drafts: DraftDep
     let next = 0
     return out.map((s) => s ?? read[next++])
   }
+  /**
+   * prepare_product's video argument → the draft's video list: null = none,
+   * {keep: true} = the draft's current video, anything else new content
+   * (checked for type and size before it is read).
+   */
+  async function videoSlots(item: unknown, current: DraftMedia | null, existing: boolean): Promise<DraftMediaSlot[]> {
+    if (item === null) return []
+    const m = (item ?? {}) as Record<string, unknown>
+    if (m.keep != null) {
+      if (m.path != null || m.data_base64 != null) throw new ToolInputError('The video is either {"keep": true} or new content, not both.')
+      if (m.keep !== true) throw new ToolInputError('{"keep": true} keeps the draft\'s video; to remove it send "video": null.')
+      if (!existing) throw new ToolInputError('{"keep": true} needs draft_id — a new draft has no video to keep.')
+      if (!current) throw new ToolInputError('The draft has no video to keep (list_prepared_products shows video: null). Send new content, or leave "video" out.')
+      return [{ mediaId: current.id }]
+    }
+    const media = await resolveMedia(own ?? ({} as OwnStoreDeps), undefined, undefined, [item])
+    const f = media.registry.get(media.videos[0])!
+    const problem = mediaProblemEnglish('video', f.name, f.size)
+    if (problem) throw new ToolInputError(problem)
+    return [{ name: f.name, data: await media.readFile(f.path) }]
+  }
   /** Pull the user's Etsy drafts into the app: the app's single-flight pull, else directly (one at a time per db). */
   async function pull(d: DraftDeps, o: OwnStoreDeps): Promise<DraftPullSummary> {
     if (d.pull) {
@@ -497,6 +536,16 @@ export function createDraftTools(own: OwnStoreDeps | undefined, drafts: DraftDep
             timeoutMs: 30_000,
             retries: 2,
             maxBytes: MAX_IMAGE_BYTES
+          })),
+      fetchVideo:
+        d.fetchVideo ??
+        ((url) =>
+          downloadVideo(url, {
+            fetch: (...args: Parameters<typeof fetch>) => fetch(...args),
+            sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+            timeoutMs: 120_000,
+            retries: 1,
+            maxBytes: MAX_VIDEO_BYTES
           })),
       now: d.now ?? Date.now
     }).finally(() => {
@@ -523,7 +572,7 @@ export function createDraftTools(own: OwnStoreDeps | undefined, drafts: DraftDep
       title: 'Prepare an Etsy listing draft in the app',
       readOnly: false,
       description:
-        "Saves a listing draft INSIDE THE APP (its local database) — nothing is sent to Etsy. The user reviews and edits it in the app (the \"Чернетки\" button in the header of their own shop — it appears only once the user signed in to Etsy in the app, so ask a signed-out user to sign in via \"✏️ Мій магазин\" to see the draft) and sends it to Etsy themselves; the preferred way to propose a new listing. Without draft_id it creates a draft; with draft_id it updates that one (only the given fields change; photos/files, when given, replace that list — keep existing ones with {\"keep\": n}). A draft linked to an Etsy listing (already sent, or pulled from an Etsy draft — see `etsy` in list_prepared_products) can be edited too: it becomes changed_since_sent, and the Etsy listing changes only when the draft is sent again (send_prepared_product, or the user in the app). Same fields as create_product, all optional (defaults: digital, quantity 999 / 1 for physical, made_by i_did, made_when made_to_order, auto_renew true). Returns the draft; `problems` (Ukrainian) = what still blocks sending it as an Etsy draft — publishing also needs a photo and, for digital, a file. Saving needs neither the Etsy sign-in nor the 'allow changes' switch (only reviewing it in the app needs the sign-in); a category_id is looked up in Etsy's category tree for the `category` path.",
+        "Saves a listing draft INSIDE THE APP (its local database) — nothing is sent to Etsy. The user reviews and edits it in the app (the \"Чернетки\" button in the header of their own shop — it appears only once the user signed in to Etsy in the app, so ask a signed-out user to sign in via \"✏️ Мій магазин\" to see the draft) and sends it to Etsy themselves; the preferred way to propose a new listing. Without draft_id it creates a draft; with draft_id it updates that one (only the given fields change; photos/files, when given, replace that list — keep existing ones with {\"keep\": n}; video sets, keeps ({\"keep\": true}) or removes (null) the draft's one listing video). A draft linked to an Etsy listing (already sent, or pulled from an Etsy draft — see `etsy` in list_prepared_products) can be edited too: it becomes changed_since_sent, and the Etsy listing changes only when the draft is sent again (send_prepared_product, or the user in the app). Same fields as create_product, all optional (defaults: digital, quantity 999 / 1 for physical, made_by i_did, made_when made_to_order, auto_renew true). Returns the draft; `problems` (Ukrainian) = what still blocks sending it as an Etsy draft — publishing also needs a photo and, for digital, a file. Saving needs neither the Etsy sign-in nor the 'allow changes' switch (only reviewing it in the app needs the sign-in); a category_id is looked up in Etsy's category tree for the `category` path.",
       inputSchema: {
         type: 'object',
         properties: { draft_id: { type: 'integer', minimum: 1, description: 'Update this draft instead of creating one.' }, ...DRAFT_FIELD_PROPS },
@@ -537,9 +586,10 @@ export function createDraftTools(own: OwnStoreDeps | undefined, drafts: DraftDep
           if (a.category_id != null) fields.taxonomyPath = await categoryPath(fields.taxonomyId)
           const photos = a.photos != null ? await slots(a.photos, 'photo', existing?.photos ?? null) : undefined
           const files = a.files != null ? await slots(a.files, 'file', existing?.files ?? null) : undefined
+          const video = a.video !== undefined ? await videoSlots(a.video, existing?.video ?? null, !!existing) : undefined
           const saved = saveDraft(
             d.db,
-            { id: existing?.id, source: existing?.source === 'app' ? 'app' : 'mcp', fields, photos, files },
+            { id: existing?.id, source: existing?.source === 'app' ? 'app' : 'mcp', fields, photos, files, video },
             (d.now ?? Date.now)()
           )
           changed()
@@ -559,7 +609,7 @@ export function createDraftTools(own: OwnStoreDeps | undefined, drafts: DraftDep
       name: 'list_prepared_products',
       title: 'Listing drafts kept in the app',
       description:
-        "Every listing draft in the app's local database, most recently changed first, all at once (no Etsy call): prepared_by (user, assistant, or etsy_site = pulled from a draft the user made on Etsy's site), the fields, photo/file names (files_only_on_etsy = buyer files that exist only on Etsy), `problems` (Ukrainian; what still blocks sending it as an Etsy draft) and the status — waiting_for_review (never sent), sent (linked to its Etsy listing and in sync), changed_since_sent (linked, with edits not yet on Etsy) or send_failed (last_error; the draft may be linked anyway). `etsy` is null for a draft never sent, else the linked Etsy listing: product_id, state (draft, active, inactive, expired, sold_out, or removed = deleted on Etsy; null = not known yet), unsent_changes, changed_on_etsy (the listing was changed on Etsy too since the last sync — sending would overwrite that), removed_on_etsy, url (the public page, only while active), edit_url (the user's Etsy listing editor), last_synced_at, etsy_updated_at, never_compared_with_etsy (sent by an older app version: the next send first answers a conflict — ask the user before overwriting), some_media_not_pulled (a sync couldn't fetch some photos/files from Etsy; a send keeps those on Etsy). What's shown is as of the last send or sync (sync_prepared_products refreshes it).",
+        "Every listing draft in the app's local database, most recently changed first, all at once (no Etsy call): prepared_by (user, assistant, or etsy_site = pulled from a draft the user made on Etsy's site), the fields, photo/file names, video (null, or {name, size, on_etsy}) (files_only_on_etsy = buyer files that exist only on Etsy), `problems` (Ukrainian; what still blocks sending it as an Etsy draft) and the status — waiting_for_review (never sent), sent (linked to its Etsy listing and in sync), changed_since_sent (linked, with edits not yet on Etsy) or send_failed (last_error; the draft may be linked anyway). `etsy` is null for a draft never sent, else the linked Etsy listing: product_id, state (draft, active, inactive, expired, sold_out, or removed = deleted on Etsy; null = not known yet), unsent_changes, changed_on_etsy (the listing was changed on Etsy too since the last sync — sending would overwrite that), removed_on_etsy, url (the public page, only while active), edit_url (the user's Etsy listing editor), last_synced_at, etsy_updated_at, never_compared_with_etsy (sent by an older app version: the next send first answers a conflict — ask the user before overwriting), some_media_not_pulled (a sync couldn't fetch some photos/files or the video from Etsy — or the draft was linked before drafts held videos; a send keeps those on Etsy). What's shown is as of the last send or sync (sync_prepared_products refreshes it).",
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
       run: () => {
         try {
@@ -578,7 +628,7 @@ export function createDraftTools(own: OwnStoreDeps | undefined, drafts: DraftDep
       // Local only, but it overwrites unedited linked drafts with Etsy's version and drops pulled drafts deleted on Etsy.
       destructive: true,
       description:
-        "Reads the user's own Etsy shop now (Etsy API, OAuth listings_r; needs the Etsy sign-in, not the 'allow changes' switch — nothing on Etsy is changed) and updates the drafts kept in the app: every Etsy draft listing not yet in the app becomes an app draft (prepared_by etsy_site, with its photos; its buyer files stay only on Etsy), linked drafts without unsent edits are refreshed from Etsy, linked drafts with unsent edits whose listing changed on Etsy are only marked changed_on_etsy (never overwritten), and linked drafts whose listing left Etsy's drafts get its current state (removed = deleted on Etsy; an unedited pulled draft is then dropped from the app). The app also does this after every scan of the user's shop. Returns {imported, updated, removed, conflicts, errors (Ukrainian, per listing)}; then see list_prepared_products.",
+        "Reads the user's own Etsy shop now (Etsy API, OAuth listings_r; needs the Etsy sign-in, not the 'allow changes' switch — nothing on Etsy is changed) and updates the drafts kept in the app: every Etsy draft listing not yet in the app becomes an app draft (prepared_by etsy_site, with its photos and video; its buyer files stay only on Etsy), linked drafts without unsent edits are refreshed from Etsy, linked drafts with unsent edits whose listing changed on Etsy are only marked changed_on_etsy (never overwritten), and linked drafts whose listing left Etsy's drafts get its current state (removed = deleted on Etsy; an unedited pulled draft is then dropped from the app). The app also does this after every scan of the user's shop. Returns {imported, updated, removed, conflicts, errors (Ukrainian, per listing)}; then see list_prepared_products.",
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
       run: async () => {
         try {
@@ -692,7 +742,7 @@ export function createDraftTools(own: OwnStoreDeps | undefined, drafts: DraftDep
       title: 'Send an app draft to Etsy (create, or update its listing)',
       readOnly: false,
       destructive: true,
-      description: `${WRITE_NOTE} Sends a draft from the app to the user's own Etsy shop (Etsy API, OAuth listings_r + listings_w). A draft never sent: the same steps as create_product — creates an Etsy draft listing, uploads the draft's photos and files, and with publish=true publishes it. A draft already linked to an Etsy listing (etsy in list_prepared_products): UPDATES that listing to match the draft — never a second listing: title, description, tags, materials, category, who/when made, supply, auto-renew, type, shipping profile; price, quantity and processing profile (only for a listing without variations — otherwise a note says they were left alone); photos in the draft's order (new ones uploaded, ones not in the draft deleted from the listing) and buyer files the same way. A live (active) listing changes for buyers at once. publish=true also publishes a linked listing that isn't active (${FEE} — for an Etsy draft, expired or sold-out listing; an inactive one is reactivated for free); publish=false never deactivates. Publishing — or updating an active listing — needs a photo, and a file for digital. If the listing was changed on Etsy since the app last synced it (or the draft was sent by an older app version and was never compared with Etsy), nothing is written and the answer is {conflict: true, …}: tell the user and only with their agreement send again with overwrite_etsy_changes=true (that replaces the changes made on Etsy). A listing deleted on Etsy answers removed_on_etsy: true (unlink_prepared_product, then send, creates a new one). Success: {draft_id, action (created|updated), product_id (the Etsy listing id), status (its Etsy state), url (the public Etsy page — only when active, else null), edit_url (the listing in the user's Etsy listing editor), notes (Ukrainian; what wasn't or couldn't be done)}. Failure: {error, product_id, edit_url, …} — product_id is set when the Etsy listing exists; the steps already done are kept, so sending again continues without duplicates; the error may be partly Ukrainian. Usually the user sends drafts themselves after reviewing them; call this only when they ask you to.`,
+      description: `${WRITE_NOTE} Sends a draft from the app to the user's own Etsy shop (Etsy API, OAuth listings_r + listings_w). A draft never sent: the same steps as create_product — creates an Etsy draft listing, uploads the draft's photos and files, and with publish=true publishes it. A draft already linked to an Etsy listing (etsy in list_prepared_products): UPDATES that listing to match the draft — never a second listing: title, description, tags, materials, category, who/when made, supply, auto-renew, type, shipping profile; price, quantity and processing profile (only for a listing without variations — otherwise a note says they were left alone); photos in the draft's order (new ones uploaded, ones not in the draft deleted from the listing), the video (the draft's replaces Etsy's — a failed upload keeps Etsy's; a draft without a video deletes Etsy's, except one the app never pulled, which is kept with a note) and buyer files the same way as photos. A live (active) listing changes for buyers at once. publish=true also publishes a linked listing that isn't active (${FEE} — for an Etsy draft, expired or sold-out listing; an inactive one is reactivated for free); publish=false never deactivates. Publishing — or updating an active listing — needs a photo, and a file for digital. If the listing was changed on Etsy since the app last synced it (or the draft was sent by an older app version and was never compared with Etsy), nothing is written and the answer is {conflict: true, …}: tell the user and only with their agreement send again with overwrite_etsy_changes=true (that replaces the changes made on Etsy). A listing deleted on Etsy answers removed_on_etsy: true (unlink_prepared_product, then send, creates a new one). Success: {draft_id, action (created|updated), product_id (the Etsy listing id), status (its Etsy state), url (the public Etsy page — only when active, else null), edit_url (the listing in the user's Etsy listing editor), notes (Ukrainian; what wasn't or couldn't be done)}. Failure: {error, product_id, edit_url, …} — product_id is set when the Etsy listing exists; the steps already done are kept, so sending again continues without duplicates; the error may be partly Ukrainian. Usually the user sends drafts themselves after reviewing them; call this only when they ask you to.`,
       inputSchema: {
         type: 'object',
         properties: {

@@ -159,3 +159,40 @@
 .draft-outcome {
   scroll-margin-bottom: 140px;
 }
+
+/* The listing video of a draft: a player (or a note where none can play) above its file row. */
+.draft-video {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.draft-video-stage {
+  width: min(100%, 420px);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  background: #000;
+}
+.draft-video-player {
+  display: block;
+  width: 100%;
+  max-height: 240px;
+  background: #000;
+}
+.draft-video-empty {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border: 1px dashed var(--hairline);
+  background: var(--bg-3);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+}
+.draft-video-empty > svg {
+  flex: none;
+}
+.draft-video-row > svg {
+  flex: none;
+}

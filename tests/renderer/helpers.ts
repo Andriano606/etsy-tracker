@@ -162,6 +162,7 @@ export const mkDraft = (id: number, over: Partial<ListingDraft> = {}): ListingDr
   },
   photos: [],
   files: [],
+  video: null,
   createdAt: Date.UTC(2026, 9, 23, 10),
   updatedAt: Date.UTC(2026, 9, 23, 11),
   sentAt: null,

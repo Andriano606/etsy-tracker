@@ -42,6 +42,9 @@ import {
   type EtsyTaxonomyNode
 } from './etsyApi'
 import type { EtsyAuth } from './etsyAuth'
+import { mediaProblemText } from '../shared/features/media'
+// (ops.ts imports mimeOf from here: a cycle, but neither module uses the other at load time.)
+import { mimeFor, postVideo } from './features/media/ops'
 
 export interface MyShopDeps {
   client: EtsyClient
@@ -189,10 +192,11 @@ export interface CreateDeps extends MyShopDeps {
   /** The Etsy listing exists now (right after createDraftListing) — record it before anything else can fail. */
   onCreated?: (listingId: number) => void
   /**
-   * An upload finished: `index` in input.images / input.files, and Etsy's
-   * listing_image_id / listing_file_id from the answer (null when it had none).
+   * An upload finished: `index` in input.images / input.files (0 for the video),
+   * and Etsy's listing_image_id / listing_file_id / video_id from the answer
+   * (null when it had none).
    */
-  onUploaded?: (kind: 'image' | 'file', index: number, etsyId: number | null) => void
+  onUploaded?: (kind: 'image' | 'file' | 'video', index: number, etsyId: number | null) => void
 }
 
 /** A positive id from an Etsy answer, else null. */
@@ -218,12 +222,22 @@ function resolveUploads(deps: CreateDeps, input: NewListingInput) {
       if (f.size > max) problems.push(`«${f.name}» більший за ${Math.round(max / 1024 / 1024)} МБ.`)
       return [f]
     })
-  return { images: pick(input.images, 'image'), files: pick(input.files, 'file'), problems }
+  let video: { path: string; name: string; size: number } | null = null
+  if (input.video) {
+    video = deps.files.get(input.video)
+    if (!video) problems.push('Вибране відео більше недоступне — виберіть його ще раз.')
+    else {
+      const problem = mediaProblemText('video', video.name, video.size)
+      if (problem) problems.push(problem)
+    }
+  }
+  return { images: pick(input.images, 'image'), files: pick(input.files, 'file'), video, problems }
 }
 
 /**
- * Create a listing: draft → photos → files → (optionally) publish. Each step is
- * one Etsy call; a failure after the draft exists still returns its id.
+ * Create a listing: draft → photos → video → files → (optionally) publish. Each
+ * step is one Etsy call; a failure after the draft exists still returns its id
+ * (later steps are skipped).
  */
 export async function createMyListing(deps: CreateDeps, input: NewListingInput): Promise<CreateListingResult> {
   const describe = deps.describe ?? myShopErrorMessage
@@ -262,6 +276,18 @@ export async function createMyListing(deps: CreateDeps, input: NewListingInput):
       deps.onUploaded?.('image', i, answerId(img, 'listing_image_id'))
     } catch (e) {
       return failed(`фото «${f.name}» не завантажилось`, e)
+    }
+  }
+  if (up.video) {
+    const v = up.video
+    progress('video', 0, 1, `Відео «${v.name}»…`)
+    try {
+      const data = await deps.readFile(v.path)
+      // A fresh listing has no video yet: a plain upload (no replace dance).
+      const answer = await postVideo(deps.client, shopId, listingId, { video: { data, name: v.name, type: mimeFor('video', v.name) } })
+      deps.onUploaded?.('video', 0, answerId(answer, 'video_id'))
+    } catch (e) {
+      return failed(`відео «${v.name}» не завантажилось`, e)
     }
   }
   for (const [i, f] of up.files.entries()) {

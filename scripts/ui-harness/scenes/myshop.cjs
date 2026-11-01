@@ -126,6 +126,12 @@ module.exports = [
   scene('draft-removed-on-etsy', 'await nthDraft(6)'),
   scene('draft-removed-send-new', "await nthDraft(6); await __h.click('Надіслати як новий товар', 'button'); await __h.sleep(400)"),
   scene('draft-send-failed', 'await nthDraft(7)'),
+  // The editor's video block: a saved video playing inline (draft 0), one already on Etsy that can't play here (draft 1),
+  // and the full-size viewer playing it.
+  scene('draft-video', "await nthDraft(0); const v = document.querySelector('[data-testid=draft-video]'); v && v.scrollIntoView({ block: 'center' }); await __h.sleep(1200)"),
+  scene('draft-video-on-etsy', "await nthDraft(1); const v = document.querySelector('[data-testid=draft-video]'); v && v.scrollIntoView({ block: 'center' }); await __h.sleep(1200)"),
+  scene('draft-video-viewer', "await nthDraft(0); await __h.sleep(800); const b = document.querySelector('[data-testid=draft-video] button[aria-label^=\"Відтворити на весь екран\"]'); if (b) await __h.click(b); await __h.sleep(1500)"),
+  scene('draft-video-picked', "await newDraft(); const v = document.querySelector('[data-testid=draft-video]'); v && v.scrollIntoView({ block: 'center' }); await __h.click('Додати відео', 'button'); await __h.sleep(500)"),
   scene('draft-delete-menu', "await nthDraft(1); await __h.clickSel('.draft-delete-menu'); await __h.sleep(300)"),
   scene('draft-delete-on-etsy-confirm', "await nthDraft(1); await __h.clickSel('.draft-delete-menu'); await __h.click('Видалити і на Etsy', '[role=menuitem]'); await __h.sleep(300)"),
   // A new draft with something typed + × : the "Закрити без збереження?" question.

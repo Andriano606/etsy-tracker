@@ -50,7 +50,8 @@ app.setPath('userData', join(app.getPath('appData'), 'etsy-tracker'))
 // treated as mixed content; no fetch/CORS/service-worker privileges are needed
 // for <img>.
 protocol.registerSchemesAsPrivileged([
-  { scheme: IMAGE_SCHEME, privileges: { standard: true, secure: true } }
+  // stream: a draft's video plays from etsyimg://draft/{id} (Range requests, 206).
+  { scheme: IMAGE_SCHEME, privileges: { standard: true, secure: true, stream: true } }
 ])
 
 let mainWindow: BrowserWindow | null = null
@@ -234,6 +235,11 @@ if (!app.requestSingleInstanceLock()) {
       readImage: async (url) => {
         const res = await imageHandler({ url } as Request)
         if (!res.ok) return null
+        // Pictures only (a draft's video is served by the same handler): never read a video's bytes as an image.
+        if (!/^image\//i.test(res.headers.get('content-type') ?? '')) {
+          await res.body?.cancel().catch(() => undefined)
+          return null
+        }
         return {
           data: Buffer.from(await res.arrayBuffer()),
           mimeType: res.headers.get('content-type') ?? 'image/jpeg'

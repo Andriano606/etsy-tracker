@@ -323,12 +323,16 @@ the clicked index. You rarely call `openImage` yourself — use one of the two c
   the magnifier stays dimly visible (like the ‹ › arrows), so the two read as one corner group.
 - **Videos** play in the same viewer: `ViewerImage.video` = the file to play (an Etsy CDN URL — only through
   `playableVideo(v)` / `playableVideos(videos)` in `imageUrl.ts`: https etsystatic.com, state active or unknown;
-  CSP `media-src https://*.etsystatic.com`), `src` = its preview frame (`videoThumbSrc(v)` for a stored
+  CSP `media-src etsyimg: https://*.etsystatic.com`), `src` = its preview frame (`videoThumbSrc(v)` for a stored
   listing's video). The viewer then shows a `<video>` (controls, muted — Etsy's videos have no sound —,
   autoplay, loop; "Не вдалося завантажити відео."; no 1:1; the dialog is "Перегляд відео").
   `listingGallery(images, title, listingId, videos)` appends a listing's playable videos after the photos
   (`videoRef`). `ZoomImage` takes `video` (named "Відтворити відео: {alt}", a ▶ badge). A video Etsy is
-  still processing (`inactive`) opens as its frame only.
+  still processing (`inactive`) opens as its frame only. A draft's own saved video plays from the app:
+  `{src: 'etsyimg://draft/{id}', video: 'etsyimg://draft/{id}'}` (no preview frame — `src` is the same URL;
+  main serves it with Range requests, CSP `media-src etsyimg:`); the drafts editor plays it inline too
+  (`VideoBlock` in `DraftsModal.tsx`: a muted `<video controls preload="metadata">`, a note instead when it
+  can't play, the "Відтворити на весь екран" button opens the viewer).
 - Tests: `screen.getByRole('dialog', {name: 'Перегляд зображення'})` and its `img.ui-viewer-img` `src`, or
   `useStore.getState().viewer` (`{images, index}`); assert the parent's action was **not** called.
   Reference: `tests/renderer/ui/ImageViewer.test.tsx`.

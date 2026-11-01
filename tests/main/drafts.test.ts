@@ -956,3 +956,256 @@ describe('marks made from a draft ("В роботі" → "Реалізовано
     expect(getListingMark(o.db, 1)).toMatchObject({ status: 'in_progress', ourListingId: null, updatedAt: 20 })
   })
 })
+
+// ------------------------------------------------------------------ the listing video
+
+import { MAX_VIDEO_BYTES } from '../../src/shared/features/media'
+import { VIDEO_KEPT_NOTE } from '../../src/main/drafts'
+
+const clip = (name = 'clip.mp4', s = `VIDEO:${name}`) => ({ name, data: bytes(s) })
+
+describe('a draft’s video', () => {
+  it('is stored like photos: one at most, kept by id, replaced, removed with [] or null; undefined keeps it', () => {
+    const db = memDb()
+    const d = saveDraft(db, { source: 'app', fields: fields(), video: [clip()] }, 1)
+    expect(d.video).toMatchObject({ kind: 'video', position: 1, name: 'clip.mp4', mime: 'video/mp4', size: 14, onEtsy: false, remote: false })
+    expect(Buffer.from(getDraftMediaData(db, d.video!.id)!.data).toString()).toBe('VIDEO:clip.mp4')
+    expect(d.photos).toEqual([])
+    expect(saveDraft(db, { id: d.id, source: 'app', fields: fields({ title: 'T2' }) }, 2).video?.id).toBe(d.video!.id)
+    expect(saveDraft(db, { id: d.id, source: 'app', fields: fields(), video: [{ mediaId: d.video!.id }] }, 3).video?.id).toBe(d.video!.id)
+    const replaced = saveDraft(db, { id: d.id, source: 'app', fields: fields(), video: [clip('b.mov')] }, 4)
+    expect(replaced.video).toMatchObject({ name: 'b.mov', mime: 'video/quicktime' })
+    expect(getDraftMediaData(db, d.video!.id)).toBeNull()
+    expect(saveDraft(db, { id: d.id, source: 'app', fields: fields(), video: [] }, 5).video).toBeNull()
+    saveDraft(db, { id: d.id, source: 'app', fields: fields(), video: [clip()] }, 6)
+    expect(saveDraft(db, { id: d.id, source: 'app', fields: fields(), video: null }, 7).video).toBeNull()
+    // A video never counts against sending (Etsy doesn't require one).
+    expect(saveDraft(db, { source: 'app', fields: fields() }, 8).problems).toEqual([])
+  })
+
+  it('refuses two videos, a wrong type, a too big or empty one, another draft’s or a photo as the video — nothing written', () => {
+    const db = memDb()
+    const d = saveDraft(db, { source: 'app', fields: fields(), photos: [photo('a.jpg')], video: [clip()] }, 1)
+    const other = saveDraft(db, { source: 'app', fields: fields(), video: [clip('o.mp4')] }, 1)
+    const again = (video: Parameters<typeof saveDraft>[1]['video']) => () => saveDraft(db, { id: d.id, source: 'app', fields: fields({ title: 'X' }), video }, 2)
+    expect(again([clip('a.mp4'), clip('b.mp4')])).toThrow('лише одне')
+    expect(again([clip('a.gif')])).toThrow('відео має бути MP4')
+    expect(again([{ name: 'big.mp4', data: new Uint8Array(MAX_VIDEO_BYTES + 1) }])).toThrow('більший за 100 МБ')
+    expect(again([{ name: 'e.mp4', data: new Uint8Array() }])).toThrow('Порожній')
+    expect(again([{ mediaId: other.video!.id }])).toThrow('не належить до чернетки')
+    expect(again([{ mediaId: d.photos[0].id }])).toThrow('не належить до чернетки')
+    expect(() => saveDraft(db, { source: 'app', fields: fields(), video: [{ remote: true, name: 'v.mp4', size: 1, etsyId: 1 }] }, 1)).toThrow('файл для покупця')
+    expect(getDraft(db, d.id)).toMatchObject({ fields: { title: 'Budget Planner' }, video: { name: 'clip.mp4' }, updatedAt: 1 })
+  })
+
+  it('plays from etsyimg://draft/{id}: 200 without Range, 206 slices, open ranges in chunks, 416 outside; never for buyer files', async () => {
+    const db = memDb()
+    const body = '0123456789'
+    const d = saveDraft(db, { source: 'app', fields: fields(), video: [{ name: 'v.webm', data: bytes(body) }], files: [{ name: 'f.pdf', data: bytes('F') }] }, 1)
+    const handler = createImageProtocolHandler({ db, getStore: async () => null, fetch: vi.fn() as unknown as typeof fetch })
+    const url = `etsyimg://draft/${d.video!.id}`
+    const get = (range?: string) => handler(new Request(url, range ? { headers: { range } } : undefined))
+    const whole = await get()
+    expect(whole.status).toBe(200)
+    expect(Object.fromEntries(['content-type', 'content-length', 'accept-ranges', 'cache-control'].map((h) => [h, whole.headers.get(h)]))).toEqual({
+      'content-type': 'video/webm',
+      'content-length': '10',
+      'accept-ranges': 'bytes',
+      'cache-control': 'no-store'
+    })
+    expect(Buffer.from(await whole.arrayBuffer()).toString()).toBe(body)
+    for (const [range, part, cr] of [
+      ['bytes=2-5', '2345', 'bytes 2-5/10'],
+      ['bytes=7-', '789', 'bytes 7-9/10'],
+      ['bytes=-3', '789', 'bytes 7-9/10'],
+      ['bytes=0-999', body, 'bytes 0-9/10']
+    ] as const) {
+      const res = await get(range)
+      expect(res.status, range).toBe(206)
+      expect(res.headers.get('content-range'), range).toBe(cr)
+      expect(res.headers.get('content-length'), range).toBe(String(part.length))
+      expect(Buffer.from(await res.arrayBuffer()).toString(), range).toBe(part)
+    }
+    const out = await get('bytes=10-')
+    expect(out.status).toBe(416)
+    expect(out.headers.get('content-range')).toBe('bytes */10')
+    // Garbage or several ranges: the whole body.
+    expect((await get('bytes=1-2,4-5')).status).toBe(200)
+    expect((await get('items=1-2')).status).toBe(200)
+    expect((await handler(new Request(`etsyimg://draft/${d.files[0].id}`, { headers: { range: 'bytes=0-' } }))).status).toBe(404)
+  })
+
+  it('an open range of a big video gets one chunk at a time (never the whole BLOB at once)', async () => {
+    const { VIDEO_CHUNK_BYTES } = await import('../../src/main/imageProtocol')
+    const db = memDb()
+    const data = new Uint8Array(VIDEO_CHUNK_BYTES + 10).map((_, i) => i % 251)
+    const d = saveDraft(db, { source: 'app', fields: fields(), video: [{ name: 'v.mp4', data }] }, 1)
+    const handler = createImageProtocolHandler({ db, getStore: async () => null, fetch: vi.fn() as unknown as typeof fetch })
+    const first = await handler(new Request(`etsyimg://draft/${d.video!.id}`, { headers: { range: 'bytes=0-' } }))
+    expect(first.status).toBe(206)
+    expect(first.headers.get('content-range')).toBe(`bytes 0-${VIDEO_CHUNK_BYTES - 1}/${data.length}`)
+    const rest = await handler(new Request(`etsyimg://draft/${d.video!.id}`, { headers: { range: `bytes=${VIDEO_CHUNK_BYTES}-` } }))
+    expect(rest.headers.get('content-range')).toBe(`bytes ${VIDEO_CHUNK_BYTES}-${data.length - 1}/${data.length}`)
+    expect([...new Uint8Array(await rest.arrayBuffer())]).toEqual([...data.slice(VIDEO_CHUNK_BYTES)])
+  })
+
+  it('a linked draft whose video changes is “changed”; the kept video keeps its Etsy id', async () => {
+    const o = own()
+    const d = saveDraft(o.db, { source: 'app', fields: fields(), photos: [photo('a.jpg')], video: [clip()] }, 1)
+    expect(await o.send(d.id)).toMatchObject({ ok: true })
+    const sent = getDraft(o.db, d.id)!
+    expect(sent).toMatchObject({ status: 'sent', video: { onEtsy: true } })
+    expect(saveDraft(o.db, { id: d.id, source: 'app', fields: fields(), video: [{ mediaId: sent.video!.id }] }, 5)).toMatchObject({
+      status: 'changed',
+      video: { onEtsy: true }
+    })
+    expect(saveDraft(o.db, { id: d.id, source: 'app', fields: fields(), video: [] }, 6)).toMatchObject({ status: 'changed', video: null })
+  })
+})
+
+describe('sending a draft’s video', () => {
+  const videoWrites = (o: ReturnType<typeof own>, from = 0) => o.writes().slice(from).filter((r) => /\/videos(\/\d+)?$/.test(r))
+
+  it('a new listing: draft → photos → video → files; the video’s Etsy id is recorded', async () => {
+    const o = own()
+    const steps: string[] = []
+    const d = saveDraft(o.db, { source: 'app', fields: fields(), photos: [photo('a.jpg')], files: [{ name: 'P.pdf', data: bytes('PDF') }], video: [clip()] }, 1)
+    const res = await sendDraft({ ...o.deps, onProgress: (p) => steps.push(p.step) }, d.id, true)
+    expect(res).toMatchObject({ ok: true, listingId: 4242, published: true })
+    const writes = o.writes().map((w) => w.replace(/^(\w+) .*\/(\w+)$/, '$1 $2'))
+    expect(writes.slice(0, 5)).toEqual(['POST listings', 'POST images', 'POST videos', 'POST files', 'PATCH 4242'])
+    expect([...new Set(steps)]).toEqual(['draft', 'images', 'video', 'files', 'publish'])
+    expect(o.listings.get(4242)!.videos).toMatchObject([{ video_id: 6001, name: 'clip.mp4', size: 14 }])
+    expect(getDraftMediaEtsyIds(o.db, d.id, 'video')).toEqual([{ id: d.video!.id, etsyId: 6001 }])
+    expect(getDraft(o.db, d.id)).toMatchObject({ status: 'sent', video: { onEtsy: true }, etsy: { incomplete: false } })
+    // Sent again unchanged: the video isn't touched.
+    const n = o.writes().length
+    saveDraft(o.db, { id: d.id, source: 'app', fields: fields({ title: 'T2' }) }, 5)
+    expect(await o.send(d.id)).toMatchObject({ ok: true, updated: true })
+    expect(videoWrites(o, n)).toEqual([])
+  })
+
+  it('the video upload failing after the listing exists: its id is returned, files and publishing are skipped; the retry uploads it once', async () => {
+    const o = own()
+    const d = saveDraft(o.db, { source: 'app', fields: fields(), photos: [photo('a.jpg')], files: [{ name: 'P.pdf', data: bytes('PDF') }], video: [clip()] }, 1)
+    o.failures.push({ match: 'POST .*/videos$', status: 400, times: 1, error: 'Video too short' })
+    const res = await o.send(d.id, true)
+    expect(res).toMatchObject({ ok: false, listingId: 4242 })
+    expect(!res.ok && res.error).toContain('відео «clip.mp4» не завантажилось')
+    const l = o.listings.get(4242)!
+    expect(l).toMatchObject({ state: 'draft', videos: [], files: [] })
+    expect(getDraft(o.db, d.id)).toMatchObject({ status: 'error', etsy: { listingId: 4242 }, video: { onEtsy: false } })
+    expect(await o.send(d.id, true)).toMatchObject({ ok: true, updated: true, published: true })
+    expect(o.requests().filter((r) => r === `POST /v3/application/shops/${OWN_SHOP}/listings`)).toHaveLength(1)
+    expect(l.videos.map((v) => v.name)).toEqual(['clip.mp4'])
+    expect(getDraft(o.db, d.id)!.video!.onEtsy).toBe(true)
+  })
+
+  it('an upload answer without the video id: the new listing’s one video is the draft’s', async () => {
+    const o = own()
+    const call = o.deps.client.call
+    o.deps.client = {
+      ...o.deps.client,
+      call: (async (path: string, opts?: Parameters<typeof call>[1]) => {
+        const r = await call(path, opts)
+        return opts?.method === 'POST' && path.endsWith('/videos') ? {} : r
+      }) as typeof call
+    }
+    const d = saveDraft(o.db, { source: 'app', fields: fields(), photos: [photo('a.jpg')], video: [clip()] }, 1)
+    expect(await o.send(d.id)).toMatchObject({ ok: true })
+    expect(getDraftMediaEtsyIds(o.db, d.id, 'video')).toEqual([{ id: d.video!.id, etsyId: 6001 }])
+  })
+
+  it('an update: a new draft video replaces Etsy’s (409 on a second → the old comes off, the new goes up)', async () => {
+    const o = own()
+    const d = saveDraft(o.db, { source: 'app', fields: fields(), photos: [photo('a.jpg')], video: [clip()] }, 1)
+    await o.send(d.id)
+    saveDraft(o.db, { id: d.id, source: 'app', fields: fields(), video: [clip('new.mp4')] }, 5)
+    const n = o.writes().length
+    expect(await o.send(d.id)).toMatchObject({ ok: true, updated: true })
+    expect(o.listings.get(4242)!.videos.map((v) => [v.video_id, v.name])).toEqual([[6002, 'new.mp4']])
+    expect(videoWrites(o, n)).toEqual([
+      `POST /v3/application/shops/${OWN_SHOP}/listings/4242/videos`,
+      `DELETE /v3/application/shops/${OWN_SHOP}/listings/4242/videos/6001`,
+      `POST /v3/application/shops/${OWN_SHOP}/listings/4242/videos`
+    ])
+    expect(getDraftMediaEtsyIds(o.db, d.id, 'video').map((v) => v.etsyId)).toEqual([6002])
+  })
+
+  it('an update whose video upload fails keeps Etsy’s current video; the error says so and the retry continues', async () => {
+    const o = own()
+    const d = saveDraft(o.db, { source: 'app', fields: fields(), photos: [photo('a.jpg')], video: [clip()] }, 1)
+    await o.send(d.id)
+    saveDraft(o.db, { id: d.id, source: 'app', fields: fields({ title: 'T2' }), video: [clip('new.mp4')] }, 5)
+    o.failures.push({ match: 'POST .*/videos$', status: 503, times: 1 })
+    const res = await o.send(d.id)
+    expect(res).toMatchObject({ ok: false, listingId: 4242 })
+    expect(!res.ok && res.error).toContain('поточне лишилося')
+    expect(o.listings.get(4242)!.videos.map((v) => v.video_id)).toEqual([6001])
+    expect(o.listings.get(4242)!.title).toBe('T2') // the steps before it are done
+    expect(getDraft(o.db, d.id)).toMatchObject({ status: 'error', video: { name: 'new.mp4', onEtsy: false } })
+    expect(await o.send(d.id)).toMatchObject({ ok: true })
+    expect(o.listings.get(4242)!.videos.map((v) => v.name)).toEqual(['new.mp4'])
+  })
+
+  it('a draft without a video deletes Etsy’s; a video the app never pulled (a gap) or an unverified link keeps it, with a note', async () => {
+    const o = own()
+    const d = await sentDraft(o)
+    // Added on Etsy, then pulled into the draft and removed in the app: deleted on Etsy.
+    o.addVideo(4242)
+    o.db.prepare('UPDATE listing_drafts SET etsy_updated_at = ? WHERE id = ?').run(o.listings.get(4242)!.updated_timestamp, d.id)
+    saveDraft(o.db, { id: d.id, source: 'app', fields: fields({ title: 'T2' }), video: [] }, 5)
+    expect(await o.send(d.id)).toMatchObject({ ok: true })
+    expect(o.videoIds(4242)).toEqual([])
+
+    // Never pulled (migration v9, or a failed download): kept.
+    const v = o.addVideo(4242)
+    o.db.prepare('UPDATE listing_drafts SET etsy_updated_at = ?, etsy_gaps = ? WHERE id = ?').run(o.listings.get(4242)!.updated_timestamp, '{"video":"all"}', d.id)
+    saveDraft(o.db, { id: d.id, source: 'app', fields: fields({ title: 'T3' }) }, 6)
+    const kept = await o.send(d.id)
+    expect(kept).toMatchObject({ ok: true, notes: [VIDEO_KEPT_NOTE] })
+    expect(o.videoIds(4242)).toEqual([v])
+    expect(getDraft(o.db, d.id)!.etsy).toMatchObject({ incomplete: true }) // still unknown
+
+    // Unverified (sent by an older version): kept too.
+    o.db.prepare('UPDATE listing_drafts SET etsy_gaps = NULL, unverified = 1 WHERE id = ?').run(d.id)
+    saveDraft(o.db, { id: d.id, source: 'app', fields: fields({ title: 'T4' }) }, 7)
+    expect(await o.send(d.id, false, { overwrite: true })).toMatchObject({ ok: true, notes: [VIDEO_KEPT_NOTE] })
+    expect(o.videoIds(4242)).toEqual([v])
+  })
+
+  it('the “video not pulled” gap goes once the draft’s own video is on Etsy (or Etsy has none)', async () => {
+    const o = own()
+    const d = await sentDraft(o)
+    o.addVideo(4242)
+    o.db.prepare('UPDATE listing_drafts SET etsy_updated_at = ?, etsy_gaps = ? WHERE id = ?').run(
+      o.listings.get(4242)!.updated_timestamp,
+      JSON.stringify({ photos: [123], video: 'all' }),
+      d.id
+    )
+    saveDraft(o.db, { id: d.id, source: 'app', fields: fields(), video: [clip('mine.mp4')] }, 5)
+    expect(await o.send(d.id)).toMatchObject({ ok: true })
+    expect(o.listings.get(4242)!.videos.map((x) => x.name)).toEqual(['mine.mp4'])
+    expect(JSON.parse(String((o.db.prepare('SELECT etsy_gaps FROM listing_drafts WHERE id = ?').get(d.id) as { etsy_gaps: string }).etsy_gaps))).toEqual({
+      photos: [123]
+    })
+  })
+
+  it('reads the listing’s video with the sign-in', async () => {
+    const o = own()
+    const d = await sentDraft(o)
+    saveDraft(o.db, { id: d.id, source: 'app', fields: fields({ title: 'T2' }) }, 5)
+    const before = o.fetch.calls.length
+    await o.send(d.id)
+    const reads = o.fetch.calls.slice(before).filter((c) => c.method === 'GET' && c.url.pathname.endsWith('/videos'))
+    expect(reads.length).toBe(1)
+    expect(reads.every((c) => c.headers.authorization === 'Bearer tok')).toBe(true)
+  })
+
+  it('unlinking forgets the video’s Etsy id too', async () => {
+    const o = own()
+    const d = saveDraft(o.db, { source: 'app', fields: fields(), photos: [photo('a.jpg')], video: [clip()] }, 1)
+    await o.send(d.id)
+    expect(unlinkDraft(o.db, d.id).video).toMatchObject({ name: 'clip.mp4', onEtsy: false })
+  })
+})

@@ -247,6 +247,37 @@ describe('createMyListing', () => {
     expect(t.calls).toEqual([])
   })
 
+  it('a video goes up after the photos and before the files (multipart video + name); a bad one is refused first', async () => {
+    const posts: Array<{ path: string; name: unknown; type: string }> = []
+    const t = creating({
+      call: vi.fn(async (path: string, o: { method?: string; multipart?: FormData }) => {
+        const v = o.multipart?.get('video') as File
+        posts.push({ path, name: o.multipart?.get('name'), type: v.type })
+        calls.push('video')
+        return { video_id: 6001 }
+      })
+    })
+    const calls = t.calls
+    const uploaded: Array<[string, number, number | null]> = []
+    const a = t.files.add('/x/a.jpg', 'a.jpg', 1000)
+    const v = t.files.add('/x/clip.mov', 'clip.mov', 5000)
+    const f = t.files.add('/x/plan.pdf', 'plan.pdf', 50)
+    const res = await createMyListing({ ...t.d, onUploaded: (k, i, id) => uploaded.push([k, i, id]) }, newInput({ images: [a.token], files: [f.token], video: v.token }))
+    expect(res).toMatchObject({ ok: true, listingId: 4242 })
+    expect(t.calls).toEqual(['draft:Budget Planner', 'image:a.jpg:1:image/jpeg', 'video', 'file:plan.pdf:1'])
+    expect(posts).toEqual([{ path: '/v3/application/shops/77/listings/4242/videos', name: 'clip.mov', type: 'video/quicktime' }])
+    expect(uploaded).toContainEqual(['video', 0, 6001])
+    expect(t.progress).toContain('Відео «clip.mov»…')
+
+    t.calls.length = 0
+    const gif = t.files.add('/x/v.gif', 'v.gif', 10)
+    expect(await createMyListing(t.d, newInput({ video: gif.token }))).toMatchObject({ ok: false, error: expect.stringContaining('відео має бути MP4') })
+    const big = t.files.add('/x/big.mp4', 'big.mp4', 101 * 1024 * 1024)
+    expect(await createMyListing(t.d, newInput({ video: big.token }))).toMatchObject({ ok: false, error: expect.stringContaining('більший за 100 МБ') })
+    expect(await createMyListing(t.d, newInput({ video: 'forged' }))).toMatchObject({ ok: false, error: expect.stringContaining('відео більше недоступне') })
+    expect(t.calls).toEqual([])
+  })
+
   it('signed out: the sign-in message', async () => {
     const t = creating()
     const out = { ...t.d, auth: { status: () => ({ loggedIn: false, redirectUri: '', pending: false, encrypted: false }) } }

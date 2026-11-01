@@ -30,12 +30,15 @@ const signedIn: EtsyAuthStatus = {
 let dir: string
 let photo: string
 let sheet: string
+let movie: string
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), 'mcp-store-'))
   photo = join(dir, 'cover.jpg')
   sheet = join(dir, 'Planner.xlsx')
   writeFileSync(photo, 'JPEGDATA')
   writeFileSync(sheet, 'XLSXDATA')
+  movie = join(dir, 'clip.mp4')
+  writeFileSync(movie, 'MP4DATA')
 })
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
@@ -451,7 +454,7 @@ describe('in the full tool set', () => {
 })
 
 import { createDraftTools } from '../../src/main/mcpStoreTools'
-import { VARIATIONS_NOTE, getDraft, listDrafts, saveDraft } from '../../src/main/drafts'
+import { VARIATIONS_NOTE, getDraft, getDraftMediaData, listDrafts, saveDraft } from '../../src/main/drafts'
 import { etsyListingEditUrl, etsyListingUrl, normalizeDraftFields } from '../../src/shared/myShop'
 
 describe('drafts in the app over MCP (prepare → the user reviews → send)', () => {
@@ -601,6 +604,51 @@ describe('drafts in the app over MCP (prepare → the user reviews → send)', (
     expect(prepare).not.toContain('📝')
   })
 
+  it('prepare_product sets, keeps and removes the draft’s video; refuses keep without one, a wrong type or two kinds at once', async () => {
+    const d = drafts({ writes: false })
+    const r = JSON.parse((await d.run('prepare_product', { title: 'With video', video: { path: movie } })).body)
+    expect(r.video).toEqual({ name: 'clip.mp4', size: 7, on_etsy: false })
+    expect(Buffer.from(getDraftMediaData(d.db, getDraft(d.db, r.draft_id)!.video!.id)!.data).toString()).toBe('MP4DATA')
+    // Omitted = unchanged; {keep: true} keeps it; base64 replaces it; null removes it.
+    expect(JSON.parse((await d.run('prepare_product', { draft_id: r.draft_id, price: 3 })).body).video).toMatchObject({ name: 'clip.mp4' })
+    expect(JSON.parse((await d.run('prepare_product', { draft_id: r.draft_id, video: { keep: true } })).body).video).toMatchObject({ name: 'clip.mp4' })
+    const b64 = JSON.parse((await d.run('prepare_product', { draft_id: r.draft_id, video: { data_base64: Buffer.from('WEBM').toString('base64'), name: 'b.webm' } })).body)
+    expect(b64.video).toEqual({ name: 'b.webm', size: 4, on_etsy: false })
+    const none = JSON.parse((await d.run('prepare_product', { draft_id: r.draft_id, video: null })).body)
+    expect(none.video).toBeNull()
+    expect((await d.run('prepare_product', { draft_id: r.draft_id, video: { keep: true } })).body).toContain('The draft has no video to keep')
+    expect((await d.run('prepare_product', { title: 'x', video: { keep: true } })).body).toContain('needs draft_id')
+    expect((await d.run('prepare_product', { draft_id: r.draft_id, video: { keep: false } })).body).toContain('"video": null')
+    expect((await d.run('prepare_product', { draft_id: r.draft_id, video: { keep: true, path: movie } })).body).toContain('not both')
+    expect((await d.run('prepare_product', { draft_id: r.draft_id, video: { path: photo } })).body).toContain('a video must be MP4')
+    expect((await d.run('prepare_product', { draft_id: r.draft_id, video: { path: '/no/such.mp4' } })).body).toContain('No such file')
+    expect(getDraft(d.db, r.draft_id)!.video).toBeNull() // refused calls wrote nothing
+    expect((await d.run('list_prepared_products')).body).toContain('"video":null')
+  })
+
+  it('a too big video is refused from its size alone (never read)', async () => {
+    const w = world({})
+    const reads: string[] = []
+    const own: OwnStoreDeps = {
+      client: w.client,
+      status: () => signedIn,
+      writesAllowed: () => false,
+      taxonomy: async () => [],
+      accessToken: async () => TOKEN,
+      statFile: async () => ({ size: 101 * 1024 * 1024, isFile: true }),
+      readFile: async (p) => (reads.push(p), new Uint8Array() as Uint8Array<ArrayBuffer>)
+    }
+    const tools = createDraftTools(own, { db: memDb(), now: () => 1, onChanged: () => {} })
+    const res = await handleMcpMessage(
+      { info: mcpServerInfo('0.1.0'), tools },
+      { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'prepare_product', arguments: { title: 'x', video: { path: '/home/me/huge.mp4' } } } }
+    )
+    const r = res!.result as McpToolResult
+    expect(r.isError).toBe(true)
+    expect((r.content[0] as { text: string }).text).toContain('larger than 100 MB')
+    expect(reads).toEqual([])
+  })
+
   it('drafts and their errors: texts as they are, but no CDN URL, raw JSON or token', () => {
     const all = seen.join('\n')
     expect(all).toContain(ETSY_TEXT)
@@ -671,6 +719,17 @@ describe('drafts linked to Etsy listings over MCP (edit → update the same list
     expect(p.json).toMatchObject({ action: 'updated', status: 'active', examples_marked_done: [1] })
     expect(w.marksChanged).toHaveBeenCalledWith([1])
     expect(getListingMark(w.db, 1)).toMatchObject({ status: 'done', ourListingId: 4242 })
+  })
+
+  it('a draft’s video goes to Etsy with send_prepared_product; null + send takes it off the listing', async () => {
+    const w = linked()
+    const p = await w.run('prepare_product', { ...valid, photos: [{ path: photo }], video: { path: movie } })
+    expect((await w.run('send_prepared_product', { draft_id: p.json.draft_id })).json).toMatchObject({ action: 'created', product_id: 4242 })
+    expect(w.listings.get(4242)!.videos.map((v) => v.name)).toEqual(['clip.mp4'])
+    expect((await w.run('list_prepared_products')).json.drafts[0].video).toEqual({ name: 'clip.mp4', size: 7, on_etsy: true })
+    await w.run('prepare_product', { draft_id: p.json.draft_id, video: null })
+    expect((await w.run('send_prepared_product', { draft_id: p.json.draft_id })).json).toMatchObject({ action: 'updated' })
+    expect(w.listings.get(4242)!.videos).toEqual([])
   })
 
   it('list_prepared_products shows the link: product, Etsy state, in sync, editor; the public page only while active', async () => {

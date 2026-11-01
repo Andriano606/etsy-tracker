@@ -6,11 +6,12 @@
     <!-- Images: listing photos via main's etsyimg:// protocol (MinIO copy or
          Etsy CDN, resolved in main), shop icons straight from Etsy's CDN
          (i.etsystatic.com). Listing videos play straight from Etsy's video CDN
-         (v.etsystatic.com) — they are never copied. All API traffic goes
-         through main, so no connect-src. -->
+         (v.etsystatic.com) — they are never copied; a draft's own video plays
+         from the app's db via etsyimg://draft/{id} (Range requests, main).
+         All API traffic goes through main, so no connect-src. -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:; img-src 'self' data: etsyimg: https://i.etsystatic.com https://*.etsystatic.com; media-src https://*.etsystatic.com"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:; img-src 'self' data: etsyimg: https://i.etsystatic.com https://*.etsystatic.com; media-src etsyimg: https://*.etsystatic.com"
     />
     <title>Etsy Tracker</title>
   </head>

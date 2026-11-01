@@ -10,6 +10,7 @@ import {
 import {
   createImageProtocolHandler,
   parseImageUrl,
+  parseRange,
   parseReviewImageUrl,
   parseShopImageUrl,
   parseVideoThumbUrl,
@@ -362,5 +363,22 @@ describe('etsyimg://shop/{id}/icon|banner and etsyimg://video/{id}/thumbnail (CD
     }
     expect(cdn.calls).toEqual([])
     expect((await handler(new Request('etsyimg://shop/5/logo'))).status).toBe(400)
+  })
+})
+
+describe('Range requests (a draft’s video)', () => {
+  it('parses one byte range against the body size', () => {
+    expect(parseRange(null, 10)).toBeNull()
+    expect(parseRange('bytes=0-', 10)).toEqual({ start: 0, end: 9 })
+    expect(parseRange('bytes=2-5', 10)).toEqual({ start: 2, end: 5 })
+    expect(parseRange('bytes=8-100', 10)).toEqual({ start: 8, end: 9 })
+    expect(parseRange('bytes=-4', 10)).toEqual({ start: 6, end: 9 })
+    expect(parseRange('bytes=-40', 10)).toEqual({ start: 0, end: 9 })
+    expect(parseRange(' Bytes = 1 - 2 ', 10)).toEqual({ start: 1, end: 2 })
+    expect(parseRange('bytes=10-', 10)).toBe('unsatisfiable')
+    expect(parseRange('bytes=-0', 10)).toBe('unsatisfiable')
+    expect(parseRange('bytes=0-', 0)).toBe('unsatisfiable')
+    // Ignored (the whole body): several ranges, another unit, an inverted or empty range.
+    for (const h of ['bytes=0-1,3-4', 'items=0-1', 'bytes=5-2', 'bytes=-', 'garbage']) expect(parseRange(h, 10), h).toBeNull()
   })
 })

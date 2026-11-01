@@ -15,6 +15,8 @@ const mcpStatusBase = () => ({ enabled: true, allowWrites: false, port: 9102, ur
 //   5 edited here AND changed on Etsy (conflict) 6 deleted on Etsy (+ the send error)
 //   7 never sent, the last send failed
 // A photo's media id IS a fixture image id, so main.cjs serves etsyimg://draft/{id} from it.
+// Videos: draft 0 has one (id 990001 — main.cjs plays a sample clip made with ffmpeg, if it is
+// installed), draft 1 one already on Etsy (id 990002 — answered 404: the "can't play" state).
 const etsyListingUrl = (id) => `https://www.etsy.com/listing/${id}`
 const etsyListingEditUrl = (id) => `https://www.etsy.com/your/shops/me/listing-editor/edit/${id}`
 function link(listingId, state, over = {}) {
@@ -52,10 +54,13 @@ function sampleDrafts(fx, sample) {
   const out = []
   const l = (i) => ls[i % Math.max(ls.length, 1)]
   if (!ls.length) return out
+  const video = (id, name, size, onEtsy = false) => ({ id, kind: 'video', position: 1, name, mime: 'video/mp4', size, onEtsy, remote: false })
   out.push({ ...base, id: 901, source: 'mcp', status: 'draft', fields: fields(l(0)), photos: photos(l(0), 4),
-    files: files(7001, ['Budget-Planner-2027-Google-Sheets-instructions-and-link-to-the-template-copy.pdf', 'Budget Planner — Excel.xlsx']) })
+    files: files(7001, ['Budget-Planner-2027-Google-Sheets-instructions-and-link-to-the-template-copy.pdf', 'Budget Planner — Excel.xlsx']),
+    video: video(990001, 'budget-planner-walkthrough-scrolling-through-every-tab-2027.webm', 2_734_112) })
   out.push({ ...base, id: 902, source: 'app', status: 'sent', updatedAt: now - 7200000, ...sent(4512345678, true, now - 7200000), etsy: link(4512345678, 'active'),
-    fields: fields(l(1)), photos: photos(l(1), 3, true), files: files(7101, ['Planner-A4.pdf', 'Planner-US-Letter.pdf', 'How-to-print-and-use-this-planner-at-home.pdf'], true) })
+    fields: fields(l(1)), photos: photos(l(1), 3, true), files: files(7101, ['Planner-A4.pdf', 'Planner-US-Letter.pdf', 'How-to-print-and-use-this-planner-at-home.pdf'], true),
+    video: video(990002, 'planner-preview.mp4', 8_412_004, true) })
   out.push({ ...base, id: 903, source: 'mcp', status: 'sent', updatedAt: now - 86400000, ...sent(4512349999, false, now - 86400000),
     etsy: link(4512349999, 'draft', { syncedAt: now - 86400000 }), fields: fields(l(2)), photos: photos(l(2), 2, true), files: files(7201, ['Template.xlsx'], true) })
   // 3: published, then the price and a photo changed here — not sent yet.
@@ -79,6 +84,7 @@ function sampleDrafts(fx, sample) {
   // 7: never sent; the last send failed.
   out.push({ ...base, id: 908, source: 'app', status: 'error', updatedAt: now - 120000, lastError: 'Etsy не відповідає (тайм-аут 30 с). Спробуйте ще раз.',
     fields: fields(l(8)), photos: photos(l(8), 1), files: files(7701, ['Cleaning-Schedule.pdf']) })
+  for (const d of out) d.video ??= null
   return out
 }
 
@@ -216,7 +222,8 @@ module.exports = function fakeApi(fx, opts = {}) {
       return ok({ state, total: rows.length, offset, listings: rows.slice(offset) })
     },
     saveMyListing: async (id, patch) => ok({ ...myListings.find((l) => l.listingId === id), ...patch }),
-    pickListingFiles: async () => [],
+    // The native dialog: nothing picked, except a video (the draft-video-picked scene).
+    pickListingFiles: async (kind) => (kind === 'videos' ? [{ token: 'video-1', name: 'my-planner-in-30-seconds.mov', size: 41_943_040 }] : []),
     getTaxonomy: async () =>
       ok([
         { id: 1, path: 'Paper & Party Supplies' },
@@ -226,11 +233,12 @@ module.exports = function fakeApi(fx, opts = {}) {
     getShippingProfiles: async () => ok([{ id: 11, label: 'Standard (з UA)' }]),
     getProcessingProfiles: async () => ok([{ id: 21, label: '1–3 дн.' }]),
     listDrafts: async () => drafts,
-    saveDraftMedia: async (id) => ok({ path: `/home/andrii/Завантаження/${[...drafts.flatMap((d) => d.files)].find((m) => m.id === id)?.name ?? 'file'}` }),
+    saveDraftMedia: async (id) =>
+      ok({ path: `/home/andrii/Завантаження/${[...drafts.flatMap((d) => [...d.files, ...(d.video ? [d.video] : [])])].find((m) => m.id === id)?.name ?? 'file'}` }),
     // Saving answers like main: the same draft with the new fields (a linked one becomes "changed"); media as stored.
     saveDraft: async (input) => {
       const d = drafts.find((x) => x.id === input.id)
-      if (!d) return ok({ ...(drafts[0] ?? {}), id: input.id ?? 900, source: 'app', fields: input.fields, photos: [], files: [], status: 'draft', problems: [], etsy: null, lastError: null })
+      if (!d) return ok({ ...(drafts[0] ?? {}), id: input.id ?? 900, source: 'app', fields: input.fields, photos: [], files: [], video: null, status: 'draft', problems: [], etsy: null, lastError: null })
       const etsy = d.etsy && { ...d.etsy, dirty: true }
       return ok({ ...d, fields: input.fields, updatedAt: Date.now(), etsy, status: d.lastError ? 'error' : etsy ? 'changed' : 'draft' })
     },

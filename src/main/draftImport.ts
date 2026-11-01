@@ -6,14 +6,16 @@
 // write to Etsy.
 //
 // Cost per pull: ⌈Etsy drafts / 100⌉ pages (GET /shops/{id}/listings?state=draft
-// &includes=Images — images included), + one getAllListingFiles per digital
-// draft that is new or changed on Etsy, + one GET /listings/{id} per linked
-// draft that left the draft list since the last pull, + CDN downloads (no API
-// quota) only for photos the app doesn't hold yet. A pull with nothing changed
-// costs the pages alone and downloads nothing.
+// &includes=Images — images included), + one getListingVideos (with the sign-in)
+// per draft that is new or changed on Etsy, + one getAllListingFiles per digital
+// one of those, + one GET /listings/{id} per linked draft that left the draft
+// list since the last pull, + CDN downloads (no API quota) only for photos and
+// videos the app doesn't hold yet. A pull with nothing changed costs the pages
+// alone and downloads nothing.
 
 import type { DraftEtsyState, DraftFields, DraftPullSummary, ListingDraft, TaxonomyOption } from '../shared/types'
 import { decodeHtmlEntities } from '../shared/html'
+import { MAX_VIDEO_BYTES, mediaProblem } from '../shared/features/media'
 import {
   EMPTY_DRAFT_FIELDS,
   IMAGE_EXTENSIONS,
@@ -40,7 +42,7 @@ import {
   readOwnListing,
   saveDraft
 } from './drafts'
-import { getFiles } from './features/media/ops'
+import { getFiles, getVideos } from './features/media/ops'
 import { MyShopError, myShopErrorMessage } from './myShop'
 
 export interface DraftImportDeps {
@@ -52,6 +54,12 @@ export interface DraftImportDeps {
   taxonomy?: () => Promise<TaxonomyOption[]>
   /** Download a listing photo from Etsy's CDN (imageSync downloadImage: only isEtsyCdnUrl URLs). */
   fetchImage: (url: string) => Promise<Downloaded>
+  /**
+   * Download a listing video from Etsy's CDN (imageSync downloadVideo: only isEtsyCdnUrl
+   * URLs, video/*, ≤ MAX_VIDEO_BYTES, a timeout). Absent: a video on Etsy is reported and
+   * kept as a gap (never wiped from the draft).
+   */
+  fetchVideo?: (url: string) => Promise<Downloaded>
   now: () => number
 }
 
@@ -125,6 +133,23 @@ export function photoName(img: Pick<EtsyListingImage, 'listing_image_id' | 'url_
   const byUrl = (/\.([a-z0-9]+)(?:$|[?#])/i.exec(img.url_fullxfull ?? '')?.[1] ?? '').toLowerCase()
   const ext = byType ?? (IMAGE_EXTENSIONS.includes(byUrl) ? (byUrl === 'jpeg' ? 'jpg' : byUrl) : null)
   return ext ? `etsy-${img.listing_image_id}.${ext}` : null
+}
+
+const VIDEO_EXT_BY_TYPE: Record<string, string> = {
+  'video/mp4': 'mp4',
+  'video/quicktime': 'mov',
+  'video/x-m4v': 'm4v',
+  'video/webm': 'webm',
+  'video/x-msvideo': 'avi',
+  'video/x-matroska': 'mkv'
+}
+
+/** The file name a downloaded video is stored under (an extension the draft rules accept — Etsy serves MP4), or null. */
+export function videoName(videoId: number, url: string, contentType: string | null): string | null {
+  const byType = VIDEO_EXT_BY_TYPE[(contentType ?? '').split(';')[0].trim().toLowerCase()]
+  const byUrl = (/\.([a-z0-9]+)(?:$|[?#])/i.exec(url)?.[1] ?? '').toLowerCase()
+  const ext = byType ?? (Object.values(VIDEO_EXT_BY_TYPE).includes(byUrl) ? byUrl : null)
+  return ext ? `etsy-video-${videoId}.${ext}` : null
 }
 
 /** "«Title»" (or "#id") for messages about one Etsy listing. */
@@ -265,7 +290,47 @@ export async function importEtsyDrafts(deps: DraftImportDeps): Promise<DraftPull
     }
   }
 
-  const etsyIds = (draftId: number, kind: 'photo' | 'file'): Map<number, number> => {
+  /**
+   * The listing's video (read with the sign-in — a draft's video isn't public) as
+   * the draft's video list: the one the draft already holds (same Etsy id) is
+   * kept, another one downloaded from Etsy's CDN; none on Etsy → [] (the draft's
+   * goes too). `slots` undefined = keep the draft's video as it is: the list
+   * couldn't be read, or the video couldn't be downloaded (`missing`: a gap —
+   * the next pull tries again and an update never deletes Etsy's video).
+   */
+  const videoOf = async (
+    listingId: number,
+    draftId: number | null,
+    title: string
+  ): Promise<{ slots: DraftMediaSlot[] | undefined; missing: boolean }> => {
+    const later = 'спробуємо ще раз під час наступної синхронізації.'
+    let vids
+    try {
+      vids = (await getVideos(client, listingId, { oauth: true })).filter((v) => v.state !== 'deleted')
+    } catch (e) {
+      out.errors.push(`${title}: не вдалося прочитати відео товару (${myShopErrorMessage(e)}) — ${later}`)
+      return { slots: undefined, missing: true }
+    }
+    const v = vids[0]
+    if (!v) return { slots: [], missing: false }
+    const held = draftId != null ? etsyIds(draftId, 'video').get(v.id) : undefined
+    if (held != null) return { slots: [{ mediaId: held }], missing: false }
+    try {
+      if (!v.videoUrl) throw new Error(v.state && v.state !== 'active' ? 'Etsy ще обробляє відео' : 'Etsy не дав адреси відео')
+      if (!deps.fetchVideo) throw new Error('завантаження відео недоступне')
+      const got = await deps.fetchVideo(v.videoUrl)
+      const name = videoName(v.id, v.videoUrl, got.contentType)
+      if (!name) throw new Error('формат відео не підтримується')
+      if (!got.body.length) throw new Error('порожній файл')
+      if (mediaProblem('video', name, got.body.length)) throw new Error(`більше ${Math.round(MAX_VIDEO_BYTES / 1024 / 1024)} МБ`)
+      return { slots: [{ name, data: new Uint8Array(got.body), etsyId: v.id }], missing: false }
+    } catch (e) {
+      out.errors.push(`${title}: відео з Etsy не завантажилось (${myShopErrorMessage(e)}) — ${later}`)
+      return { slots: undefined, missing: true }
+    }
+  }
+
+  const etsyIds = (draftId: number, kind: 'photo' | 'file' | 'video'): Map<number, number> => {
     const m = new Map<number, number>()
     const rows = db
       .prepare('SELECT id, etsy_id FROM listing_draft_media WHERE draft_id = ? AND kind = ? AND etsy_id IS NOT NULL')
@@ -274,9 +339,13 @@ export async function importEtsyDrafts(deps: DraftImportDeps): Promise<DraftPull
     return m
   }
 
-  const gapsOf = (photos: number[] | 'all', filesUnread: boolean): EtsyGaps | null =>
-    (photos === 'all' || photos.length) || filesUnread
-      ? { ...(photos === 'all' || photos.length ? { photos } : {}), ...(filesUnread ? { files: 'all' as const } : {}) }
+  const gapsOf = (photos: number[] | 'all', filesUnread: boolean, videoMissing: boolean): EtsyGaps | null =>
+    photos === 'all' || photos.length || filesUnread || videoMissing
+      ? {
+          ...(photos === 'all' || photos.length ? { photos } : {}),
+          ...(filesUnread ? { files: 'all' as const } : {}),
+          ...(videoMissing ? { video: 'all' as const } : {})
+        }
       : null
 
   const linked = new Map<number, ListingDraft>()
@@ -310,6 +379,7 @@ export async function importEtsyDrafts(deps: DraftImportDeps): Promise<DraftPull
           continue
         }
         const photos = await photosOf(l, etsyIds(local.id, 'photo'), title)
+        const video = await videoOf(l.listing_id, local.id, title)
         const files = await filesOf(l, local.id, title)
         const taxonomyId = posInt(l.taxonomy_id)
         const path = taxonomyId != null && taxonomyId === local.fields.taxonomyId ? local.fields.taxonomyPath : await pathOf(taxonomyId)
@@ -322,7 +392,8 @@ export async function importEtsyDrafts(deps: DraftImportDeps): Promise<DraftPull
             fields: etsyDraftFields(l, path),
             photos: photos.slots,
             files: files.slots,
-            link: { listingId: l.listing_id, state: 'draft', etsyUpdatedAt: t, shopId, gaps: gapsOf(photos.missing, files.unread) }
+            video: video.slots,
+            link: { listingId: l.listing_id, state: 'draft', etsyUpdatedAt: t, shopId, gaps: gapsOf(photos.missing, files.unread, video.missing) }
           },
           deps.now()
         )
@@ -331,6 +402,7 @@ export async function importEtsyDrafts(deps: DraftImportDeps): Promise<DraftPull
       }
       // A draft made on Etsy's site: a new draft here.
       const photos = await photosOf(l, new Map(), title)
+      const video = await videoOf(l.listing_id, null, title)
       const files = await filesOf(l, null, title)
       const path = await pathOf(posInt(l.taxonomy_id))
       if (getDraftByListing(db, l.listing_id)) continue // linked meanwhile (a send) — not a second copy
@@ -342,7 +414,8 @@ export async function importEtsyDrafts(deps: DraftImportDeps): Promise<DraftPull
           fields: etsyDraftFields(l, path),
           photos: photos.slots ?? [],
           files: files.slots ?? [],
-          link: { listingId: l.listing_id, state: 'draft', etsyUpdatedAt: t, shopId, gaps: gapsOf(photos.missing, files.unread) }
+          video: video.slots ?? [],
+          link: { listingId: l.listing_id, state: 'draft', etsyUpdatedAt: t, shopId, gaps: gapsOf(photos.missing, files.unread, video.missing) }
         },
         deps.now()
       )

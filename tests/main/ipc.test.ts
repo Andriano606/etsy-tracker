@@ -46,7 +46,7 @@ import { FakeImageStore, fakeCdn } from '../helpers/fakeImageStore'
 import { FakeEtsy, SHOP_ID, mkEtsyReview } from '../helpers/fakeEtsy'
 import { memDb, seedShop } from '../helpers/db'
 import { fakeSafeStorage } from '../helpers/safeStorage'
-import { mkdtempSync, writeFileSync } from 'fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'fs'
 import { createServer } from 'http'
 import type { AddressInfo } from 'net'
 import type { ListingDraft, McpStatus } from '../../src/shared/types'
@@ -768,6 +768,53 @@ describe('drafts over IPC', () => {
     expect(await call('drafts:list')).toEqual([])
   })
 
+  it('drafts:save takes the video (a picked token, or the stored one by id); absent keeps it, [] removes it; a bad one is refused unread', async () => {
+    const { c } = ctx()
+    const dir = mkdtempSync(join(tmpdir(), 'etsy-draft-video-'))
+    const clip = join(dir, 'clip.mp4')
+    writeFileSync(clip, 'MP4DATA')
+    const gif = join(dir, 'clip.gif')
+    writeFileSync(gif, 'GIF')
+    const dialogs: Array<{ properties?: string[]; filters?: Array<{ extensions: string[] }> }> = []
+    let paths = [clip]
+    c.showOpenDialog = async (o) => (dialogs.push(o as never), { canceled: false, filePaths: paths })
+    const reads: string[] = []
+    c.readFile = async (p) => (reads.push(p), new Uint8Array(readFileSync(p)) as Uint8Array<ArrayBuffer>)
+    registerIpc(c)
+    const [picked] = (await call('myShop:pickFiles', 'videos')) as Array<{ token: string }>
+    expect(dialogs[0]).toMatchObject({ properties: ['openFile'], filters: [{ extensions: expect.arrayContaining(['mp4', 'mov']) }] })
+    const fields = { ...EMPTY_DRAFT_FIELDS, title: 'With video' }
+    const r = (await call('drafts:save', { fields, photos: [], files: [], video: [{ token: picked.token }] })) as { ok: true; value: ListingDraft }
+    expect(r.value.video).toMatchObject({ name: 'clip.mp4', mime: 'video/mp4', size: 7 })
+    const kept = (await call('drafts:save', { id: r.value.id, fields, photos: [], files: [] })) as { value: ListingDraft }
+    expect(kept.value.video?.id).toBe(r.value.video!.id)
+    const byId = (await call('drafts:save', { id: r.value.id, fields, photos: [], files: [], video: [{ mediaId: r.value.video!.id }] })) as { value: ListingDraft }
+    expect(byId.value.video?.id).toBe(r.value.video!.id)
+    // The stored video downloads like a file.
+    c.showSaveDialog = async () => ({ canceled: false, filePath: '/tmp/x.mp4' })
+    const written: number[][] = []
+    c.writeFile = async (_p, d) => void written.push([...d])
+    c.downloadsDir = () => '/tmp'
+    registerIpc(c)
+    expect(await call('drafts:saveMedia', r.value.video!.id)).toEqual({ ok: true, value: { path: '/tmp/x.mp4' } })
+    expect(Buffer.from(written[0]).toString()).toBe('MP4DATA')
+    // Wrong type: refused before the file is read.
+    paths = [gif]
+    const [bad] = (await call('myShop:pickFiles', 'videos')) as Array<{ token: string }>
+    reads.length = 0
+    expect(await call('drafts:save', { id: r.value.id, fields, photos: [], files: [], video: [{ token: bad.token }] })).toEqual({
+      ok: false,
+      error: expect.stringContaining('відео має бути MP4')
+    })
+    expect(reads).toEqual([])
+    expect(await call('drafts:save', { id: r.value.id, fields, photos: [], files: [], video: [{ token: picked.token }, { token: picked.token }] })).toEqual({
+      ok: false,
+      error: expect.stringContaining('лише одне')
+    })
+    const removed = (await call('drafts:save', { id: r.value.id, fields, photos: [], files: [], video: [] })) as { value: ListingDraft }
+    expect(removed.value.video).toBeNull()
+  })
+
   it('drafts:saveMedia writes a stored file where the user picked; cancel, unknown id and a write error', async () => {
     const { c } = ctx()
     const draft = saveDraft(
@@ -944,6 +991,7 @@ describe('linked drafts over IPC (update, unlink, delete on Etsy, pull)', () => 
     const deps = importEtsyDrafts.mock.calls[0][0] as Record<string, unknown>
     expect(deps).toMatchObject({ db: c.db, client: c.client, auth: c.etsyAuth })
     expect(typeof deps.fetchImage).toBe('function')
+    expect(typeof deps.fetchVideo).toBe('function')
     expect(typeof deps.taxonomy).toBe('function')
     const pulls = sent.filter(([ch]) => ch === 'drafts:pull').map(([, p]) => p)
     expect(pulls).toEqual([
@@ -978,6 +1026,19 @@ describe('linked drafts over IPC (update, unlink, delete on Etsy, pull)', () => 
     expect(got.contentType).toBe('image/jpeg')
     expect(got.body.length).toBeGreaterThan(0)
     await expect(deps.fetchImage('https://evil.example/x.jpg')).rejects.toThrow('CDN Etsy')
+  })
+
+  it('fetchVideo downloads a video/* from the CDN only', async () => {
+    const { c } = linked()
+    c.cdnFetch = fakeCdn({ contentType: 'video/mp4' })
+    await call('drafts:pull')
+    const deps = importEtsyDrafts.mock.calls.at(-1)![0] as { fetchVideo: (u: string) => Promise<{ body: Buffer; contentType: string | null }> }
+    expect((await deps.fetchVideo('https://v.etsystatic.com/video/upload/1.mp4')).contentType).toBe('video/mp4')
+    await expect(deps.fetchVideo('https://evil.example/x.mp4')).rejects.toThrow('CDN Etsy')
+    c.cdnFetch = fakeCdn()
+    await call('drafts:pull')
+    const again = importEtsyDrafts.mock.calls.at(-1)![0] as typeof deps
+    await expect(again.fetchVideo('https://v.etsystatic.com/video/upload/1.mp4')).rejects.toThrow('не відео')
   })
 })
 

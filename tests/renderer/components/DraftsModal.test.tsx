@@ -157,7 +157,8 @@ describe('editing and sending a draft', () => {
         tags: ['budget', 'planner']
       }),
       photos: [],
-      files: []
+      files: [],
+      video: []
     })
     expect(screen.getByText('Чернетку збережено в програмі.')).toBeInTheDocument()
     expect(api.sendDraft).not.toHaveBeenCalled()
@@ -302,15 +303,17 @@ describe('editing and sending a draft', () => {
     expect(api.saveDraft).not.toHaveBeenCalled()
   })
 
-  it('the price hint accepts a comma; a physical product has one photos heading', async () => {
+  it('the price hint accepts a comma; the media card is titled by what it holds (photos, video, files)', async () => {
     await newDraft()
     expect(screen.getByLabelText(/^Ціна/)).toHaveAccessibleDescription(/Наприклад 5,99 — можна з комою або крапкою/)
     expect(screen.getByLabelText(/^Ціна/)).toHaveAttribute('placeholder', '5,99')
-    expect(screen.getByRole('heading', { name: 'Фото і файли' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Фото, відео і файли' })).toBeInTheDocument()
     await click(screen.getByRole('radio', { name: 'Фізичний' }))
     expect(screen.getAllByText('Фото', { exact: true })).toHaveLength(1)
-    expect(screen.getByRole('heading', { name: 'Фото' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Фото і відео' })).toBeInTheDocument()
+    expect(screen.queryByText('Файли для покупця')).toBeNull()
     expect(screen.getByRole('button', { name: 'Що таке «Фото товару»?' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Що таке «Відео в чернетці»?' })).toBeInTheDocument()
   })
 
   it('progress pushed by main is shown while sending', async () => {
@@ -1141,5 +1144,112 @@ describe('a linked draft changed meanwhile, and what each send says', () => {
     const btn = screen.getByRole('button', { name: 'Синхронізувати з Etsy' })
     expect(btn).toBeDisabled()
     expect(btn).toHaveAccessibleDescription(/не має дозволу читати товари/)
+  })
+})
+
+const clip = (id: number, over: Partial<DraftMedia> = {}): DraftMedia => ({
+  id,
+  kind: 'video',
+  position: 1,
+  name: 'spin.mp4',
+  mime: 'video/mp4',
+  size: 3 * 1024 * 1024,
+  onEtsy: false,
+  remote: false,
+  ...over
+})
+
+describe('the draft’s video', () => {
+  it('a new draft: "Додати відео" picks one (name + size, no player until saved); saving sends it; "Замінити" replaces it', async () => {
+    api.pickListingFiles.mockResolvedValueOnce([{ token: 'v1', name: 'clip.mp4', size: 2 * 1024 * 1024 }])
+    await newDraft()
+    const block = screen.getByTestId('draft-video')
+    expect(block).toHaveTextContent('0/1')
+    expect(block).toHaveTextContent('Найкраще 5–15 секунд')
+    await click(within(block).getByRole('button', { name: 'Додати відео' }))
+    expect(api.pickListingFiles).toHaveBeenCalledWith('videos')
+    expect(block).toHaveTextContent('clip.mp4')
+    expect(block).toHaveTextContent('2,0 МБ')
+    expect(block).toHaveTextContent('Переглянути відео можна буде після збереження чернетки.')
+    expect(block.querySelector('video')).toBeNull()
+    expect(within(block).queryByRole('button', { name: /Завантажити/ })).toBeNull()
+    expect(screen.getByText('Є незбережені зміни.')).toBeInTheDocument()
+    api.pickListingFiles.mockResolvedValueOnce([{ token: 'v2', name: 'better.mov', size: 1000 }])
+    await click(within(block).getByRole('button', { name: 'Замінити відео' }))
+    expect(block).not.toHaveTextContent('clip.mp4')
+    expect(block).toHaveTextContent('better.mov')
+    await click(screen.getByRole('button', { name: 'Зберегти чернетку' }))
+    expect(api.saveDraft).toHaveBeenCalledWith(expect.objectContaining({ video: [{ token: 'v2' }] }))
+  })
+
+  it('a cancelled pick changes nothing; a wrong type or too big a video is said at once', async () => {
+    await newDraft()
+    const block = screen.getByTestId('draft-video')
+    api.pickListingFiles.mockResolvedValueOnce([])
+    await click(within(block).getByRole('button', { name: 'Додати відео' }))
+    expect(screen.queryByText('Є незбережені зміни.')).toBeNull()
+    api.pickListingFiles.mockResolvedValueOnce([{ token: 'g', name: 'anim.gif', size: 10 }])
+    await click(within(block).getByRole('button', { name: 'Додати відео' }))
+    expect(within(block).getByRole('alert')).toHaveTextContent('«anim.gif»: відео має бути MP4, MOV, M4V, WEBM, AVI, MKV.')
+    api.pickListingFiles.mockResolvedValueOnce([{ token: 'b', name: 'huge.mp4', size: 101 * 1024 * 1024 }])
+    await click(within(block).getByRole('button', { name: 'Замінити відео' }))
+    expect(within(block).getByRole('alert')).toHaveTextContent('«huge.mp4» більший за 100 МБ.')
+  })
+
+  it('a saved video plays inline (muted), opens in the full-size viewer, downloads, says “є на Etsy”; removing it saves []', async () => {
+    useStore.setState({ drafts: [mkDraft(7, { photos: [photo(31, 1, 'a.jpg')], video: clip(70, { onEtsy: true }) })], draftsView: { draftId: 7 } })
+    renderModal()
+    const block = screen.getByTestId('draft-video')
+    const player = within(block).getByTestId('draft-video-player') as HTMLVideoElement
+    expect(player).toHaveAttribute('src', 'etsyimg://draft/70')
+    expect(player.muted).toBe(true)
+    expect(player).toHaveAttribute('controls')
+    expect(player).toHaveAttribute('preload', 'metadata')
+    expect(player).toHaveAccessibleName('Відео чернетки: spin.mp4')
+    expect(within(block).getByText('є на Etsy')).toHaveAccessibleDescription(GLOSSARY['myshop.videoOnEtsy'].short)
+    expect(block).toHaveTextContent('1/1')
+    await click(within(block).getByRole('button', { name: 'Відтворити на весь екран: spin.mp4' }))
+    expect(useStore.getState().viewer).toEqual({
+      images: [{ src: 'etsyimg://draft/70', video: 'etsyimg://draft/70', alt: 'spin.mp4', caption: 'spin.mp4' }],
+      index: 0
+    })
+    expect(screen.getByTestId('viewer-video')).toHaveAttribute('src', 'etsyimg://draft/70')
+    await act(async () => {
+      fireEvent.keyDown(document, { key: 'Escape' })
+    })
+    expect(screen.getByTestId('draft-form')).toBeInTheDocument()
+    await click(within(block).getByRole('button', { name: 'Завантажити відео «spin.mp4»' }))
+    expect(api.saveDraftMedia).toHaveBeenCalledWith(70)
+    expect(within(block).getByRole('status')).toHaveTextContent('Збережено: /tmp/file')
+    await click(within(block).getByRole('button', { name: 'Прибрати відео: spin.mp4' }))
+    expect(block).toHaveTextContent('0/1')
+    expect(screen.getByText('Є незбережені зміни.')).toBeInTheDocument()
+    await click(screen.getByRole('button', { name: 'Зберегти чернетку' }))
+    expect(api.saveDraft).toHaveBeenCalledWith(expect.objectContaining({ id: 7, photos: [{ mediaId: 31 }], video: [] }))
+  })
+
+  it('a stored video that fails to play says so (and can still be downloaded); unchanged, it is sent back by id', async () => {
+    useStore.setState({ drafts: [mkDraft(8, { video: clip(80) })], draftsView: { draftId: 8 } })
+    renderModal()
+    const block = screen.getByTestId('draft-video')
+    fireEvent.error(within(block).getByTestId('draft-video-player'))
+    expect(block).toHaveTextContent('Не вдалося відтворити відео в програмі.')
+    expect(within(block).queryByRole('button', { name: /на весь екран/ })).toBeNull()
+    expect(within(block).getByRole('button', { name: 'Завантажити відео «spin.mp4»' })).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText(/^Назва/), { target: { value: 'Renamed' } })
+    await click(screen.getByRole('button', { name: 'Зберегти чернетку' }))
+    expect(api.saveDraft).toHaveBeenCalledWith(expect.objectContaining({ id: 8, video: [{ mediaId: 80 }] }))
+  })
+
+  it('a version pushed while the form is untouched brings its video along; the list marks drafts with a video', async () => {
+    useStore.setState({ drafts: [mkDraft(9)], draftsView: { draftId: 9 } })
+    renderModal()
+    expect(screen.getByTestId('draft-video')).toHaveTextContent('0/1')
+    act(() => useStore.getState().setDrafts([mkDraft(9, { video: clip(90, { name: 'pulled.mp4' }), updatedAt: Date.UTC(2026, 9, 24) })]))
+    expect(screen.getByTestId('draft-video')).toHaveTextContent('pulled.mp4')
+    expect(screen.queryByText('Є незбережені зміни.')).toBeNull()
+    await click(screen.getByRole('button', { name: 'До чернеток' }))
+    const row = screen.getByText('Planner 9').closest('li') as HTMLElement
+    expect(within(row).getByText('відео')).toHaveAccessibleDescription('У чернетці є відео: pulled.mp4')
   })
 })

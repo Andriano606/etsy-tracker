@@ -6,17 +6,18 @@ import {
   importEtsyDrafts,
   moneyToPrice,
   photoName,
+  videoName,
   type DraftImportDeps
 } from '../../src/main/draftImport'
 import { getDraft, getDraftMediaData, listDrafts, saveDraft, sendDraft } from '../../src/main/drafts'
 import type { EtsyListing } from '../../src/main/etsyApi'
-import { downloadImage } from '../../src/main/imageSync'
+import { downloadImage, downloadVideo } from '../../src/main/imageSync'
 import { EMPTY_DRAFT_FIELDS } from '../../src/shared/myShop'
 import type { EtsyAuthStatus, ListingDraft } from '../../src/shared/types'
 import { memDb } from '../helpers/db'
 import { OWN_SHOP, signedIn } from '../helpers/features'
 import { cdnBytes, fakeCdn } from '../helpers/fakeImageStore'
-import { type FakeListing, mkFakeListing, ownEtsy } from '../helpers/ownEtsy'
+import { type FakeListing, fakeVideoUrl, mkFakeListing, ownEtsy } from '../helpers/ownEtsy'
 
 const SHOP_LISTINGS = `GET /v3/application/shops/${OWN_SHOP}/listings`
 
@@ -25,6 +26,8 @@ function setup(listings: FakeListing[] = []) {
   const e = ownEtsy({ listings })
   const db = memDb()
   const cdn = fakeCdn()
+  // Etsy's video CDN (v.etsystatic.com) answers video/mp4.
+  const videoCdn = fakeCdn({ contentType: 'video/mp4' })
   let status: EtsyAuthStatus = signedIn()
   let t = 10_000
   const taxonomy = vi.fn(async () => [
@@ -37,6 +40,7 @@ function setup(listings: FakeListing[] = []) {
     auth: { status: () => status },
     taxonomy,
     fetchImage: (url) => downloadImage(url, { fetch: cdn, sleep: async () => {}, timeoutMs: 1000, retries: 0 }),
+    fetchVideo: (url) => downloadVideo(url, { fetch: videoCdn, sleep: async () => {}, timeoutMs: 1000, retries: 0, maxBytes: 1000 }),
     now: () => ++t
   }
   const run = () => importEtsyDrafts(deps)
@@ -51,7 +55,7 @@ function setup(listings: FakeListing[] = []) {
   }
   const draftOf = (listingId: number): ListingDraft | undefined => listDrafts(db).find((d) => d.sentListingId === listingId)
   const bytesOf = (mediaId: number) => Buffer.from(getDraftMediaData(db, mediaId)!.data).toString()
-  return { ...e, db, cdn, deps, run, setStatus, newRequests, draftOf, bytesOf, taxonomy }
+  return { ...e, db, cdn, videoCdn, deps, run, setStatus, newRequests, draftOf, bytesOf, taxonomy }
 }
 
 const empty = { imported: 0, updated: 0, removed: 0, conflicts: 0, errors: [] }
@@ -464,5 +468,113 @@ describe('importEtsyDrafts: never losing what the draft holds', () => {
     o.listings.delete(501)
     expect(await o.run()).toEqual({ ...empty, removed: 1 })
     expect(getDraft(o.db, d.id)!.etsy).toMatchObject({ state: 'removed', removed: true })
+  })
+})
+
+describe('importEtsyDrafts: the listing video', () => {
+  const VIDEOS = (id: number) => `GET /v3/application/listings/${id}/videos`
+
+  it('names a downloaded video by its Etsy id and type', () => {
+    expect(videoName(7, 'https://v.etsystatic.com/x/7.mp4', 'video/mp4')).toBe('etsy-video-7.mp4')
+    expect(videoName(7, 'https://v.etsystatic.com/x/7.mov', 'application/octet-stream')).toBe('etsy-video-7.mov')
+    expect(videoName(7, 'https://v.etsystatic.com/x/7', 'video/webm; codecs=vp9')).toBe('etsy-video-7.webm')
+    expect(videoName(7, 'https://v.etsystatic.com/x/7.ogv', 'video/ogg')).toBeNull()
+  })
+
+  it('imports an Etsy draft’s video (read with the sign-in, downloaded from Etsy’s CDN) — once', async () => {
+    const o = setup([mkFakeListing(501)])
+    o.addImages(501, 1)
+    const v = o.addVideo(501)
+    expect(await o.run()).toEqual({ ...empty, imported: 1 })
+    const d = o.draftOf(501)!
+    expect(d.video).toMatchObject({ kind: 'video', name: `etsy-video-${v}.mp4`, mime: 'video/mp4', onEtsy: true })
+    expect(o.bytesOf(d.video!.id)).toBe(cdnBytes(fakeVideoUrl(v)).toString())
+    expect(d.etsy).toMatchObject({ incomplete: false })
+    const read = o.fetch.calls.filter((c) => c.url.pathname.endsWith('/videos'))
+    expect(read.map((c) => c.headers.authorization)).toEqual(['Bearer tok'])
+    expect(o.writes()).toEqual([])
+    // Nothing changed on Etsy: the next pull reads the list only.
+    o.newRequests()
+    expect(await o.run()).toEqual(empty)
+    expect(o.newRequests()).toEqual([SHOP_LISTINGS])
+    expect(o.videoCdn.calls).toHaveLength(1)
+  })
+
+  it('refreshing: the same video is kept without a download; a replaced one is downloaded; one removed on Etsy leaves the draft', async () => {
+    const o = setup([mkFakeListing(501)])
+    const v1 = o.addVideo(501)
+    await o.run()
+    const first = o.draftOf(501)!.video!
+    o.editOnEtsy(501, (l) => (l.title = 'Renamed'))
+    expect(await o.run()).toEqual({ ...empty, updated: 1 })
+    expect(o.draftOf(501)!.video!.id).toBe(first.id)
+    expect(o.videoCdn.calls).toHaveLength(1)
+
+    o.editOnEtsy(501, (l) => (l.videos = []))
+    const v2 = o.addVideo(501)
+    expect(v2).not.toBe(v1)
+    expect(await o.run()).toEqual({ ...empty, updated: 1 })
+    const second = o.draftOf(501)!.video!
+    expect(second).toMatchObject({ name: `etsy-video-${v2}.mp4`, onEtsy: true })
+    expect(getDraftMediaData(o.db, first.id)).toBeNull()
+
+    o.editOnEtsy(501, (l) => (l.videos = []))
+    expect(await o.run()).toEqual({ ...empty, updated: 1 })
+    expect(o.draftOf(501)!.video).toBeNull()
+  })
+
+  it('a video that fails to download (or can’t be listed) is a gap: reported, the stored one kept, fetched by the next pull', async () => {
+    const o = setup([mkFakeListing(501)])
+    const v1 = o.addVideo(501)
+    await o.run()
+    const held = o.draftOf(501)!.video!
+    // Replaced on Etsy, but the new one doesn't download.
+    o.editOnEtsy(501, (l) => (l.videos = []))
+    const v2 = o.addVideo(501)
+    o.videoCdn.opts.status = { [`/${v2}.mp4`]: 404 }
+    const res = await o.run()
+    expect(res).toMatchObject({ updated: 1, errors: [expect.stringContaining('відео з Etsy не завантажилось')] })
+    expect(o.draftOf(501)).toMatchObject({ video: { id: held.id }, etsy: { incomplete: true } })
+    void v1
+    // The list can't be read: also a gap; the stored video stays.
+    o.failures.push({ match: 'GET .*/listings/501/videos$', status: 403, times: 1 })
+    o.editOnEtsy(501, (l) => (l.title = 'Again'))
+    expect(await o.run()).toMatchObject({ updated: 1, errors: [expect.stringContaining('не вдалося прочитати відео')] })
+    expect(o.draftOf(501)).toMatchObject({ fields: { title: 'Again' }, video: { id: held.id }, etsy: { incomplete: true } })
+    // Fixed: the next pull (nothing else changed on Etsy) fetches it and the gap goes.
+    o.videoCdn.opts.status = {}
+    expect(await o.run()).toEqual({ ...empty, updated: 1 })
+    expect(o.draftOf(501)).toMatchObject({ video: { name: `etsy-video-${v2}.mp4` }, etsy: { incomplete: false } })
+  })
+
+  it('a new Etsy draft whose video can’t be had is still imported (without it, a gap)', async () => {
+    const cases: Array<[string, (o: ReturnType<typeof setup>, v: number) => void, string]> = [
+      ['not a CDN URL', (o) => (o.listings.get(501)!.videos[0].video_url = 'https://evil.example/v.mp4'), 'не дав адреси відео'],
+      ['not a video', (o) => (o.videoCdn.opts.contentType = 'text/html'), 'не відео'],
+      ['too big', (o) => (o.deps.fetchVideo = (url) => downloadVideo(url, { fetch: o.videoCdn, sleep: async () => {}, timeoutMs: 1000, retries: 0, maxBytes: 3 })), 'Завеликий'],
+      ['still processed', (o) => Object.assign(o.listings.get(501)!.videos[0], { video_url: undefined, video_state: 'inactive' }), 'обробляє'],
+      ['no downloader', (o) => (o.deps.fetchVideo = undefined), 'недоступне']
+    ]
+    for (const [name, prepare, text] of cases) {
+      const o = setup([mkFakeListing(501)])
+      const v = o.addVideo(501)
+      prepare(o, v)
+      const res = await o.run()
+      expect(res, name).toMatchObject({ imported: 1, errors: [expect.stringContaining(text)] })
+      expect(o.draftOf(501), name).toMatchObject({ video: null, etsy: { incomplete: true } })
+      if (name === 'not a CDN URL') expect(o.videoCdn.calls, name).toEqual([])
+    }
+  })
+
+  it('a draft with local edits keeps its own video (a conflict, as for everything else)', async () => {
+    const o = setup([mkFakeListing(501)])
+    o.addVideo(501)
+    await o.run()
+    const d = o.draftOf(501)!
+    saveDraft(o.db, { id: d.id, source: 'app', fields: d.fields, video: [] }, 20_000)
+    o.editOnEtsy(501, (l) => (l.title = 'Changed there'))
+    expect(await o.run()).toEqual({ ...empty, conflicts: 1 })
+    expect(o.draftOf(501)!.video).toBeNull()
+    expect(o.newRequests().filter((r) => r === VIDEOS(501))).toHaveLength(1) // only the first pull read it
   })
 })

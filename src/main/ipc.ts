@@ -81,7 +81,8 @@ import {
   unlinkDraft
 } from './drafts'
 import { importEtsyDrafts } from './draftImport'
-import { downloadImage } from './imageSync'
+import { downloadImage, downloadVideo } from './imageSync'
+import { MAX_VIDEOS, MAX_VIDEO_BYTES, mediaProblemText } from '../shared/features/media'
 import {
   type FileRegistry,
   createFileRegistry,
@@ -242,6 +243,15 @@ export function pullEtsyDrafts(ctx: IpcContext): Promise<MyShopResult<DraftPullS
             timeoutMs: 30_000,
             retries: 2,
             maxBytes: 20 * 1024 * 1024
+          }),
+        // A listing video (only https *.etsystatic.com, video/*, ≤ 100 MB); a big one may take a while.
+        fetchVideo: (url) =>
+          downloadVideo(url, {
+            fetch: cdn,
+            sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+            timeoutMs: 120_000,
+            retries: 1,
+            maxBytes: MAX_VIDEO_BYTES
           }),
         now: Date.now
       })
@@ -636,13 +646,18 @@ export function registerIpc(ctx: IpcContext): void {
     try {
       if (!input || typeof input !== 'object' || !input.fields) throw new DraftError('Некоректні дані чернетки.')
       const read = ctx.readFile ?? ((p: string) => readFile(p) as Promise<Uint8Array<ArrayBuffer>>)
-      const slots = async (refs: unknown): Promise<DraftMediaSlot[]> => {
+      const slots = async (refs: unknown, video = false): Promise<DraftMediaSlot[]> => {
         const out: DraftMediaSlot[] = []
-        for (const r of Array.isArray(refs) ? refs : []) {
+        const list = Array.isArray(refs) ? refs : []
+        if (video && list.length > MAX_VIDEOS) throw new DraftError('Відео може бути лише одне — Etsy показує одне відео на товар.')
+        for (const r of list) {
           if (r && typeof r === 'object' && 'mediaId' in r) out.push({ mediaId: Number((r as { mediaId: unknown }).mediaId) })
           else {
             const f = files.get(String((r as { token?: unknown })?.token ?? ''))
             if (!f) throw new DraftError('Вибраний файл більше недоступний — виберіть його ще раз.')
+            // A video may be big: its type and size are checked before it is read into memory.
+            const problem = video ? mediaProblemText('video', f.name, f.size) : null
+            if (problem) throw new DraftError(problem)
             out.push({ name: f.name, data: await read(f.path) })
           }
         }
@@ -659,6 +674,8 @@ export function registerIpc(ctx: IpcContext): void {
           fields: input.fields,
           photos: await slots(input.photos),
           files: await slots(input.files),
+          // Absent = the stored video as it is; [] = none.
+          ...(input.video !== undefined ? { video: await slots(input.video, true) } : {}),
           ...(input.expectedUpdatedAt != null && Number.isFinite(expected) ? { expectedUpdatedAt: expected } : {})
         },
         Date.now()

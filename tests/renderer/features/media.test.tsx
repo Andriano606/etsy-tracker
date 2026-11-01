@@ -58,7 +58,16 @@ const photo = (id: number, position: number, over: Partial<MediaPhoto> = {}): Me
 const media = (over: Partial<ListingMedia> = {}): ListingMedia => ({
   listingId: L,
   photos: [photo(11, 1), photo(12, 2), photo(13, 3)],
-  videos: [{ id: 31, width: 1920, height: 1080, thumbnailUrl: 'https://v.etsystatic.com/video/31/thumb.jpg', state: 'inactive' }],
+  videos: [
+    {
+      id: 31,
+      width: 1920,
+      height: 1080,
+      thumbnailUrl: 'https://v.etsystatic.com/video/31/thumb.jpg',
+      videoUrl: 'https://v.etsystatic.com/video/31/v.mp4',
+      state: 'inactive'
+    }
+  ],
   files: [
     { id: 51, rank: 1, name: 'planner.pdf', sizeBytes: 1_258_291, sizeLabel: '1.2 MB', type: 'application/pdf' },
     { id: 52, rank: 2, name: 'bonus.zip', sizeBytes: null, sizeLabel: '20 KB', type: null }
@@ -358,7 +367,7 @@ describe('Фото', () => {
 
 describe('Відео', () => {
   it('"Перевірити стан" re-reads the video', async () => {
-    mockFeature({ 'media.load': media(), 'media.video': { id: 31, width: 1920, height: 1080, thumbnailUrl: null, state: 'active' } })
+    mockFeature({ 'media.load': media(), 'media.video': { id: 31, width: 1920, height: 1080, thumbnailUrl: null, videoUrl: null, state: 'active' } })
     await show()
     await click(screen.getByRole('button', { name: 'Перевірити стан' }))
     expect(calls('video')[0][2]).toEqual({ listingId: L, videoId: 31 })
@@ -532,16 +541,28 @@ describe('Відкрити на весь розмір', () => {
     expect(viewer()!.index).toBe(1)
   })
 
-  it('the video frame opens in the viewer (Etsy gives only the frame)', async () => {
+  it('a video Etsy still processes opens as its frame only (nothing to play yet)', async () => {
     mockFeature({ 'media.load': media() })
     await show()
     await act(async () => {
-      fireEvent.click(within(screen.getByTestId('media-video')).getByRole('button', { name: 'Відкрити на весь розмір: Кадр відео' }))
+      fireEvent.click(within(screen.getByTestId('media-video')).getByRole('button', { name: 'Відкрити на весь розмір: Відео товару' }))
     })
     expect(viewer()!.images).toEqual([
-      expect.objectContaining({ src: 'https://v.etsystatic.com/video/31/thumb.jpg', alt: 'Кадр відео', ref: `etsy-tracker://product/${L}/video/31` })
+      { src: 'https://v.etsystatic.com/video/31/thumb.jpg', alt: 'Відео товару', caption: 'Відео товару', ref: `etsy-tracker://product/${L}/video/31` }
     ])
     expect(calls('video')).toHaveLength(0)
+  })
+
+  it('an active video plays in the viewer, from the Etsy CDN', async () => {
+    const m = media()
+    mockFeature({ 'media.load': { ...m, videos: [{ ...m.videos![0], state: 'active' }] } })
+    await show()
+    await act(async () => {
+      fireEvent.click(within(screen.getByTestId('media-video')).getByRole('button', { name: 'Відтворити відео: Відео товару' }))
+    })
+    expect(viewer()!.images).toEqual([
+      expect.objectContaining({ src: 'https://v.etsystatic.com/video/31/thumb.jpg', video: 'https://v.etsystatic.com/video/31/v.mp4' })
+    ])
   })
 
   it('a new main photo hands its full-size URL to onChanged too', async () => {

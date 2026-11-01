@@ -759,6 +759,22 @@ details[open] > .group-summary .group-chevron {
   box-shadow: var(--shadow-1);
   font-weight: 700;
 }
+/* The listing has a video: bottom-right of the photo (the magnifier opens it after the photos). */
+.card-video-badge {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: var(--r-xs);
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  pointer-events: none;
+}
 .card-body {
   display: flex;
   flex-direction: column;

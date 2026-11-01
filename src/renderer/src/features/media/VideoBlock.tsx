@@ -4,6 +4,7 @@
 import { MAX_VIDEO_BYTES, VIDEO_STATE_LABEL, VIDEO_UPLOADS_PER_DAY, type MediaVideo, type VideoState } from '@shared/features/media'
 import { videoRef } from '@shared/claudeRef'
 import { Badge, Button, EmptyState, InfoTip, ZoomImage, type BadgeTone } from '../../ui'
+import { playableVideo } from '../../imageUrl'
 import { featureCall } from '../call'
 import type { MediaOps } from './MediaSection'
 
@@ -53,9 +54,10 @@ export function VideoBlock({ videos, ops }: { videos: MediaVideo[]; ops: MediaOp
             <ZoomImage
               className="media-video-zoom"
               src={video.thumbnailUrl}
-              alt="Кадр відео"
-              caption="Кадр відео (Etsy дає лише цей кадр, не саме відео)"
+              alt="Відео товару"
+              caption="Відео товару"
               claudeRef={videoRef(ops.listing.listingId, video.id)}
+              video={playableVideo(video)}
             />
           ) : (
             <div className="media-thumb-empty" />

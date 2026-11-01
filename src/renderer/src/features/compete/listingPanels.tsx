@@ -21,7 +21,7 @@ import { formatCount, formatEtsyDate, formatPrice, ratingStars } from '@shared/f
 import { missingScopes } from '@shared/myShop'
 import { photoRef, videoRef } from '@shared/claudeRef'
 import type { Listing } from '@shared/types'
-import { imageSrc } from '../../imageUrl'
+import { imageSrc, playableVideo } from '../../imageUrl'
 import { useStore, type ViewerImage } from '../../store'
 import { Badge, Button, Callout, GLOSSARY, Icon, InfoTip, Loading, Select, Term, ZoomImage } from '../../ui'
 import { featureCall } from '../call'
@@ -283,9 +283,10 @@ function MediaPanel({ listing }: PanelProps): JSX.Element {
                       <ZoomImage
                         className="compete-zoom"
                         src={v.thumbnailUrl}
-                        alt="Кадр відео"
-                        caption="Кадр відео (Etsy дає лише цей кадр)"
+                        alt="Відео товару"
+                        caption="Відео товару"
                         claudeRef={videoRef(listing.listingId, v.id)}
+                        video={playableVideo(v)}
                         loading="lazy"
                       />
                     ) : (

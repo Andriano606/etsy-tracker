@@ -43,6 +43,8 @@ export interface MediaVideo {
   height: number | null
   /** The thumbnail on the Etsy CDN (validated), or null. */
   thumbnailUrl: string | null
+  /** The video file on the Etsy CDN (validated), or null — the app plays it from there. */
+  videoUrl: string | null
   /** OAS enum active|inactive|deleted|flagged; null when Etsy didn't say. */
   state: string | null
 }

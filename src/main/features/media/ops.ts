@@ -98,6 +98,7 @@ export function toVideo(v: EtsyListingVideo): MediaVideo {
     width: int(v.width),
     height: int(v.height),
     thumbnailUrl: cdn(v.thumbnail_url),
+    videoUrl: cdn(v.video_url),
     state: typeof v.video_state === 'string' ? v.video_state : null
   }
 }

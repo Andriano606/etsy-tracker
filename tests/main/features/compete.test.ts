@@ -181,7 +181,7 @@ const routes = {
   [`GET ${A}/listings/{l}/images`]: { body: { count: 2, results: [image(501, 2), image(500, 1, 'http://i.etsystatic.com/x')] } },
   [`GET ${A}/listings/{l}/images/{i}`]: { body: image(501, 2) },
   [`GET ${A}/listings/{l}/videos`]: { body: { count: 1, results: [video] } },
-  [`GET ${A}/listings/{l}/videos/{v}`]: { body: { ...video, thumbnail_url: 'https://evil.example.com/t.jpg' } },
+  [`GET ${A}/listings/{l}/videos/{v}`]: { body: { ...video, thumbnail_url: 'https://evil.example.com/t.jpg', video_url: 'file:///etc/passwd' } },
   [`GET ${A}/listings/{l}/reviews`]: { body: { count: 41, results: [review] } },
   [`GET ${A}/listings/{l}/personalization`]: { body: personalization },
   [`GET ${A}/shops/{s}/listings/{l}/translations/{lang}`]: { body: translation },
@@ -316,15 +316,23 @@ describe('compete feature — actions', () => {
     expect(one.value.id).toBe(501)
   })
 
-  it('videos / video: thumbnail only when on the CDN', async () => {
+  it('videos / video: thumbnail and video file only when on the CDN', async () => {
     const all = await act('videos', { listingId: LISTING })
     expectGet(lastCall(all.calls), `${A}/listings/${LISTING}/videos`)
     expect(all.value).toEqual([
-      { id: 601, width: 1920, height: 1080, state: 'active', thumbnailUrl: 'https://v.etsystatic.com/video/thumb.jpg' }
+      {
+        id: 601,
+        width: 1920,
+        height: 1080,
+        state: 'active',
+        thumbnailUrl: 'https://v.etsystatic.com/video/thumb.jpg',
+        videoUrl: 'https://v.etsystatic.com/video/v.mp4'
+      }
     ])
     const one = await act('video', { listingId: LISTING, videoId: 601 })
     expectGet(lastCall(one.calls), `${A}/listings/${LISTING}/videos/601`)
     expect(one.value.thumbnailUrl).toBeNull()
+    expect(one.value.videoUrl).toBeNull()
   })
 
   it('reviews: getReviewsByListing paged (default 20)', async () => {

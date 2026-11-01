@@ -372,9 +372,9 @@ describe('Фото й відео (живі дані)', () => {
   it('lists photos and videos; Деталі loads one photo / one video', async () => {
     mockFeature({
       'compete.images': [img(501), img(502, { rank: 2, url570: '', altText: null, hexCode: null })],
-      'compete.videos': [{ id: 601, width: 1920, height: 1080, state: 'active', thumbnailUrl: 'https://v.etsystatic.com/t.jpg' }],
+      'compete.videos': [{ id: 601, width: 1920, height: 1080, state: 'active', thumbnailUrl: 'https://v.etsystatic.com/t.jpg', videoUrl: null }],
       'compete.image': img(501, { isBlackAndWhite: true }),
-      'compete.video': { id: 601, width: 1920, height: 1080, state: 'inactive', thumbnailUrl: null }
+      'compete.video': { id: 601, width: 1920, height: 1080, state: 'inactive', thumbnailUrl: null, videoUrl: null }
     })
     await renderListing('compete-media')
     expect(api.featureCall).toHaveBeenCalledWith('compete', 'images', { listingId: 5 })
@@ -742,11 +742,15 @@ describe('Відкрити на весь розмір (живі дані)', () =
   it('a video frame opens in the viewer; no video details are loaded', async () => {
     mockFeature({
       'compete.images': [],
-      'compete.videos': [{ id: 601, width: 1920, height: 1080, state: 'active', thumbnailUrl: 'https://v.etsystatic.com/t.jpg' }]
+      'compete.videos': [
+        { id: 601, width: 1920, height: 1080, state: 'active', thumbnailUrl: 'https://v.etsystatic.com/t.jpg', videoUrl: 'https://v.etsystatic.com/v.mp4' }
+      ]
     })
     await renderListing('compete-media')
-    await click(screen.getByRole('button', { name: 'Відкрити на весь розмір: Кадр відео' }))
-    expect(viewer()!.images).toEqual([expect.objectContaining({ src: 'https://v.etsystatic.com/t.jpg', ref: 'etsy-tracker://product/5/video/601' })])
+    await click(screen.getByRole('button', { name: 'Відтворити відео: Відео товару' }))
+    expect(viewer()!.images).toEqual([
+      expect.objectContaining({ src: 'https://v.etsystatic.com/t.jpg', video: 'https://v.etsystatic.com/v.mp4', ref: 'etsy-tracker://product/5/video/601' })
+    ])
     expect(api.featureCall).not.toHaveBeenCalledWith('compete', 'video', expect.anything())
   })
 

@@ -428,3 +428,71 @@ describe('ImageViewer: "Копіювати для Claude"', () => {
     expect(useStore.getState().viewer!.images.map((i) => i.ref)).toEqual([R1, R2])
   })
 })
+
+describe('ImageViewer: videos', () => {
+  const V: ViewerImage = {
+    src: 'etsyimg://video/9/thumbnail',
+    video: 'https://v.etsystatic.com/video/9.mp4',
+    alt: 'Відео товару: Чашка',
+    caption: 'Чашка — відео',
+    ref: 'etsy-tracker://product/2/video/9'
+  }
+  const videoDialog = () => screen.getByRole('dialog', { name: 'Перегляд відео' })
+  const player = () => videoDialog().querySelector('video')!
+
+  it('a video plays from its URL (muted, looping, with controls); no 1:1; its Claude reference is copied', async () => {
+    render(<ImageViewer />)
+    open(V)
+    const v = player()
+    expect(v).toHaveAttribute('src', V.video)
+    expect(v).toHaveAttribute('aria-label', V.alt)
+    expect(v).toHaveAttribute('controls')
+    expect(v).toHaveAttribute('loop')
+    expect((v as HTMLVideoElement).muted).toBe(true)
+    expect(videoDialog().querySelector('img.ui-viewer-img')).toBeNull()
+    expect(within(videoDialog()).queryByRole('button', { name: /Справжній розмір/ })).toBeNull()
+    expect(within(videoDialog()).getByText('Завантаження…')).toBeInTheDocument()
+    act(() => void fireEvent.loadedData(v))
+    expect(within(videoDialog()).queryByText('Завантаження…')).toBeNull()
+    await act(async () => {
+      fireEvent.click(within(videoDialog()).getByRole('button', { name: 'Копіювати для Claude' }))
+    })
+    expect(api.copyText).toHaveBeenCalledWith(V.ref)
+  })
+
+  it('a video that fails says so', () => {
+    render(<ImageViewer />)
+    open(V)
+    act(() => void fireEvent.error(player()))
+    expect(within(videoDialog()).getByRole('alert')).toHaveTextContent('Не вдалося завантажити відео.')
+    expect(player()).not.toBeVisible()
+  })
+
+  it('in a gallery, ←/→ step from the photos to the video and back', () => {
+    render(<ImageViewer />)
+    open([A, V], 0)
+    expect(shown()).toHaveAttribute('src', A.src)
+    key(viewer(), 'ArrowRight')
+    expect(player()).toHaveAttribute('src', V.video)
+    expect(within(videoDialog()).getByText('2 / 2')).toBeInTheDocument()
+    key(videoDialog(), 'ArrowRight')
+    expect(shown()).toHaveAttribute('src', A.src)
+  })
+
+  it('ZoomImage with a video: named "Відтворити відео", opens the viewer playing it', async () => {
+    render(
+      <>
+        <ZoomImage src={V.src} alt="Відео товару" caption="Відео" claudeRef={V.ref} video={V.video} />
+        <ImageViewer />
+      </>
+    )
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Відтворити відео: Відео товару' }))
+    })
+    expect(useStore.getState().viewer).toEqual({
+      images: [{ src: V.src, alt: 'Відео товару', caption: 'Відео', ref: V.ref, video: V.video }],
+      index: 0
+    })
+    expect(player()).toHaveAttribute('src', V.video)
+  })
+})

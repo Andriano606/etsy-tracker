@@ -41,6 +41,11 @@ export interface ViewerImage {
    * the MCP tools can't address).
    */
   ref?: string
+  /**
+   * A video to play instead of the picture (an Etsy CDN URL, checked with
+   * `playableVideo`); `src` is then its preview frame.
+   */
+  video?: string
 }
 
 export interface ConfirmOptions {

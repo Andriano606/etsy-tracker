@@ -268,7 +268,7 @@ colour (growth green unless `lowerIsBetter`), a node delta is shown as is; `comp
 
 **Every picture in the app opens in full size.** `<ImageViewer />` is mounted once, last in `App`, over
 every modal; it is opened through the store — `openImage(images, index?)` / `closeImage()`, where
-`ViewerImage = {src, alt?, caption?, ref?}` and **`src` is the biggest URL there is** (`imageSrc(img, 'fullxfull')`,
+`ViewerImage = {src, alt?, caption?, ref?, video?}` and **`src` is the biggest URL there is** (`imageSrc(img, 'fullxfull')`,
 `reviewImageSrc(r)`, `etsyimg://draft/{id}`, a shop's `iconUrl`) — never the thumbnail you show. A picture
 that is one of several (a listing's photos, a draft's photos, a review's photos) opens **the whole set** at
 the clicked index. You rarely call `openImage` yourself — use one of the two components:
@@ -321,6 +321,14 @@ the clicked index. You rarely call `openImage` yourself — use one of the two c
   never invent one. The listing window's main photo also has a small `CopyForClaudeIcon`
   (`CopyLinkButton.tsx`) left of the magnifier, copying the photo shown, so the viewer isn't needed; there
   the magnifier stays dimly visible (like the ‹ › arrows), so the two read as one corner group.
+- **Videos** play in the same viewer: `ViewerImage.video` = the file to play (an Etsy CDN URL — only through
+  `playableVideo(v)` / `playableVideos(videos)` in `imageUrl.ts`: https etsystatic.com, state active or unknown;
+  CSP `media-src https://*.etsystatic.com`), `src` = its preview frame (`videoThumbSrc(v)` for a stored
+  listing's video). The viewer then shows a `<video>` (controls, muted — Etsy's videos have no sound —,
+  autoplay, loop; "Не вдалося завантажити відео."; no 1:1; the dialog is "Перегляд відео").
+  `listingGallery(images, title, listingId, videos)` appends a listing's playable videos after the photos
+  (`videoRef`). `ZoomImage` takes `video` (named "Відтворити відео: {alt}", a ▶ badge). A video Etsy is
+  still processing (`inactive`) opens as its frame only.
 - Tests: `screen.getByRole('dialog', {name: 'Перегляд зображення'})` and its `img.ui-viewer-img` `src`, or
   `useStore.getState().viewer` (`{images, index}`); assert the parent's action was **not** called.
   Reference: `tests/renderer/ui/ImageViewer.test.tsx`.

@@ -1887,6 +1887,14 @@ a.btn {
 .ui-viewer-img:not([title]) {
   cursor: default;
 }
+.ui-viewer-video {
+  position: relative;
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 4px;
+  background: #000;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
+}
 .ui-viewer-note {
   position: absolute;
   inset: 0;

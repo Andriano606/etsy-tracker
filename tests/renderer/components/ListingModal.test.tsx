@@ -841,6 +841,82 @@ describe('ListingModal: photos open full size in the image viewer', () => {
   })
 })
 
+describe('ListingModal: videos in the gallery', () => {
+  const img = (id: number, rank: number) => ({ ...mkListing(1).images[0], id, rank })
+  const vid = (id: number, over: object = {}) => ({
+    id,
+    width: 1280,
+    height: 960,
+    thumbnailUrl: `https://v.etsystatic.com/video/${id}.jpg`,
+    videoUrl: `https://v.etsystatic.com/video/${id}.mp4`,
+    state: 'active',
+    ...over
+  })
+  const show = (l = mkListing(2, { title: 'Mug', images: [img(1, 1), img(2, 2)], videos: [vid(9)] })) => {
+    useStore.setState({ detailListing: l })
+    return render(
+      <>
+        <ListingModal />
+        <ImageViewer />
+      </>
+    )
+  }
+  const modal = () => screen.getByRole('dialog', { name: 'Mug' })
+
+  it('the video comes after the photos: its thumbnail plays it in place, with its own Claude reference', async () => {
+    show()
+    const thumb = within(modal()).getByRole('button', { name: 'Відео' })
+    expect(thumb.querySelector('img')).toHaveAttribute('src', 'etsyimg://video/9/thumbnail')
+    expect(within(modal()).getByText('1 / 3')).toBeInTheDocument()
+    await act(async () => fireEvent.click(thumb))
+    const player = screen.getByTestId('listing-video')
+    expect(player.tagName).toBe('VIDEO')
+    expect(player).toHaveAttribute('src', 'https://v.etsystatic.com/video/9.mp4')
+    expect(player).toHaveAttribute('controls')
+    expect((player as HTMLVideoElement).muted).toBe(true)
+    expect(thumb).toHaveAttribute('aria-current', 'true')
+    expect(within(modal()).getByText('3 / 3')).toBeInTheDocument()
+    expect(modal().querySelector('.gallery-main .ui-zoom')).toBeNull()
+    await act(async () => fireEvent.click(within(modal()).getByRole('button', { name: /^Копіювати для Claude: відео товару/ })))
+    expect(api.copyText).toHaveBeenCalledWith('etsy-tracker://product/2/video/9')
+  })
+
+  it('the magnifier opens the video full size in the viewer, in the gallery with the photos', async () => {
+    show()
+    await act(async () => fireEvent.click(within(modal()).getByRole('button', { name: 'Відео' })))
+    await act(async () => fireEvent.click(within(modal()).getByRole('button', { name: 'Відкрити відео на весь розмір' })))
+    const viewer = useStore.getState().viewer!
+    expect(viewer.index).toBe(2)
+    expect(viewer.images.map((i) => i.video ?? i.src)).toEqual(['etsyimg://img/1/fullxfull', 'etsyimg://img/2/fullxfull', 'https://v.etsystatic.com/video/9.mp4'])
+    expect(screen.getByRole('dialog', { name: 'Перегляд відео' }).querySelector('video')).toHaveAttribute('src', 'https://v.etsystatic.com/video/9.mp4')
+  })
+
+  it('←/→ in the window step through photos and videos; a focused video keeps its arrows', async () => {
+    show()
+    const press = (target: Element, key: string) => act(() => void fireEvent.keyDown(target, { key }))
+    press(modal(), 'ArrowLeft')
+    expect(screen.getByTestId('listing-video')).toBeInTheDocument()
+    press(screen.getByTestId('listing-video'), 'ArrowRight')
+    expect(screen.getByTestId('listing-video')).toBeInTheDocument()
+    press(modal(), 'ArrowRight')
+    expect(screen.queryByTestId('listing-video')).toBeNull()
+    expect(within(modal()).getByText('1 / 3')).toBeInTheDocument()
+  })
+
+  it('a listing with only a video shows it; videos Etsy does not show are left out', () => {
+    show(mkListing(2, { title: 'Mug', images: [], videos: [vid(9), vid(10, { state: 'inactive' })] }))
+    expect(screen.getByTestId('listing-video')).toHaveAttribute('src', 'https://v.etsystatic.com/video/9.mp4')
+    expect(within(modal()).queryByText(/\d \/ \d/)).toBeNull()
+    expect(within(modal()).getByRole('group', { name: 'Фото й відео товару' })).toBeInTheDocument()
+  })
+
+  it('no playable video → the photo gallery as before', () => {
+    show(mkListing(2, { title: 'Mug', images: [img(1, 1)], videos: [vid(9, { videoUrl: null })] }))
+    expect(screen.queryByTestId('listing-video')).toBeNull()
+    expect(within(modal()).getByRole('group', { name: 'Фото товару' })).toBeInTheDocument()
+  })
+})
+
 describe('ListingModal: "Копіювати для Claude" on the main photo', () => {
   const img = (id: number, rank: number) => ({ ...mkListing(1).images[0], id, rank })
   const show = () => {

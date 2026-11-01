@@ -1,10 +1,10 @@
 import type { ReactNode } from 'react'
-import type { Listing, ListingImage } from '@shared/types'
+import type { Listing, ListingImage, ListingVideo } from '@shared/types'
 import { formatCount, formatPrice, formatRating, formatReviewCount } from '@shared/format'
 import { GLOSSARY, type GlossaryKey } from '@shared/glossary'
 import { buyerPriceIncludes, discountLabel, formatMoney, hasActiveDiscount, shownPrice } from '@shared/price'
-import { photoRef } from '@shared/claudeRef'
-import { imageSrc } from '../imageUrl'
+import { photoRef, videoRef } from '@shared/claudeRef'
+import { imageSrc, playableVideos, videoThumbSrc } from '../imageUrl'
 import { Icon, Tooltip, ZoomButton, type IconName } from '../ui'
 import type { ViewerImage } from '../store'
 import { NowPrice, WasPrice } from './PriceParts'
@@ -199,17 +199,33 @@ export function PopularityBadges({ listing }: { listing: Listing }): JSX.Element
 
 /**
  * A listing's photos for the image viewer, at their biggest size (fullxfull),
- * in the listing's order — the card's magnifier and the listing window's gallery.
- * Each carries its "Копіювати для Claude" reference (photoRef).
+ * in the listing's order, then its playable videos (Etsy CDN) — the card's
+ * magnifier and the listing window's gallery. Each carries its "Копіювати для
+ * Claude" reference (photoRef / videoRef).
  */
-export function listingGallery(images: ListingImage[], title: string, listingId: number): ViewerImage[] {
+export function listingGallery(
+  images: ListingImage[],
+  title: string,
+  listingId: number,
+  videos?: ListingVideo[] | null
+): ViewerImage[] {
   const n = images.length
-  return images.map((img, i) => ({
+  const vids = playableVideos(videos)
+  const photos: ViewerImage[] = images.map((img, i) => ({
     src: imageSrc(img, 'fullxfull'),
     alt: img.alt || title,
     caption: n > 1 ? `${title} — фото ${i + 1} з ${n}` : title,
     ref: photoRef(listingId, img.id)
   }))
+  return photos.concat(
+    vids.map((v, i) => ({
+      src: videoThumbSrc(v),
+      video: v.videoUrl,
+      alt: `Відео товару: ${title}`,
+      caption: vids.length > 1 ? `${title} — відео ${i + 1} з ${vids.length}` : `${title} — відео`,
+      ref: videoRef(listingId, v.id)
+    }))
+  )
 }
 
 export function ListingCard({
@@ -222,6 +238,7 @@ export function ListingCard({
   onOpen: (l: Listing) => void
 }): JSX.Element {
   const img = listing.images[0]
+  const videoCount = playableVideos(listing.videos).length
   return (
     // The card is a button; the magnifier, copy-link and mark icons over the photo are its siblings (never nested).
     <div className="listing-card-host ui-zoom-host">
@@ -245,6 +262,12 @@ export function ListingCard({
             </Tooltip>
           )}
           <CardMarkBadge mark={listing.mark} />
+          {videoCount > 0 && (
+            <span className="card-video-badge" data-testid="card-video-badge">
+              <Icon name="play" size={10} />
+              <span>{videoCount > 1 ? `відео ×${videoCount}` : 'відео'}</span>
+            </span>
+          )}
         </div>
         <div className="card-body">
           <div className="card-title" title={listing.title}>
@@ -256,7 +279,7 @@ export function ListingCard({
       </button>
       {img && (
         <ZoomButton
-          images={listingGallery(listing.images, listing.title, listing.listingId)}
+          images={listingGallery(listing.images, listing.title, listing.listingId, listing.videos)}
           label={`Відкрити фото на весь розмір: ${listing.title}`}
           className="ui-zoom-corner card-zoom"
         />

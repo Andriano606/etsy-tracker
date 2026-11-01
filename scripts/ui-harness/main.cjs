@@ -47,9 +47,18 @@ const firstImageOf = (listingId) => {
   return undefined
 }
 
+// etsyimg://video/{id}/thumbnail: the preview frame from the fixtures' listing videos (like main's handler).
+const videoThumbs = {}
+for (const p of Object.values(fx.perShop)) for (const l of p.listings) for (const v of l.videos ?? []) if (v.thumbnailUrl) videoThumbs[v.id] = v.thumbnailUrl
+
 async function image(req) {
   const u = new URL(req.url)
   let m = u.pathname.match(/^\/(\d+)\/([\w]+)$/)
+  if (u.hostname === 'video' && m && m[2] === 'thumbnail') {
+    const url = videoThumbs[m[1]]
+    if (!url) return new Response(null, { status: 404 })
+    return cached(`video-${m[1]}`, url)
+  }
   // etsyimg://draft/{id}: the harness drafts use fixture image ids as media ids (fake-api.cjs).
   if (u.hostname === 'draft' && /^\/\d+$/.test(u.pathname)) m = [null, u.pathname.slice(1), 'fullxfull']
   else if (u.hostname === 'review' && m) {
@@ -59,7 +68,11 @@ async function image(req) {
   } else if (u.hostname !== 'img' || !m) return new Response(null, { status: 404 })
   const url = fx.images[m[1]]?.[m[2]] ?? fx.images[m[1]]?.['570xN']
   if (!url) return new Response(null, { status: 404 })
-  const cache = path.join(OUT, 'img-cache', `${m[1]}-${m[2]}`)
+  return cached(`${m[1]}-${m[2]}`, url)
+}
+
+async function cached(name, url) {
+  const cache = path.join(OUT, 'img-cache', name)
   if (fs.existsSync(cache)) return new Response(fs.readFileSync(cache), { headers: { 'content-type': 'image/jpeg' } })
   try {
     const res = await net.fetch(url, { headers: { accept: 'image/jpeg,image/png,image/*' } })

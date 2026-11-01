@@ -113,7 +113,7 @@ function ViewerDialog({ images, start }: { images: ViewerImage[]; start: number 
     downOnStage.current = false
   }
   return (
-    <div className="ui-viewer" role="dialog" aria-modal="true" aria-label="Перегляд зображення" ref={box} tabIndex={-1}>
+    <div className="ui-viewer" role="dialog" aria-modal="true" aria-label={img.video ? 'Перегляд відео' : 'Перегляд зображення'} ref={box} tabIndex={-1}>
       <div className="ui-viewer-bar">
         <span className="ui-viewer-caption truncate" title={caption || undefined}>
           {caption}
@@ -125,12 +125,14 @@ function ViewerDialog({ images, start }: { images: ViewerImage[]; start: number 
         )}
         {/* Not keyed per image (focus would jump to the dialog on ←/→): its feedback resets per picture. */}
         {img.ref && <CopyRefButton text={img.ref} resetKey={`${index}:${img.ref}`} />}
-        <ViewerButton
-          icon={actual ? 'minimize' : 'maximize'}
-          label={actual ? 'Вмістити у вікно' : 'Справжній розмір (1:1)'}
-          onClick={() => setActual((a) => !a)}
-          disabled={state !== 'ok'}
-        />
+        {!img.video && (
+          <ViewerButton
+            icon={actual ? 'minimize' : 'maximize'}
+            label={actual ? 'Вмістити у вікно' : 'Справжній розмір (1:1)'}
+            onClick={() => setActual((a) => !a)}
+            disabled={state !== 'ok'}
+          />
+        )}
         <ViewerButton icon="close" label="Закрити (Esc)" onClick={close} />
       </div>
       <div
@@ -143,21 +145,41 @@ function ViewerDialog({ images, start }: { images: ViewerImage[]; start: number 
         {state === 'loading' && <span className="ui-viewer-note">Завантаження…</span>}
         {state === 'error' && (
           <span className="ui-viewer-note" role="alert">
-            Не вдалося завантажити зображення.
+            {img.video ? 'Не вдалося завантажити відео.' : 'Не вдалося завантажити зображення.'}
           </span>
         )}
-        <img
-          key={`${index}:${img.src}`}
-          className="ui-viewer-img"
-          src={img.src}
-          alt={alt}
-          referrerPolicy="no-referrer"
-          hidden={state === 'error'}
-          onLoad={() => setState('ok')}
-          onError={() => setState('error')}
-          onClick={() => state === 'ok' && setActual((a) => !a)}
-          title={state !== 'ok' ? undefined : actual ? 'Клацніть, щоб вмістити у вікно' : 'Клацніть, щоб побачити справжній розмір'}
-        />
+        {img.video ? (
+          // Etsy's listing videos have no sound; muted lets them start on their own.
+          <video
+            key={`${index}:${img.video}`}
+            className="ui-viewer-video"
+            src={img.video}
+            aria-label={alt}
+            controls
+            autoPlay
+            muted
+            loop
+            playsInline
+            preload="metadata"
+            hidden={state === 'error'}
+            onLoadedData={() => setState('ok')}
+            onError={() => setState('error')}
+            data-testid="viewer-video"
+          />
+        ) : (
+          <img
+            key={`${index}:${img.src}`}
+            className="ui-viewer-img"
+            src={img.src}
+            alt={alt}
+            referrerPolicy="no-referrer"
+            hidden={state === 'error'}
+            onLoad={() => setState('ok')}
+            onError={() => setState('error')}
+            onClick={() => state === 'ok' && setActual((a) => !a)}
+            title={state !== 'ok' ? undefined : actual ? 'Клацніть, щоб вмістити у вікно' : 'Клацніть, щоб побачити справжній розмір'}
+          />
+        )}
       </div>
       {n > 1 && (
         <>
@@ -228,6 +250,7 @@ function CopyRefButton({ text, resetKey }: { text: string; resetKey: string }): 
 }
 
 const OPEN_LABEL = 'Відкрити на весь розмір'
+const PLAY_LABEL = 'Відтворити відео'
 
 /** Enter/Space on a zoom control must not also reach a clickable parent's own key handler. */
 function stopActivationKeys(e: KeyboardEvent): void {
@@ -251,6 +274,7 @@ export function ZoomImage({
   imgClassName,
   loading,
   claudeRef,
+  video,
   children
 }: {
   src: string
@@ -259,6 +283,8 @@ export function ZoomImage({
   caption?: string
   /** The single picture's etsy-tracker:// reference (a gallery carries its own per image). */
   claudeRef?: string
+  /** A video (Etsy CDN URL) the viewer plays; `src` is its preview frame. */
+  video?: string | null
   gallery?: ViewerImage[]
   index?: number
   className?: string
@@ -268,22 +294,23 @@ export function ZoomImage({
   children?: ReactNode
 }): JSX.Element {
   const openImage = useStore((s) => s.openImage)
+  const label = video ? PLAY_LABEL : OPEN_LABEL
   return (
     <button
       type="button"
       className={`ui-zoom ${className}`}
-      aria-label={alt ? `${OPEN_LABEL}: ${alt}` : OPEN_LABEL}
-      title={OPEN_LABEL}
+      aria-label={alt ? `${label}: ${alt}` : label}
+      title={label}
       onClick={(e) => {
         e.stopPropagation()
         if (gallery?.length) openImage(gallery, index)
-        else openImage({ src: full ?? src, alt, caption, ref: claudeRef })
+        else openImage({ src: full ?? src, alt, caption, ref: claudeRef, video: video ?? undefined })
       }}
       onKeyDown={stopActivationKeys}
     >
       <img className={imgClassName} src={src} alt={alt} loading={loading} referrerPolicy="no-referrer" />
       <span className="ui-zoom-badge" aria-hidden="true">
-        <Icon name="zoom-in" size={14} />
+        <Icon name={video ? 'play' : 'zoom-in'} size={14} />
       </span>
       {children}
     </button>

@@ -217,6 +217,49 @@ describe('ListingCard photo → the image viewer', () => {
   })
 })
 
+describe('ListingCard: videos', () => {
+  const vid = (id: number, over: object = {}) => ({
+    id,
+    width: 1280,
+    height: 960,
+    thumbnailUrl: `https://v.etsystatic.com/video/${id}.jpg`,
+    videoUrl: `https://v.etsystatic.com/video/${id}.mp4`,
+    state: 'active',
+    ...over
+  })
+
+  it('a listing with a video says so on the photo; the magnifier’s gallery has it after the photos', async () => {
+    const l = mkListing(1, { title: 'Mug', videos: [vid(9)] })
+    render(
+      <>
+        <ListingCard listing={l} onOpen={vi.fn()} />
+        <ImageViewer />
+      </>
+    )
+    expect(screen.getByTestId('card-video-badge')).toHaveTextContent('відео')
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: /^Відкрити фото на весь розмір: / })))
+    const viewer = useStore.getState().viewer!
+    expect(viewer.index).toBe(0)
+    expect(viewer.images.at(-1)).toEqual({
+      src: 'etsyimg://video/9/thumbnail',
+      video: 'https://v.etsystatic.com/video/9.mp4',
+      alt: 'Відео товару: Mug',
+      caption: 'Mug — відео',
+      ref: 'etsy-tracker://product/1/video/9'
+    })
+    expect(viewer.images.slice(0, -1).every((i) => i.video === undefined)).toBe(true)
+  })
+
+  it('several videos are counted; ones Etsy does not show (or off the CDN) are left out', () => {
+    const { rerender } = render(<ListingCard listing={mkListing(1, { videos: [vid(9), vid(10)] })} onOpen={vi.fn()} />)
+    expect(screen.getByTestId('card-video-badge')).toHaveTextContent('відео ×2')
+    rerender(<ListingCard listing={mkListing(1, { videos: [vid(9, { state: 'inactive' }), vid(10, { videoUrl: 'https://evil.example.com/v.mp4' })] })} onOpen={vi.fn()} />)
+    expect(screen.queryByTestId('card-video-badge')).toBeNull()
+    rerender(<ListingCard listing={mkListing(1, { videos: [] })} onOpen={vi.fn()} />)
+    expect(screen.queryByTestId('card-video-badge')).toBeNull()
+  })
+})
+
 describe('ListingCard "Копіювати посилання" (for pasting to Claude)', () => {
   afterEach(() => {
     vi.useRealTimers()

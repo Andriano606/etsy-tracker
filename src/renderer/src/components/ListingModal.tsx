@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import type { BuyerPrice, Listing, ListingDetails, ListingImage, ListingStatsPoint, Promotion, Review } from '@shared/types'
+import type { BuyerPrice, Listing, ListingDetails, ListingImage, ListingStatsPoint, ListingVideo, Promotion, Review } from '@shared/types'
 import {
   formatCount,
   formatDateTime,
@@ -13,12 +13,12 @@ import { buyerPriceIncludes, discountLabel, formatMoney, hasActiveDiscount, show
 import { countryLabel } from '@shared/countries'
 import { whenMadeLabel } from '@shared/changes'
 import { GLOSSARY, type GlossaryKey } from '@shared/glossary'
-import { photoRef, reviewPhotoRef } from '@shared/claudeRef'
+import { photoRef, reviewPhotoRef, videoRef } from '@shared/claudeRef'
 import { ownShopId, useStore } from '../store'
 import { LazyDetails, panelMeta } from '../features/LazyDetails'
 import { LISTING_PANELS } from '../features/registry'
-import { imageSrc, reviewImageSrc } from '../imageUrl'
-import { Badge, Button, Callout, Icon, InfoTip, Loading, Modal, Stat, ZoomImage, buttonClass, type BadgeTone, type IconName } from '../ui'
+import { imageSrc, playableVideos, reviewImageSrc, videoThumbSrc } from '../imageUrl'
+import { Badge, Button, Callout, Icon, InfoTip, Loading, Modal, Stat, ZoomButton, ZoomImage, buttonClass, type BadgeTone, type IconName } from '../ui'
 import { CopyForClaudeIcon, CopyLinkButton } from './CopyLinkButton'
 import { ExternalLink } from './ExternalLink'
 import { listingGallery } from './ListingCard'
@@ -748,25 +748,41 @@ function ReviewsSection({ listing }: { listing: Listing }): JSX.Element | null {
 /** Controls and scrollers that use ←/→ themselves — the gallery leaves those keys to them. */
 const OWNS_ARROWS =
   'input, textarea, select, [contenteditable=""], [contenteditable="true"], [role=radio], [role=radiogroup], [role=slider], [role=tab], [role=tablist], ' +
-  '[role=menu], [role=menuitem], [role=listbox], [role=option], [role=combobox], [role=spinbutton], [role=grid], .lm-table-wrap, .lm-raw'
+  '[role=menu], [role=menuitem], [role=listbox], [role=option], [role=combobox], [role=spinbutton], [role=grid], .lm-table-wrap, .lm-raw, video'
 
-function Gallery({ images, title, listingId }: { images: ListingImage[]; title: string; listingId: number }): JSX.Element {
+function Gallery({
+  images,
+  videos,
+  title,
+  listingId
+}: {
+  images: ListingImage[]
+  videos?: ListingVideo[] | null
+  title: string
+  listingId: number
+}): JSX.Element {
   const [idx, setIdx] = useState(0)
   const root = useRef<HTMLDivElement>(null)
   const strip = useRef<HTMLDivElement>(null)
-  const n = images.length
-  const img = images[idx] ?? images[0]
+  // Photos first, then the videos Etsy shows (played from Etsy's CDN) — like the listing page.
+  const vids = playableVideos(videos)
+  const n = images.length + vids.length
+  const gallery = listingGallery(images, title, listingId, vids)
+  const i0 = Math.min(idx, Math.max(0, n - 1))
+  const img = i0 < images.length ? images[i0] : null
+  const video = i0 >= images.length ? vids[i0 - images.length] : null
+  const what = video ? (vids.length > 1 ? `відео ${i0 - images.length + 1} з ${vids.length}` : 'відео товару') : n > 1 ? `фото ${i0 + 1} з ${images.length}` : 'фото товару'
   const show = (i: number): void => setIdx(((i % n) + n) % n)
   // Keep the chosen thumbnail in view (horizontally only — never scroll the dialog).
   useEffect(() => {
     const c = strip.current
-    const el = c?.children[idx] as HTMLElement | undefined
+    const el = c?.children[i0] as HTMLElement | undefined
     if (!c || !el) return
     if (el.offsetLeft < c.scrollLeft) c.scrollLeft = el.offsetLeft - 4
     else if (el.offsetLeft + el.offsetWidth > c.scrollLeft + c.clientWidth) c.scrollLeft = el.offsetLeft + el.offsetWidth - c.clientWidth + 4
-  }, [idx])
+  }, [i0])
   // ←/→ anywhere in this listing window (the dialog itself has focus right after opening),
-  // except in fields, widgets that move with arrows, sideways scrollers and windows on top.
+  // except in fields, widgets that move with arrows (a focused video seeks), sideways scrollers and windows on top.
   useEffect(() => {
     if (n < 2) return
     const onKey = (e: globalThis.KeyboardEvent): void => {
@@ -777,24 +793,35 @@ function Gallery({ images, title, listingId }: { images: ListingImage[]; title: 
       if (!dialog || !(t instanceof Element) || t.closest('.ui-modal') !== dialog || t.closest(OWNS_ARROWS)) return
       e.preventDefault()
       const step = e.key === 'ArrowLeft' ? -1 : 1
-      setIdx((i) => (i + step + n) % n)
+      setIdx((i) => (Math.min(i, n - 1) + step + n) % n)
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   }, [n])
   return (
-    <div className="gallery lm-gallery" role="group" aria-label="Фото товару" ref={root}>
-      <div className="gallery-main">
-        {img ? (
-          // Click → the viewer over everything, as a gallery of every photo at this one;
+    <div className="gallery lm-gallery" role="group" aria-label={vids.length ? 'Фото й відео товару' : 'Фото товару'} ref={root}>
+      <div className={'gallery-main' + (video ? ' is-video' : '')}>
+        {video ? (
+          // Etsy's listing videos have no sound. The magnifier opens it in the full-size viewer.
+          <>
+            <video
+              key={video.id}
+              className="lm-gallery-video"
+              src={video.videoUrl}
+              aria-label={`Відео товару: ${title}`}
+              controls
+              muted
+              loop
+              playsInline
+              preload="metadata"
+              data-testid="listing-video"
+            />
+            <ZoomButton images={gallery} index={i0} label="Відкрити відео на весь розмір" className="lm-video-zoom" />
+          </>
+        ) : img ? (
+          // Click → the viewer over everything, as a gallery of every photo and video at this one;
           // the window's own arrows and thumbnails keep working.
-          <ZoomImage
-            className="lm-gallery-zoom"
-            src={imageSrc(img, 'fullxfull')}
-            alt={img.alt || title}
-            gallery={listingGallery(images, title, listingId)}
-            index={idx}
-          />
+          <ZoomImage className="lm-gallery-zoom" src={imageSrc(img, 'fullxfull')} alt={img.alt || title} gallery={gallery} index={i0} />
         ) : (
           <div className="lm-noimg">
             <Icon name="image" size={32} />
@@ -802,23 +829,23 @@ function Gallery({ images, title, listingId }: { images: ListingImage[]; title: 
           </div>
         )}
         {/* Not keyed per photo (focus would drop to <body> on ←/→): its feedback resets with the reference. */}
-        {img && (
+        {(img || video) && (
           <CopyForClaudeIcon
             className="lm-claude-copy"
-            text={photoRef(listingId, img.id)}
-            what={n > 1 ? `фото ${idx + 1} з ${n}` : 'фото товару'}
+            text={video ? videoRef(listingId, video.id) : photoRef(listingId, img!.id)}
+            what={what}
           />
         )}
         {n > 1 && (
           <>
-            <button type="button" className="lm-gallery-nav is-prev" aria-label="Попереднє фото" title="Попереднє фото (←)" onClick={() => show(idx - 1)}>
+            <button type="button" className="lm-gallery-nav is-prev" aria-label="Попереднє фото" title="Попереднє фото (←)" onClick={() => show(i0 - 1)}>
               <Icon name="chevron-left" size={20} />
             </button>
-            <button type="button" className="lm-gallery-nav is-next" aria-label="Наступне фото" title="Наступне фото (→)" onClick={() => show(idx + 1)}>
+            <button type="button" className="lm-gallery-nav is-next" aria-label="Наступне фото" title="Наступне фото (→)" onClick={() => show(i0 + 1)}>
               <Icon name="chevron-right" size={20} />
             </button>
             <span className="lm-gallery-count num" aria-live="polite">
-              {idx + 1} / {n}
+              {i0 + 1} / {n}
             </span>
           </>
         )}
@@ -829,14 +856,32 @@ function Gallery({ images, title, listingId }: { images: ListingImage[]; title: 
             <button
               key={im.id}
               type="button"
-              className={`gallery-thumb${i === idx ? ' active' : ''}`}
+              className={`gallery-thumb${i === i0 ? ' active' : ''}`}
               onClick={() => show(i)}
               aria-label={`Фото ${i + 1}`}
-              aria-current={i === idx ? 'true' : undefined}
+              aria-current={i === i0 ? 'true' : undefined}
             >
               <img src={imageSrc(im, '75x75')} alt="" referrerPolicy="no-referrer" />
             </button>
           ))}
+          {vids.map((v, j) => {
+            const i = images.length + j
+            return (
+              <button
+                key={`v${v.id}`}
+                type="button"
+                className={`gallery-thumb is-video${i === i0 ? ' active' : ''}`}
+                onClick={() => show(i)}
+                aria-label={vids.length > 1 ? `Відео ${j + 1}` : 'Відео'}
+                aria-current={i === i0 ? 'true' : undefined}
+              >
+                {v.thumbnailUrl ? <img src={videoThumbSrc(v)} alt="" referrerPolicy="no-referrer" /> : null}
+                <span className="gallery-thumb-play" aria-hidden="true">
+                  <Icon name="play" size={14} />
+                </span>
+              </button>
+            )
+          })}
         </div>
       )}
     </div>
@@ -1029,7 +1074,7 @@ function ListingBody({ listing: l, mine }: { listing: Listing; mine: boolean }):
     <div className="lm-layout" ref={top}>
       <div className="lm-grid">
         <div className="lm-media">
-          <Gallery images={l.images} title={l.title} listingId={l.listingId} />
+          <Gallery images={l.images} videos={l.videos} title={l.title} listingId={l.listingId} />
         </div>
         <div className="lm-info listing-info">
           {l.removedAt != null && (

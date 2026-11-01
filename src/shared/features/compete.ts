@@ -93,6 +93,8 @@ export interface LiveVideo {
   /** active | inactive | deleted | flagged */
   state: string | null
   thumbnailUrl: string | null
+  /** The video file on the Etsy CDN (validated), or null — the app plays it from there. */
+  videoUrl: string | null
 }
 
 export interface LivePersonalizationOption {

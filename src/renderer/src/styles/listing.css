@@ -336,6 +336,41 @@ label.check {
   flex-direction: row-reverse;
   gap: 6px;
 }
+/* A video in the main area: plays in place (Etsy's controls at the bottom), the
+   magnifier top-right like a photo's; the "2 / 7" counter moves top-left, off the controls. */
+.listing-modal .lm-gallery-video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+.listing-modal .gallery-main > .lm-video-zoom {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+}
+.listing-modal .gallery-main.is-video .lm-gallery-count {
+  top: 8px;
+  left: 8px;
+  right: auto;
+  bottom: auto;
+}
+.listing-modal .gallery-main.is-video .lm-gallery-nav {
+  margin-top: -34px;
+}
+.listing-modal .gallery-thumb.is-video {
+  position: relative;
+}
+.listing-modal .gallery-thumb-play {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.35);
+}
 .listing-modal .lm-noimg {
   display: flex;
   flex-direction: column;

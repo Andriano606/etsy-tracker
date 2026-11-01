@@ -124,7 +124,7 @@ describe('media: load', () => {
         },
         expect.objectContaining({ id: 12, position: 2, url75: null, altText: 'Fox & planner', hexCode: null })
       ],
-      videos: [{ id: 31, width: 1920, height: 1080, thumbnailUrl: vid(31).thumbnail_url, state: 'active' }],
+      videos: [{ id: 31, width: 1920, height: 1080, thumbnailUrl: vid(31).thumbnail_url, videoUrl: vid(31).video_url, state: 'active' }],
       files: [
         { id: 51, rank: 1, name: 'planner-51.pdf', sizeBytes: 1_258_291, sizeLabel: '1.2 MB', type: 'application/pdf' },
         expect.objectContaining({ id: 52, rank: 2, name: 'A & B.pdf' })
@@ -158,10 +158,13 @@ describe('media: load', () => {
     ])
   })
 
-  it('a video thumbnail off the CDN is dropped', async () => {
-    const { ctx } = setup({ [`GET ${PUB}/videos`]: paged([vid(31, { thumbnail_url: 'http://v.etsystatic.com/t.jpg' })]) })
-    const m = (await runAction(mediaFeature, 'load', { listingId: L }, ctx)) as { videos: Array<{ thumbnailUrl: unknown }> }
+  it('a video thumbnail or file off the CDN is dropped', async () => {
+    const { ctx } = setup({
+      [`GET ${PUB}/videos`]: paged([vid(31, { thumbnail_url: 'http://v.etsystatic.com/t.jpg', video_url: 'https://evil.example.com/v.mp4' })])
+    })
+    const m = (await runAction(mediaFeature, 'load', { listingId: L }, ctx)) as { videos: Array<{ thumbnailUrl: unknown; videoUrl: unknown }> }
     expect(m.videos[0].thumbnailUrl).toBeNull()
+    expect(m.videos[0].videoUrl).toBeNull()
   })
 
   it('a part Etsy refuses is null with a note; the rest still answers', async () => {
@@ -189,7 +192,7 @@ describe('media: video state (getListingVideo)', () => {
   it('reads one video publicly', async () => {
     const { ctx, fetch } = setup()
     const v = await runAction(mediaFeature, 'video', { listingId: L, videoId: 31 }, ctx)
-    expect(v).toEqual({ id: 31, width: 1920, height: 1080, thumbnailUrl: vid(31).thumbnail_url, state: 'inactive' })
+    expect(v).toEqual({ id: 31, width: 1920, height: 1080, thumbnailUrl: vid(31).thumbnail_url, videoUrl: vid(31).video_url, state: 'inactive' })
     expect(fetch.calls[0].url.pathname).toBe(`${PUB}/videos/31`)
     expect(fetch.calls[0].headers.authorization).toBeUndefined()
   })

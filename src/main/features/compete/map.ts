@@ -136,7 +136,8 @@ export function toVideo(v: unknown): LiveVideo {
     width: optInt(x.width),
     height: optInt(x.height),
     state: optStr(x.video_state),
-    thumbnailUrl: cdnOrNull(x.thumbnail_url)
+    thumbnailUrl: cdnOrNull(x.thumbnail_url),
+    videoUrl: cdnOrNull(x.video_url)
   }
 }
 

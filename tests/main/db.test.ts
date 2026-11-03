@@ -1233,3 +1233,23 @@ describe('listing marks', () => {
     expect(completeDraftMarks(db, d, 4242, 100)).toEqual([])
   })
 })
+
+describe('listing reads leave the stored API JSON out', () => {
+  it('a Listing still knows it has details; the JSON itself is read only by getListingRaw', () => {
+    const db = memDb()
+    seedShop(db)
+    upsertListing(db, { ...mkInput(1), rawJson: '{"listing_id":1,"big":"' + 'x'.repeat(5000) + '"}' }, 10)
+    upsertListing(db, mkInput(2), 10)
+    // A row with only the API JSON (no details time) still counts as a v2 row; a bare v1 row doesn't.
+    db.prepare('UPDATE listings SET details_fetched_at = NULL WHERE listing_id = 1').run()
+    db.prepare('UPDATE listings SET details_fetched_at = NULL, raw_json = NULL WHERE listing_id = 2').run()
+    const shopId = mkInput(1).shopId
+    const byId = new Map(listActiveListings(db, shopId).map((l) => [l.listingId, l]))
+    expect(byId.get(1)!.details).not.toBeNull()
+    expect(byId.get(2)!.details).toBeNull()
+    expect(getListing(db, 1)!.details).not.toBeNull()
+    expect(getListing(db, 2)!.details).toBeNull()
+    expect(JSON.stringify(listActiveListings(db, shopId))).not.toContain('xxxxx')
+    expect(getListingRaw(db, 1)).toContain('x'.repeat(5000))
+  })
+})

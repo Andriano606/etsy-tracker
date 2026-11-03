@@ -43,7 +43,7 @@ import { createEtsyAuthStore } from '../../src/main/settings'
 import { CLIPBOARD_MAX } from '../../src/main/ipc'
 import { getListing, getShopSummary, imageCounts, listScans, reviewImageCounts } from '../../src/main/db'
 import { FakeImageStore, fakeCdn } from '../helpers/fakeImageStore'
-import { FakeEtsy, SHOP_ID, mkEtsyReview } from '../helpers/fakeEtsy'
+import { FakeEtsy, SHOP_ID, mkEtsyListing, mkEtsyReview } from '../helpers/fakeEtsy'
 import { memDb, seedShop } from '../helpers/db'
 import { fakeSafeStorage } from '../helpers/safeStorage'
 import { mkdtempSync, readFileSync, writeFileSync } from 'fs'
@@ -189,6 +189,50 @@ describe('registered handlers', () => {
       { shopId: SHOP_ID, running: true },
       { shopId: SHOP_ID, running: false }
     ])
+  })
+})
+
+describe('listings sent to the window', () => {
+  type Img = Record<string, unknown>
+  const bare = (imgs: Img[]) =>
+    imgs.forEach((i) => {
+      expect(Object.keys(i).sort()).toEqual(['alt', 'height', 'id', 'rank', 'url170', 'url570', 'url75', 'urlFull', 'width'])
+      expect([i.url75, i.url170, i.url570, i.urlFull]).toEqual(['', '', '', ''])
+    })
+
+  it('carry their photos without Etsy CDN URLs (listings:list, listing:get, scan:changes)', async () => {
+    const { c, etsy } = ctx()
+    c.keyStore.setKey('keystring1', 'secret1')
+    seedShop(c.db, { id: SHOP_ID })
+    registerIpc(c)
+    expect(((await call('scan:shop', SHOP_ID)) as { ok: boolean }).ok).toBe(true)
+    // The db keeps everything (the MCP tools and the image sync use it).
+    expect(getListing(c.db, 1)!.images[0].urlFull).toMatch(/^https:\/\/i\.etsystatic\.com\//)
+
+    const list = (await call('listings:list', SHOP_ID)) as { listingId: number; title: string; images: Img[] }[]
+    expect(list.map((l) => l.listingId).sort()).toEqual([1, 2])
+    const stored = getListing(c.db, 1)!
+    const one = list.find((l) => l.listingId === 1)!
+    expect(one.title).toBe(stored.title)
+    expect(one.images.map((i) => [i.id, i.rank, i.alt, i.width, i.height])).toEqual(
+      stored.images.map((i) => [i.id, i.rank, i.alt, i.width, i.height])
+    )
+    bare(list.flatMap((l) => l.images))
+    expect(JSON.stringify(list)).not.toMatch(/etsystatic\.com\/[^"]*il_/)
+
+    const got = (await call('listing:get', 1)) as { images: Img[] }
+    expect(got.images).toHaveLength(stored.images.length)
+    bare(got.images)
+    expect(await call('listing:get', 999)).toBeNull()
+
+    etsy.listings.push(mkEtsyListing(3))
+    const scan = (await call('scan:shop', SHOP_ID)) as { ok: boolean; scanId?: number }
+    expect(scan.ok).toBe(true)
+    const scanId = (c.db.prepare('SELECT MAX(id) AS id FROM scans').get() as { id: number }).id
+    const changes = (await call('scan:changes', scanId)) as { kind: string; listing: { listingId: number; images: Img[] } | null }[]
+    expect(changes.map((ch) => [ch.kind, ch.listing?.listingId])).toEqual([['added', 3]])
+    expect(changes[0].listing!.images.length).toBeGreaterThan(0)
+    bare(changes[0].listing!.images)
   })
 })
 

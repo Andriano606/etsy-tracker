@@ -665,6 +665,19 @@ details[open] > .group-summary .group-chevron {
   grid-template-columns: repeat(auto-fill, minmax(min(176px, 100%), 1fr));
   gap: var(--sp-3);
 }
+/* The grid renders in steps (ListingGrid): what is shown + "Показати ще". */
+.grid-more {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2) var(--sp-3);
+  margin-top: var(--sp-4);
+}
+.grid-more-count {
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
 
 /* =========================================================================
    Listing card (also the market search cards)
@@ -684,11 +697,14 @@ details[open] > .group-summary .group-chevron {
     border-color var(--dur) var(--ease),
     background var(--dur) var(--ease);
 }
-/* The grid item: the card button + the photo's magnifier (a sibling, see ListingCard). */
+/* The grid item: the card button + the photo's magnifier (a sibling, see ListingCard).
+   Cards far outside the view skip layout and paint (content-visibility). */
 .listing-card-host {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 320px;
 }
 .listing-card-host > .listing-card {
   flex: 1;

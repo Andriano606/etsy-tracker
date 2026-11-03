@@ -722,7 +722,8 @@ interface ListingRow {
   original_created_at: Nullable<number>
   ending_at: Nullable<number>
   state_at: Nullable<number>
-  raw_json: Nullable<string>
+  /** Read through listingCols: 1 when an API object is stored, else NULL (never the JSON itself). */
+  raw_json: Nullable<string | number>
   details_fetched_at: Nullable<number>
   // v4: the latest known buyer price (see BUYER_COLS).
   buyer_country?: Nullable<string>
@@ -1356,10 +1357,19 @@ export type ListingInput = Omit<
   buyerPrice?: BuyerPrice | null
 }
 
+/** Only what `toImage` reads (a big shop has tens of thousands of photo rows; the MinIO bookkeeping isn't needed). */
+const IMAGE_COLS = [
+  'listing_image_id', 'listing_id', 'rank', 'url_75x75', 'url_170x135', 'url_570xN', 'url_fullxfull',
+  'full_width', 'full_height', 'alt_text', 'hex_code', 'red', 'green', 'blue', 'hue', 'saturation',
+  'brightness', 'is_black_and_white', 'created_timestamp', 'sync_status', 'stored_at'
+]
+  .map((c) => `i.${c}`)
+  .join(', ')
+
 function imagesFor(db: Db, where: string, arg: number): Map<number, ListingImage[]> {
   const rows = db
     .prepare(
-      `SELECT i.* FROM listing_images i JOIN listings l ON l.listing_id = i.listing_id
+      `SELECT ${IMAGE_COLS} FROM listing_images i JOIN listings l ON l.listing_id = i.listing_id
        WHERE ${where} AND i.removed_at IS NULL ORDER BY i.listing_id, i.rank, i.listing_image_id`
     )
     .all(arg) as unknown as ImageRow[]
@@ -1402,10 +1412,24 @@ function statsOfScan(
   return out
 }
 
+/**
+ * The listings columns a Listing is built from: every column but the stored
+ * API JSON, which only says whether there is one (`raw_json` = 1 | NULL).
+ * raw_json is ~10 KB per listing — read for every row it made opening a big
+ * shop allocate tens of MB in main for nothing (getListingRaw reads it).
+ * Built from the live schema per call (cheap), so it follows migrations.
+ */
+function listingCols(db: Db): string {
+  const cols = (db.prepare('PRAGMA table_info(listings)').all() as Array<{ name: string }>)
+    .map((c) => c.name)
+    .filter((n) => n !== 'raw_json')
+  return [...cols.map((c) => `"${c}"`), 'CASE WHEN raw_json IS NULL THEN NULL ELSE 1 END AS raw_json'].join(', ')
+}
+
 function listingsOfShop(db: Db, shopId: number, activeOnly: boolean): Listing[] {
   const rows = db
     .prepare(
-      `SELECT * FROM listings WHERE shop_id = ? ${activeOnly ? 'AND removed_at IS NULL' : ''}
+      `SELECT ${listingCols(db)} FROM listings WHERE shop_id = ? ${activeOnly ? 'AND removed_at IS NULL' : ''}
        ORDER BY etsy_created_at DESC, listing_id DESC`
     )
     .all(shopId) as unknown as ListingRow[]
@@ -1431,7 +1455,7 @@ export function listActiveListings(db: Db, shopId: number): Listing[] {
 }
 
 export function getListing(db: Db, listingId: number): Listing | null {
-  const r = db.prepare('SELECT * FROM listings WHERE listing_id = ?').get(listingId) as
+  const r = db.prepare(`SELECT ${listingCols(db)} FROM listings WHERE listing_id = ?`).get(listingId) as
     | ListingRow
     | undefined
   if (!r) return null

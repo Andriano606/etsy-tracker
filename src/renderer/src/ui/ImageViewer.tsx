@@ -328,7 +328,8 @@ export function ZoomButton({
   label = OPEN_LABEL,
   className = ''
 }: {
-  images: ViewerImage | ViewerImage[]
+  /** What to open — or a function building it on click (a grid card's gallery isn't built per render). */
+  images: ViewerImage | ViewerImage[] | (() => ViewerImage | ViewerImage[])
   index?: number
   label?: string
   className?: string
@@ -343,7 +344,7 @@ export function ZoomButton({
       onClick={(e) => {
         e.stopPropagation()
         e.preventDefault()
-        openImage(images, index)
+        openImage(typeof images === 'function' ? images() : images, index)
       }}
       onKeyDown={stopActivationKeys}
     >

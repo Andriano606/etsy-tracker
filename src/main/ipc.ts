@@ -6,6 +6,7 @@ import { readFile, stat, writeFile } from 'fs/promises'
 import { basename, join } from 'path'
 import type { WebContents } from 'electron'
 import type {
+  Listing,
   BuyerCountryResult,
   CreateListingResult,
   DraftPullState,
@@ -347,6 +348,29 @@ export function startDraftPull(ctx: IpcContext, shopId: number): void {
   }
 }
 
+/**
+ * A listing as the window gets it: each photo without its Etsy CDN URLs and
+ * colour metadata — the window builds etsyimg:// from the photo id and uses
+ * nothing else of it. Those URLs were ~70 % of the payload (a 1 246-listing
+ * shop: 22 MB of JSON → ~6 MB), held twice (main + window) on every open.
+ */
+export function forWindow(l: Listing): Listing {
+  return {
+    ...l,
+    images: l.images.map((i) => ({
+      id: i.id,
+      rank: i.rank,
+      url75: '',
+      url170: '',
+      url570: '',
+      urlFull: '',
+      width: i.width,
+      height: i.height,
+      alt: i.alt
+    }))
+  }
+}
+
 /** An id from the renderer as a positive safe integer, else null (the handler answers "nothing"). */
 export function positiveId(v: unknown): number | null {
   const n = Number(v)
@@ -426,8 +450,11 @@ export function registerIpc(ctx: IpcContext): void {
     return { ok: true }
   })
 
-  ipcMain.handle('listings:list', (_e, shopId: number) => listActiveListings(db, shopId))
-  ipcMain.handle('listing:get', (_e, listingId: number) => getListing(db, listingId))
+  ipcMain.handle('listings:list', (_e, shopId: number) => listActiveListings(db, shopId).map(forWindow))
+  ipcMain.handle('listing:get', (_e, listingId: number) => {
+    const l = getListing(db, listingId)
+    return l && forWindow(l)
+  })
   ipcMain.handle('listing:raw', (_e, listingId: number) => getListingRaw(db, listingId))
   // Marks ("В роботі" / "Реалізовано"): the renderer applies the answer itself (no push).
   ipcMain.handle('marks:set', (_e, listingId: unknown, input: unknown): MyShopResult<ListingMark | null> => {
@@ -466,7 +493,9 @@ export function registerIpc(ctx: IpcContext): void {
     const id = positiveId(shopId)
     if (id != null) startReviewSync(ctx, id)
   })
-  ipcMain.handle('scan:changes', (_e, scanId: number) => listScanChanges(db, scanId))
+  ipcMain.handle('scan:changes', (_e, scanId: number) =>
+    listScanChanges(db, scanId).map((c) => (c.listing ? { ...c, listing: forWindow(c.listing) } : c))
+  )
   // Promotions a scan saw start/end (the "Акції" group) and one listing's history.
   ipcMain.handle('scan:promotions', (_e, scanId: number): ScanPromotions => {
     const id = positiveId(scanId)

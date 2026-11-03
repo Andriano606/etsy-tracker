@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { memo, type ReactNode } from 'react'
 import type { Listing, ListingImage, ListingVideo } from '@shared/types'
 import { formatCount, formatPrice, formatRating, formatReviewCount } from '@shared/format'
 import { GLOSSARY, type GlossaryKey } from '@shared/glossary'
@@ -228,7 +228,12 @@ export function listingGallery(
   )
 }
 
-export function ListingCard({
+/**
+ * One listing in a grid. Memoized: the shop view re-renders on every progress
+ * event, and a big shop has hundreds of cards on screen — a card re-renders
+ * only when its own listing object (replaced by a data reload) or props change.
+ */
+export const ListingCard = memo(function ListingCard({
   listing,
   isNew,
   onOpen
@@ -279,7 +284,7 @@ export function ListingCard({
       </button>
       {img && (
         <ZoomButton
-          images={listingGallery(listing.images, listing.title, listing.listingId, listing.videos)}
+          images={() => listingGallery(listing.images, listing.title, listing.listingId, listing.videos)}
           label={`Відкрити фото на весь розмір: ${listing.title}`}
           className="ui-zoom-corner card-zoom"
         />
@@ -288,4 +293,4 @@ export function ListingCard({
       <CardMarkMenu listing={listing} solo={!img} />
     </div>
   )
-}
+})

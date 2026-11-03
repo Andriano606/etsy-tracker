@@ -289,6 +289,12 @@ Charts are hand-rolled SVG (`Charts.tsx`: `LineChart`, `BarChart`, `StackedBarCh
 
 Shop link parsing (`shared/shopUrl.ts`) treats a link as a listing link only when `listing` is the first path segment (after an optional locale) — a shop may be named "Listing". It accepts `etsy.com/shop/Name` with/without scheme/`www`, `http`, `m.etsy.com`, locale prefixes (`/uk/shop/…`, `/en-gb/shop/…`), query/hash, trailing slash, extra path (`/reviews`), `Name.etsy.com`, or a bare name; rejects listing links, non-Etsy hosts, Etsy's own subdomains and names that aren't letters+digits.
 
+### Memory & resource limits
+
+- **Window payloads:** `listings:list`, `listing:get` and `scan:changes` send listings through `forWindow` (ipc.ts) — photos keep only `id/rank/width/height/alt`, the four CDN URLs are `''` (the window builds `etsyimg://` from the id; a 1 246-listing shop went from 22 MB of JSON to 9 MB). Never use `ListingImage.url*` in the renderer. Listing reads (`listingCols` in db.ts) never load `raw_json` (it reads back as 1 | NULL — only `toDetails` checks it; `getListingRaw` reads the JSON), and `imagesFor` selects only what `toImage` needs (`IMAGE_COLS`).
+- **Grid:** `ListingGrid.tsx` renders `GRID_BATCH` (120) cards, then the next step when the end comes within 1 200 px (an IntersectionObserver, a new one per step) or on "Показати ще"; `resetKey` (shop + search + sort + filters) starts over, a data reload of the same view keeps what is shown. `ListingCard` is `memo` (ShopView re-renders on every progress event) and builds its viewer gallery only on click (`ZoomButton images` may be a function). `.listing-card-host` has `content-visibility: auto`.
+- **Disk:** Chromium's HTTP cache is capped (`DISK_CACHE_BYTES` 200 MB, `disk-cache-size` switch in index.ts — it had grown to 1.3 GB). Downloads whose bytes are kept elsewhere (image sync → MinIO, draft photo/video pulls, MCP CDN photos) go through `noStoreFetch` (`cache: 'no-store'`); only the window's CDN fallback in the `etsyimg://` handler (`cdnDisplayFetch`) may use the cache.
+
 ## Testing conventions
 
 Vitest, `tests/` mirrors `src/`: `tests/shared/*`, `tests/main/*`, `tests/renderer/*` (+ `components/`). Renderer tests start with `// @vitest-environment jsdom` (default env is `node`); `tests/setup.ts` adds jest-dom and RTL cleanup.

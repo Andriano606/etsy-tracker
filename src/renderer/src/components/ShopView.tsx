@@ -10,7 +10,7 @@ import { storeImageRef } from '@shared/claudeRef'
 import { ActionBar, Badge, Button, Callout, EmptyState, Icon, InfoTip, Segmented, Select, Spinner, Stat, Term, Toggle, type Action } from '../ui'
 import { countOf } from './ChangeList'
 import { ExternalLink } from './ExternalLink'
-import { ListingCard } from './ListingCard'
+import { ListingGrid } from './ListingGrid'
 import { ScanHistory } from './ScanHistory'
 import { ScanResults } from './ScanResults'
 import { UNREADABLE_KEY_MESSAGE } from './SettingsModal'
@@ -636,11 +636,12 @@ export function ShopView(): JSX.Element | null {
                   {emptyHint.text}
                 </EmptyState>
               ) : (
-                <div className="grid">
-                  {visible.map((l) => (
-                    <ListingCard key={l.listingId} listing={l} isNew={newIds.has(l.listingId)} onOpen={openListing} />
-                  ))}
-                </div>
+                <ListingGrid
+                  listings={visible}
+                  newIds={newIds}
+                  onOpen={openListing}
+                  resetKey={`${shop.id}|${search}|${sort}|${discountOnly}|${markFilter}`}
+                />
               )}
             </section>
           ) : (

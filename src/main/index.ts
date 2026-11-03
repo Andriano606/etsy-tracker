@@ -25,6 +25,7 @@ import { createMcpTools, mcpServerInfo } from './mcpTools'
 import { createTaxonomyCache } from './myShop'
 import { createReviewSyncer } from './reviewSync'
 import { createScanner } from './scanner'
+import { DISK_CACHE_BYTES, noStoreFetch } from './resources'
 import {
   type MinioConfig,
   createBuyerCountryStore,
@@ -40,6 +41,8 @@ import {
 app.setName('etsy-tracker')
 // Ukrainian locale for Chromium: date inputs read dd.mm.yyyy like the rest of the UI.
 app.commandLine.appendSwitch('lang', 'uk')
+// Cap Chromium's HTTP disk cache (it sizes itself from the free disk space).
+app.commandLine.appendSwitch('disk-cache-size', String(DISK_CACHE_BYTES))
 // One fixed userData dir for dev and the packaged app alike (~/.config/etsy-tracker),
 // independent of productName.
 app.setPath('userData', join(app.getPath('appData'), 'etsy-tracker'))
@@ -174,8 +177,11 @@ if (!app.requestSingleInstanceLock()) {
     }
     // Only https etsystatic.com URLs reach this (isEtsyCdnUrl); never route
     // them through our own etsyimg: handler or any other custom protocol.
-    const cdnFetch: typeof fetch = (input, init) =>
+    const cdnDisplayFetch: typeof fetch = (input, init) =>
       net.fetch(input as string, { ...init, bypassCustomProtocolHandlers: true })
+    // Downloads kept in MinIO / the db skip the HTTP cache (else stored twice);
+    // only the window's CDN fallback (cdnDisplayFetch) may use it.
+    const cdnFetch = noStoreFetch(cdnDisplayFetch)
     const images = createImageSyncer({
       db,
       getStore,
@@ -185,7 +191,7 @@ if (!app.requestSingleInstanceLock()) {
     const imageHandler = createImageProtocolHandler({
       db,
       getStore,
-      fetch: cdnFetch,
+      fetch: cdnDisplayFetch,
       onMissing: (row) => {
         markImageMissing(db, row)
         void images.sync({ shopId: row.shop_id }).catch(() => undefined)
